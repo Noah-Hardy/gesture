@@ -17,35 +17,54 @@ parser.add_argument('--host', help='OSC host address (overrides config)')
 parser.add_argument('--port', type=int, help='OSC port (overrides config)')
 parser.add_argument('--camera', type=int, help='Camera device ID (overrides config)')
 print("🎯 About to parse command line arguments...")
-args = parser.parse_args()
-print(f"🔧 Parsed arguments: {vars(args)}")
 
-# Load configuration
-print("🔧 Loading configuration...")
-config = get_config()
-print("✅ Configuration loaded successfully")
-print("🔄 Processing configuration overrides...")
-if args.config != 'config.json':
-    print(f"📄 Using custom config file: {args.config}")
-    config.config_file = args.config
-    config.config = config._load_config()
-print("✅ Configuration processing complete")
+try:
+    args = parser.parse_args()
+    print(f"🔧 Parsed arguments: {vars(args)}")
+except Exception as e:
+    print(f"❌ Failed to parse arguments: {e}")
+    import traceback
+    traceback.print_exc()
+    exit(1)
 
-# Apply command line overrides
-print("⚙️ Applying command line overrides...")
-if args.fps:
-    print("📊 Enabling FPS display")
-    config.set('performance', 'show_fps', True)
-if args.host:
-    print(f"🌐 Setting OSC host to: {args.host}")
-    config.set('osc', 'host', args.host)
-if args.port:
-    print(f"🔌 Setting OSC port to: {args.port}")
-    config.set('osc', 'port', args.port)
-if args.camera:
-    print(f"📷 Setting camera device to: {args.camera}")
-    config.set('camera', 'device_id', args.camera)
-print("✅ Command line overrides applied")
+try:
+    # Load configuration
+    print("🔧 Loading configuration...")
+    config = get_config()
+    print("✅ Configuration loaded successfully")
+    print("🔄 Processing configuration overrides...")
+    if args.config != 'config.json':
+        print(f"📄 Using custom config file: {args.config}")
+        config.config_file = args.config
+        config.config = config._load_config()
+    print("✅ Configuration processing complete")
+except Exception as e:
+    print(f"❌ Failed during configuration loading: {e}")
+    import traceback
+    traceback.print_exc()
+    exit(1)
+
+try:
+    # Apply command line overrides
+    print("⚙️ Applying command line overrides...")
+    if args.fps:
+        print("📊 Enabling FPS display")
+        config.set('performance', 'show_fps', True)
+    if args.host:
+        print(f"🌐 Setting OSC host to: {args.host}")
+        config.set('osc', 'host', args.host)
+    if args.port:
+        print(f"🔌 Setting OSC port to: {args.port}")
+        config.set('osc', 'port', args.port)
+    if args.camera:
+        print(f"📷 Setting camera device to: {args.camera}")
+        config.set('camera', 'device_id', args.camera)
+    print("✅ Command line overrides applied")
+except Exception as e:
+    print(f"❌ Failed during command line overrides: {e}")
+    import traceback
+    traceback.print_exc()
+    exit(1)
 
 # Handle configuration commands
 print("🔍 Checking command line arguments...")
