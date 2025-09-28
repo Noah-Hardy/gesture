@@ -3,7 +3,9 @@ import argparse
 from pythonosc import udp_client
 
 # Import our modular components
+print("📦 Loading application modules...")
 from src import ThreadedOSCSender, GPUPoseProcessor, CPUPoseProcessor, get_config
+print("✅ Modules loaded successfully")
 
 # Parse command line arguments
 parser = argparse.ArgumentParser(description='Optimized MediaPipe Pose Detection with OSC')
@@ -17,7 +19,9 @@ parser.add_argument('--camera', type=int, help='Camera device ID (overrides conf
 args = parser.parse_args()
 
 # Load configuration
+print("🔧 Loading configuration...")
 config = get_config()
+print("✅ Configuration loaded successfully")
 if args.config != 'config.json':
     config.config_file = args.config
     config.config = config._load_config()
@@ -70,17 +74,27 @@ def setup_camera(config):
 
 def main():
     """Main application loop"""
+    print("🚀 Starting main function...")
+    
     # Get configuration sections
+    print("📖 Reading configuration sections...")
     osc_config = config.get('osc')
     performance_config = config.get('performance')
     display_config = config.get('display')
+    print("✅ Configuration sections loaded")
     
     # Create OSC client and threaded sender
-    print(f"🌐 OSC Target: {osc_config['host']}:{osc_config['port']}")
-    osc_client = udp_client.SimpleUDPClient(osc_config['host'], osc_config['port'])
-    threaded_osc = ThreadedOSCSender(osc_client, queue_size=osc_config['queue_size'])
+    print(f"🌐 Creating OSC client for {osc_config['host']}:{osc_config['port']}")
+    try:
+        osc_client = udp_client.SimpleUDPClient(osc_config['host'], osc_config['port'])
+        threaded_osc = ThreadedOSCSender(osc_client, queue_size=osc_config['queue_size'])
+        print("✅ OSC client created successfully")
+    except Exception as e:
+        print(f"❌ Failed to create OSC client: {e}")
+        return
     
     # Setup camera
+    print("📷 Setting up camera...")
     cap = setup_camera(config)
     
     # Create pose processor with configuration
@@ -198,4 +212,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    print("🎬 Starting application...")
+    try:
+        main()
+    except Exception as e:
+        print(f"❌ Fatal error in main: {e}")
+        import traceback
+        traceback.print_exc()
