@@ -59,10 +59,21 @@ class Config:
         import platform
         
         # For Apple Silicon, disable GPU by default to avoid buffer format issues
-        if 'arm64' in platform.machine() or 'Apple' in str(os.uname().machine):
-            if self.config["performance"]["prefer_gpu"]:
-                print("🍎 Apple Silicon detected - disabling GPU preference to avoid MediaPipe GPU buffer issues")
-                self.config["performance"]["prefer_gpu"] = False
+        # Use cross-platform detection instead of os.uname() which doesn't exist on Windows
+        try:
+            machine = platform.machine().lower()
+            system = platform.system().lower()
+            
+            # Check for Apple Silicon (arm64 on macOS)
+            is_apple_silicon = (machine == 'arm64' and system == 'darwin')
+            
+            if is_apple_silicon:
+                if self.config["performance"]["prefer_gpu"]:
+                    print("🍎 Apple Silicon detected - disabling GPU preference to avoid MediaPipe GPU buffer issues")
+                    self.config["performance"]["prefer_gpu"] = False
+        except Exception as e:
+            print(f"⚠️  Platform detection failed: {e}")
+            # Continue with default settings if platform detection fails
     
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from file with fallback to defaults"""

@@ -3,35 +3,7 @@ import argparse
 from pythonosc import udp_client
 
 # Import our modular components
-print("📦 Loading application modules...")
-try:
-    print("🔧 Importing get_config...")
-    from src import get_config
-    print("✅ get_config imported successfully")
-    
-    print("🔧 Importing ThreadedOSCSender...")
-    from src import ThreadedOSCSender
-    print("✅ ThreadedOSCSender imported successfully")
-    
-    print("🔧 Importing GPUPoseProcessor...")
-    from src import GPUPoseProcessor
-    print("✅ GPUPoseProcessor imported successfully")
-    
-    print("🔧 Importing CPUPoseProcessor...")
-    from src import CPUPoseProcessor
-    print("✅ CPUPoseProcessor imported successfully")
-    
-    print("✅ All modules loaded successfully")
-except ImportError as e:
-    print(f"❌ Import error: {e}")
-    import traceback
-    traceback.print_exc()
-    exit(1)
-except Exception as e:
-    print(f"❌ Unexpected error during import: {e}")
-    import traceback
-    traceback.print_exc()
-    exit(1)
+from src import ThreadedOSCSender, GPUPoseProcessor, CPUPoseProcessor, get_config
 
 # Parse command line arguments
 parser = argparse.ArgumentParser(description='Optimized MediaPipe Pose Detection with OSC')
@@ -42,69 +14,32 @@ parser.add_argument('--show-config', action='store_true', help='Show current con
 parser.add_argument('--host', help='OSC host address (overrides config)')
 parser.add_argument('--port', type=int, help='OSC port (overrides config)')
 parser.add_argument('--camera', type=int, help='Camera device ID (overrides config)')
-print("🎯 About to parse command line arguments...")
+args = parser.parse_args()
 
-try:
-    args = parser.parse_args()
-    print(f"🔧 Parsed arguments: {vars(args)}")
-except Exception as e:
-    print(f"❌ Failed to parse arguments: {e}")
-    import traceback
-    traceback.print_exc()
-    exit(1)
+# Load configuration
+config = get_config()
+if args.config != 'config.json':
+    config.config_file = args.config
+    config.config = config._load_config()
 
-try:
-    # Load configuration
-    print("🔧 Loading configuration...")
-    config = get_config()
-    print("✅ Configuration loaded successfully")
-    print("🔄 Processing configuration overrides...")
-    if args.config != 'config.json':
-        print(f"📄 Using custom config file: {args.config}")
-        config.config_file = args.config
-        config.config = config._load_config()
-    print("✅ Configuration processing complete")
-except Exception as e:
-    print(f"❌ Failed during configuration loading: {e}")
-    import traceback
-    traceback.print_exc()
-    exit(1)
-
-try:
-    # Apply command line overrides
-    print("⚙️ Applying command line overrides...")
-    if args.fps:
-        print("📊 Enabling FPS display")
-        config.set('performance', 'show_fps', True)
-    if args.host:
-        print(f"🌐 Setting OSC host to: {args.host}")
-        config.set('osc', 'host', args.host)
-    if args.port:
-        print(f"🔌 Setting OSC port to: {args.port}")
-        config.set('osc', 'port', args.port)
-    if args.camera:
-        print(f"📷 Setting camera device to: {args.camera}")
-        config.set('camera', 'device_id', args.camera)
-    print("✅ Command line overrides applied")
-except Exception as e:
-    print(f"❌ Failed during command line overrides: {e}")
-    import traceback
-    traceback.print_exc()
-    exit(1)
+# Apply command line overrides
+if args.fps:
+    config.set('performance', 'show_fps', True)
+if args.host:
+    config.set('osc', 'host', args.host)
+if args.port:
+    config.set('osc', 'port', args.port)
+if args.camera:
+    config.set('camera', 'device_id', args.camera)
 
 # Handle configuration commands
-print("🔍 Checking command line arguments...")
 if args.create_config:
-    print("📝 Creating default config file and exiting...")
     config.create_default_config_file()
     exit(0)
 
 if args.show_config:
-    print("📋 Showing config and exiting...")
     config.print_config()
     exit(0)
-
-print("✅ No early exit commands detected")
 
 # Try to import TensorFlow for GPU support
 try:
@@ -135,27 +70,17 @@ def setup_camera(config):
 
 def main():
     """Main application loop"""
-    print("🚀 Starting main function...")
-    
     # Get configuration sections
-    print("📖 Reading configuration sections...")
     osc_config = config.get('osc')
     performance_config = config.get('performance')
     display_config = config.get('display')
-    print("✅ Configuration sections loaded")
     
     # Create OSC client and threaded sender
-    print(f"🌐 Creating OSC client for {osc_config['host']}:{osc_config['port']}")
-    try:
-        osc_client = udp_client.SimpleUDPClient(osc_config['host'], osc_config['port'])
-        threaded_osc = ThreadedOSCSender(osc_client, queue_size=osc_config['queue_size'])
-        print("✅ OSC client created successfully")
-    except Exception as e:
-        print(f"❌ Failed to create OSC client: {e}")
-        return
+    print(f"🌐 OSC Target: {osc_config['host']}:{osc_config['port']}")
+    osc_client = udp_client.SimpleUDPClient(osc_config['host'], osc_config['port'])
+    threaded_osc = ThreadedOSCSender(osc_client, queue_size=osc_config['queue_size'])
     
     # Setup camera
-    print("📷 Setting up camera...")
     cap = setup_camera(config)
     
     # Create pose processor with configuration
@@ -273,10 +198,4 @@ def main():
 
 
 if __name__ == "__main__":
-    print("🎬 Starting application...")
-    try:
-        main()
-    except Exception as e:
-        print(f"❌ Fatal error in main: {e}")
-        import traceback
-        traceback.print_exc()
+    main()
