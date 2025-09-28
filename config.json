@@ -1,0 +1,36 @@
+{
+  "osc": {
+    "host": "192.168.1.28",
+    "port": 1234,
+    "queue_size": 10
+  },
+  "camera": {
+    "device_id": 1,
+    "width": 640,
+    "height": 480,
+    "fps": 30,
+    "buffer_size": 1
+  },
+  "mediapipe": {
+    "model_complexity": 0,
+    "min_detection_confidence": 0.7,
+    "min_tracking_confidence": 0.5,
+    "min_pose_presence_confidence": 0.5,
+    "smooth_landmarks": true,
+    "enable_segmentation": false
+  },
+  "performance": {
+    "prefer_gpu": false,
+    "show_fps": false
+  },
+  "display": {
+    "show_window": true,
+    "window_title": "MediaPipe OSC Pose Detection",
+    "landmark_color": [245, 117, 66],
+    "connection_color": [245, 66, 230],
+    "landmark_thickness": 1,
+    "landmark_radius": 2,
+    "connection_thickness": 1,
+    "connection_radius": 1
+  }
+}
