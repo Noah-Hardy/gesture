@@ -17,6 +17,7 @@ parser.add_argument('--host', help='OSC host address (overrides config)')
 parser.add_argument('--port', type=int, help='OSC port (overrides config)')
 parser.add_argument('--camera', type=int, help='Camera device ID (overrides config)')
 args = parser.parse_args()
+print(f"🔧 Parsed arguments: {vars(args)}")
 
 # Load configuration
 print("🔧 Loading configuration...")
@@ -37,13 +38,18 @@ if args.camera:
     config.set('camera', 'device_id', args.camera)
 
 # Handle configuration commands
+print("🔍 Checking command line arguments...")
 if args.create_config:
+    print("📝 Creating default config file and exiting...")
     config.create_default_config_file()
     exit(0)
 
 if args.show_config:
+    print("📋 Showing config and exiting...")
     config.print_config()
     exit(0)
+
+print("✅ No early exit commands detected")
 
 # Try to import TensorFlow for GPU support
 try:
