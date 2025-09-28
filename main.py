@@ -16,6 +16,7 @@ parser.add_argument('--show-config', action='store_true', help='Show current con
 parser.add_argument('--host', help='OSC host address (overrides config)')
 parser.add_argument('--port', type=int, help='OSC port (overrides config)')
 parser.add_argument('--camera', type=int, help='Camera device ID (overrides config)')
+print("🎯 About to parse command line arguments...")
 args = parser.parse_args()
 print(f"🔧 Parsed arguments: {vars(args)}")
 
@@ -23,19 +24,28 @@ print(f"🔧 Parsed arguments: {vars(args)}")
 print("🔧 Loading configuration...")
 config = get_config()
 print("✅ Configuration loaded successfully")
+print("🔄 Processing configuration overrides...")
 if args.config != 'config.json':
+    print(f"📄 Using custom config file: {args.config}")
     config.config_file = args.config
     config.config = config._load_config()
+print("✅ Configuration processing complete")
 
 # Apply command line overrides
+print("⚙️ Applying command line overrides...")
 if args.fps:
+    print("📊 Enabling FPS display")
     config.set('performance', 'show_fps', True)
 if args.host:
+    print(f"🌐 Setting OSC host to: {args.host}")
     config.set('osc', 'host', args.host)
 if args.port:
+    print(f"🔌 Setting OSC port to: {args.port}")
     config.set('osc', 'port', args.port)
 if args.camera:
+    print(f"📷 Setting camera device to: {args.camera}")
     config.set('camera', 'device_id', args.camera)
+print("✅ Command line overrides applied")
 
 # Handle configuration commands
 print("🔍 Checking command line arguments...")
