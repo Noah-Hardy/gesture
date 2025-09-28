@@ -36,30 +36,45 @@ class PoseProcessor:
                 mp_config = self.config.get('mediapipe') if self.config else {}
                 
                 # For Apple Silicon, force CPU delegate to avoid GPU buffer format issues
-                if 'arm64' in str(os.uname().machine) or 'Apple' in str(os.uname().machine):
-                    print("🍎 Apple Silicon detected - using CPU delegate to avoid GPU buffer issues")
+                import platform
+                try:
+                    machine = platform.machine().lower()
+                    system = platform.system().lower()
+                    is_apple_silicon = (machine == 'arm64' and system == 'darwin')
+                    
+                    if is_apple_silicon:
+                        print("🍎 Apple Silicon detected - using CPU delegate to avoid GPU buffer issues")
+                        use_cpu_delegate = True
+                        base_options = python.BaseOptions(
+                            model_asset_path=model_path,
+                            delegate=python.BaseOptions.Delegate.CPU
+                        )
+                    else:
+                        # Try GPU delegate first for non-Apple Silicon
+                        try:
+                            base_options = python.BaseOptions(
+                                model_asset_path=model_path,
+                                delegate=python.BaseOptions.Delegate.GPU
+                            )
+                            print("🎯 GPU delegate configured with model file")
+                            use_cpu_delegate = False
+                        except Exception as gpu_error:
+                            print(f"⚠️  GPU delegate failed, trying CPU delegate: {gpu_error}")
+                            base_options = python.BaseOptions(
+                                model_asset_path=model_path,
+                                delegate=python.BaseOptions.Delegate.CPU
+                            )
+                            print("🔄 CPU delegate configured with model file")
+                            use_cpu_delegate = True
+                except Exception as platform_error:
+                    print(f"⚠️  Platform detection failed: {platform_error}")
+                    # Default to CPU delegate if platform detection fails
                     use_cpu_delegate = True
                     base_options = python.BaseOptions(
                         model_asset_path=model_path,
                         delegate=python.BaseOptions.Delegate.CPU
                     )
-                else:
-                    # Try GPU delegate first for non-Apple Silicon
-                    try:
-                        base_options = python.BaseOptions(
-                            model_asset_path=model_path,
-                            delegate=python.BaseOptions.Delegate.GPU
-                        )
-                        print("🎯 GPU delegate configured with model file")
-                        use_cpu_delegate = False
-                    except Exception as gpu_error:
-                        print(f"⚠️  GPU delegate failed, trying CPU delegate: {gpu_error}")
-                        base_options = python.BaseOptions(
-                            model_asset_path=model_path,
-                            delegate=python.BaseOptions.Delegate.CPU
-                        )
-                        print("🔄 CPU delegate configured with model file")
-                        use_cpu_delegate = True
+                    print("🔄 CPU delegate configured with model file (fallback)")
                 
                 pose_landmarker_options = vision.PoseLandmarkerOptions(
                     base_options=base_options,
@@ -94,14 +109,26 @@ class PoseProcessor:
         mp_config = self.config.get('mediapipe') if self.config else {}
         
         # Check if we're on Apple Silicon for Metal acceleration
-        if 'Apple' in str(os.uname().machine) or 'arm64' in str(os.uname().machine):
-            backend_name = "CPU + Metal GPU (Legacy)"
-            window_title = "Metal-Accelerated Pose Detection"
-            print("✅ Using CPU-based MediaPipe with Metal GPU acceleration")
-        else:
+        import platform
+        try:
+            machine = platform.machine().lower()
+            system = platform.system().lower()
+            is_apple_silicon = (machine == 'arm64' and system == 'darwin')
+            
+            if is_apple_silicon:
+                backend_name = "CPU + Metal GPU (Legacy)"
+                window_title = "Metal-Accelerated Pose Detection"
+                print("✅ Using CPU-based MediaPipe with Metal GPU acceleration")
+            else:
+                backend_name = "CPU Only"
+                window_title = "CPU Pose Detection"
+                print("ℹ️  Using CPU-only MediaPipe")
+        except Exception as platform_error:
+            print(f"⚠️  Platform detection failed: {platform_error}")
+            # Default to CPU-only if platform detection fails
             backend_name = "CPU Only"
             window_title = "CPU Pose Detection"
-            print("ℹ️  Using CPU-only MediaPipe")
+            print("ℹ️  Using CPU-only MediaPipe (fallback)")
         
         pose_context = mp_pose.Pose(
             static_image_mode=False,
