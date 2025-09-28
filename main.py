@@ -4,8 +4,34 @@ from pythonosc import udp_client
 
 # Import our modular components
 print("📦 Loading application modules...")
-from src import ThreadedOSCSender, GPUPoseProcessor, CPUPoseProcessor, get_config
-print("✅ Modules loaded successfully")
+try:
+    print("🔧 Importing get_config...")
+    from src import get_config
+    print("✅ get_config imported successfully")
+    
+    print("🔧 Importing ThreadedOSCSender...")
+    from src import ThreadedOSCSender
+    print("✅ ThreadedOSCSender imported successfully")
+    
+    print("🔧 Importing GPUPoseProcessor...")
+    from src import GPUPoseProcessor
+    print("✅ GPUPoseProcessor imported successfully")
+    
+    print("🔧 Importing CPUPoseProcessor...")
+    from src import CPUPoseProcessor
+    print("✅ CPUPoseProcessor imported successfully")
+    
+    print("✅ All modules loaded successfully")
+except ImportError as e:
+    print(f"❌ Import error: {e}")
+    import traceback
+    traceback.print_exc()
+    exit(1)
+except Exception as e:
+    print(f"❌ Unexpected error during import: {e}")
+    import traceback
+    traceback.print_exc()
+    exit(1)
 
 # Parse command line arguments
 parser = argparse.ArgumentParser(description='Optimized MediaPipe Pose Detection with OSC')
