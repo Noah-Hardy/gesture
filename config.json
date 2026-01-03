@@ -5,7 +5,7 @@
     "queue_size": 10
   },
   "camera": {
-    "device_id": 1,
+    "device_id": 0,
     "width": 640,
     "height": 480,
     "fps": 30,
@@ -13,14 +13,15 @@
   },
   "mediapipe": {
     "model_complexity": 0,
+    "num_poses": 3,
     "min_detection_confidence": 0.7,
-    "min_tracking_confidence": 0.5,
-    "min_pose_presence_confidence": 0.5,
+    "min_tracking_confidence": 0.3,
+    "min_pose_presence_confidence": 0.3,
     "smooth_landmarks": true,
     "enable_segmentation": false
   },
   "performance": {
-    "prefer_gpu": false,
+    "prefer_gpu": true,
     "show_fps": false
   },
   "display": {

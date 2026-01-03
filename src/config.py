@@ -17,7 +17,7 @@ class Config:
             "queue_size": 10
         },
         "camera": {
-            "device_id": 1,
+            "device_id": 0,
             "width": 640,
             "height": 480,
             "fps": 30,
@@ -29,7 +29,8 @@ class Config:
             "min_tracking_confidence": 0.5,
             "min_pose_presence_confidence": 0.5,
             "smooth_landmarks": True,
-            "enable_segmentation": False
+            "enable_segmentation": False,
+            "num_poses": 1  # Note: Only supported in GPU mode (MediaPipe Tasks), CPU mode limited to 1
         },
         "performance": {
             "prefer_gpu": True,
@@ -56,24 +57,8 @@ class Config:
     
     def _apply_platform_defaults(self):
         """Apply platform-specific default configurations"""
-        import platform
-        
-        # For Apple Silicon, disable GPU by default to avoid buffer format issues
-        # Use cross-platform detection instead of os.uname() which doesn't exist on Windows
-        try:
-            machine = platform.machine().lower()
-            system = platform.system().lower()
-            
-            # Check for Apple Silicon (arm64 on macOS)
-            is_apple_silicon = (machine == 'arm64' and system == 'darwin')
-            
-            if is_apple_silicon:
-                if self.config["performance"]["prefer_gpu"]:
-                    print("🍎 Apple Silicon detected - disabling GPU preference to avoid MediaPipe GPU buffer issues")
-                    self.config["performance"]["prefer_gpu"] = False
-        except Exception as e:
-            print(f"⚠️  Platform detection failed: {e}")
-            # Continue with default settings if platform detection fails
+        # Platform-specific defaults can be added here if needed
+        pass
     
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from file with fallback to defaults"""

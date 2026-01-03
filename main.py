@@ -1,9 +1,13 @@
 import cv2
 import argparse
+import platform
 from pythonosc import udp_client
 
 # Import our modular components
-from src import ThreadedOSCSender, GPUPoseProcessor, CPUPoseProcessor, get_config
+from src import ThreadedOSCSender, TasksPoseProcessor, LegacyPoseProcessor, get_config
+
+# Detect Apple Silicon
+IS_APPLE_SILICON = platform.system() == "Darwin" and platform.machine() == "arm64"
 
 # Parse command line arguments
 parser = argparse.ArgumentParser(description='Optimized MediaPipe Pose Detection with OSC')
@@ -14,6 +18,8 @@ parser.add_argument('--show-config', action='store_true', help='Show current con
 parser.add_argument('--host', help='OSC host address (overrides config)')
 parser.add_argument('--port', type=int, help='OSC port (overrides config)')
 parser.add_argument('--camera', type=int, help='Camera device ID (overrides config)')
+parser.add_argument('--force-cpu', action='store_true', help='Force CPU delegate (skip GPU)')
+parser.add_argument('--force-legacy', action='store_true', help='Force Legacy MediaPipe (skip Tasks API)')
 args = parser.parse_args()
 
 # Load configuration
@@ -41,14 +47,19 @@ if args.show_config:
     config.print_config()
     exit(0)
 
-# Try to import TensorFlow for GPU support
+# Platform information
+print(f"🖥️  Platform: {platform.system()} {platform.machine()}")
+if IS_APPLE_SILICON:
+    print("🍎 Apple Silicon detected - using SRGBA format for GPU compatibility")
+
+# Try to import TensorFlow for GPU support info (optional)
 try:
     import tensorflow as tf
     gpu_available = len(tf.config.experimental.list_physical_devices('GPU')) > 0
     print(f"TensorFlow GPU available: {gpu_available}")
 except ImportError:
     gpu_available = False
-    print("TensorFlow not available - using CPU only")
+    print("TensorFlow not available - MediaPipe will use its own GPU/CPU detection")
 
 
 def setup_camera(config):
@@ -85,30 +96,48 @@ def main():
     
     # Create pose processor with configuration
     show_fps = performance_config['show_fps']
-    use_gpu = False
-    pose_landmarker = None
-    pose_context = None
     
-    # Try to setup GPU processing if preferred
-    if performance_config['prefer_gpu']:
-        try:
-            processor = GPUPoseProcessor(threaded_osc, show_fps=show_fps, config=config)
-            pose_landmarker, backend_name, window_title, use_gpu = processor.setup_gpu_processor()
-            
-            if not use_gpu:
-                print("🔄 GPU setup failed, falling back to CPU processing")
-        except Exception as e:
-            print(f"⚠️  GPU processor creation failed: {e}")
-            print("🔄 Falling back to CPU processing")
-            use_gpu = False
+    # Try MediaPipe Tasks first (preferred), fallback to Legacy
+    processor = None
+    landmarker = None
+    backend_name = None
+    window_title = None
+    is_tasks = False
+    timestamp_counter = 0
     
-    if not use_gpu:
-        # Fallback to CPU processing
+    # Determine processing strategy
+    use_tasks = not args.force_legacy
+    force_cpu = args.force_cpu
+    
+    # Try Tasks processor first (unless forced to legacy)
+    if use_tasks:
         try:
-            processor = CPUPoseProcessor(threaded_osc, show_fps=show_fps, config=config)
-            pose_context, backend_name, window_title = processor.setup_cpu_processor()
+            processor = TasksPoseProcessor(
+                threaded_osc, 
+                show_fps=show_fps, 
+                config=config,
+                force_cpu=force_cpu,
+                is_apple_silicon=IS_APPLE_SILICON
+            )
+            landmarker, backend_name, window_title, success = processor.setup_processor()
+            if success:
+                is_tasks = True
+                print("✅ Using MediaPipe Tasks")
+            else:
+                processor = None
         except Exception as e:
-            print(f"❌ CPU processor setup failed: {e}")
+            print(f"⚠️  Tasks processor failed: {e}")
+            processor = None
+    
+    # Fallback to Legacy processor if Tasks failed or was skipped
+    if processor is None:
+        try:
+            processor = LegacyPoseProcessor(threaded_osc, show_fps=show_fps, config=config)
+            landmarker, backend_name, window_title = processor.setup_processor()
+            is_tasks = False
+            print("✅ Using Legacy MediaPipe")
+        except Exception as e:
+            print(f"❌ Legacy processor setup failed: {e}")
             print("🛑 Cannot initialize any processing backend")
             return
     
@@ -120,41 +149,30 @@ def main():
     print(f"🖼️  Window: {window_title}")
     
     try:
-        if use_gpu:
-            # GPU processing loop with fallback
-            try:
-                while cap.isOpened():
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
+        # Main processing loop
+        if is_tasks:
+            # Tasks processing with async callback
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                
+                try:
+                    timestamp_counter += 1
+                    image = processor.process_frame(frame, landmarker, backend_name, timestamp_counter)
                     
-                    try:
-                        image = processor.process_frame(frame, pose_landmarker, backend_name)
-                        
-                        if display_config['show_window']:
-                            cv2.imshow(window_title, image)
-                        
-                        if cv2.waitKey(1) & 0xFF == ord('q'):
-                            break
-                    except Exception as frame_error:
-                        print(f"⚠️  GPU frame processing error: {frame_error}")
-                        print("🔄 Attempting to fall back to CPU processing...")
-                        use_gpu = False
+                    if display_config['show_window']:
+                        cv2.imshow(window_title, image)
+                    
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
                         break
-            except Exception as gpu_loop_error:
-                print(f"⚠️  GPU processing loop failed: {gpu_loop_error}")
-                print("🔄 Falling back to CPU processing")
-                use_gpu = False
-        
-        if not use_gpu:
-            # CPU processing loop (fallback or primary)
-            if pose_context is None:
-                # Need to create CPU processor if we fell back from GPU
-                processor = CPUPoseProcessor(threaded_osc, show_fps=show_fps, config=config)
-                pose_context, backend_name, window_title = processor.setup_cpu_processor()
-                print(f"🚀 Fallback Backend: {backend_name}")
-            
-            with pose_context as pose:
+                        
+                except Exception as frame_error:
+                    print(f"⚠️  Tasks frame processing error: {frame_error}")
+                    continue
+        else:
+            # Legacy processing with context manager
+            with landmarker as pose:
                 while cap.isOpened():
                     ret, frame = cap.read()
                     if not ret:
@@ -169,8 +187,7 @@ def main():
                         if cv2.waitKey(1) & 0xFF == ord('q'):
                             break
                     except Exception as frame_error:
-                        print(f"⚠️  CPU frame processing error: {frame_error}")
-                        # Continue processing, just skip this frame
+                        print(f"⚠️  Legacy frame processing error: {frame_error}")
                         continue
     
     except KeyboardInterrupt:
