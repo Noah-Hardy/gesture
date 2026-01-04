@@ -6,10 +6,13 @@
   },
   "camera": {
     "device_id": 0,
-    "width": 640,
-    "height": 480,
+    "width": 1920,
+    "height": 1080,
     "fps": 30,
-    "buffer_size": 1
+    "buffer_size": 1,
+    "processing_width": 1920,
+    "processing_height": 1080,
+    "use_ndi": true
   },
   "mediapipe": {
     "model_complexity": 0,

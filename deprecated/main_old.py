@@ -68,7 +68,7 @@ mp_holistic = mp.solutions.holistic
 
 # Open a video capture stream
 # Change the camera index if needed (0 is usually the default camera)
-cap = cv2.VideoCapture(1)
+cap = cv2.VideoCapture(0)
 
 # Set camera properties for better performance
 cap.set(cv2.CAP_PROP_FPS, 30)

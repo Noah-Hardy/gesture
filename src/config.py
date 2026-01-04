@@ -1,15 +1,28 @@
+#!/usr/bin/env python3
 """
-Configuration management for MediaPipe OSC application.
-Supports JSON config files with environment variable overrides.
+Configuration Management Module
+Handles JSON config files with environment variable overrides
+Cross-platform compatible configuration system
 """
+
+# ============================================================================
+# IMPORTS
+# ============================================================================
 import json
 import os
-from typing import Dict, Any, Union
+from typing import Dict, Any
 
 
+# ============================================================================
+# CONFIGURATION CLASS
+# ============================================================================
 class Config:
-    """Configuration manager with file and environment variable support"""
+    """
+    Configuration manager with file and environment variable support
+    Provides centralized configuration for the application
+    """
     
+    # Default configuration values
     DEFAULT_CONFIG = {
         "osc": {
             "host": "192.168.1.28",
@@ -18,10 +31,14 @@ class Config:
         },
         "camera": {
             "device_id": 0,
-            "width": 640,
-            "height": 480,
+            "width": 1920,
+            "height": 1080,
             "fps": 30,
-            "buffer_size": 1
+            "buffer_size": 1,
+            "processing_width": 640,
+            "processing_height": 480,
+            "use_ndi": False,
+            "ndi_source": None
         },
         "mediapipe": {
             "model_complexity": 0,
@@ -49,19 +66,22 @@ class Config:
     }
     
     def __init__(self, config_file: str = "config.json"):
+        """Initialize configuration manager"""
         self.config_file = config_file
         self.config = self._load_config()
-        
-        # Apply platform-specific defaults
         self._apply_platform_defaults()
     
     def _apply_platform_defaults(self):
-        """Apply platform-specific default configurations"""
-        # Platform-specific defaults can be added here if needed
+        """Apply platform-specific default configurations (expandable for future use)"""
         pass
     
     def _load_config(self) -> Dict[str, Any]:
-        """Load configuration from file with fallback to defaults"""
+        """
+        Load configuration from file with fallback to defaults
+        
+        Returns:
+            Dict containing merged configuration (defaults + file + env)
+        """
         config = self.DEFAULT_CONFIG.copy()
         
         # Load from file if it exists
@@ -83,7 +103,16 @@ class Config:
         return config
     
     def _deep_merge(self, base: Dict, override: Dict) -> Dict:
-        """Deep merge two dictionaries"""
+        """
+        Recursively merge two dictionaries
+        
+        Args:
+            base: Base dictionary
+            override: Dictionary with override values
+            
+        Returns:
+            Merged dictionary
+        """
         result = base.copy()
         for key, value in override.items():
             if key in result and isinstance(result[key], dict) and isinstance(value, dict):
@@ -93,7 +122,14 @@ class Config:
         return result
     
     def _apply_env_overrides(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Apply environment variable overrides"""
+        """
+        Apply environment variable overrides to configuration
+        Supports type conversion based on original config value types
+        
+        Returns:
+            Configuration dict with environment overrides applied
+        """
+        # Environment variable to config path mappings
         env_mappings = {
             "MP_OSC_HOST": ("osc", "host"),
             "MP_OSC_PORT": ("osc", "port"),
@@ -130,17 +166,42 @@ class Config:
         
         return config
     
+    # ------------------------------------------------------------------------
+    # Public configuration access methods
+    # ------------------------------------------------------------------------
+    
     def get(self, section: str, key: str = None, default=None) -> Any:
-        """Get configuration value"""
+        """
+        Get configuration value
+        
+        Args:
+            section: Configuration section name
+            key: Optional key within section
+            default: Default value if not found
+            
+        Returns:
+            Configuration value or default
+        """
         if key is None:
             return self.config.get(section, default)
         return self.config.get(section, {}).get(key, default)
     
     def set(self, section: str, key: str, value: Any) -> None:
-        """Set configuration value"""
+        """
+        Set configuration value (runtime only, not persisted)
+        
+        Args:
+            section: Configuration section name
+            key: Key within section
+            value: Value to set
+        """
         if section not in self.config:
             self.config[section] = {}
         self.config[section][key] = value
+    
+    # ------------------------------------------------------------------------
+    # Configuration file operations
+    # ------------------------------------------------------------------------
     
     def save(self) -> None:
         """Save current configuration to file"""
@@ -166,7 +227,10 @@ class Config:
         print(json.dumps(self.config, indent=2))
 
 
-# Global config instance
+# ============================================================================
+# GLOBAL CONFIGURATION INSTANCE
+# ============================================================================
+# Singleton configuration instance for the application
 config = Config()
 
 

@@ -1,6 +1,13 @@
+#!/usr/bin/env python3
 """
-Pose processing module with Legacy and Tasks implementations.
+Pose Processing Module
+Implements both MediaPipe Tasks (modern) and Legacy pose detection
+Supports GPU acceleration and multi-pose tracking
 """
+
+# ============================================================================
+# IMPORTS
+# ============================================================================
 import os
 import time
 import json
@@ -13,23 +20,38 @@ from mediapipe.framework.formats import landmark_pb2
 from .pose_utils import get_pose_bounds_with_values, process_landmarks_to_dict
 from .model_downloader import download_pose_model
 
-# Detect Apple Silicon for GPU compatibility
+# Platform detection for GPU compatibility
 IS_APPLE_SILICON = platform.system() == "Darwin" and platform.machine() == "arm64"
 
 
+# ============================================================================
+# BASE POSE PROCESSOR CLASS
+# ============================================================================
 class PoseProcessor:
-    """Base class for pose processing"""
+    """Base class for pose processing with common functionality"""
     
     def __init__(self, osc_sender, show_fps=False, config=None):
+        """
+        Initialize pose processor
+        
+        Args:
+            osc_sender: ThreadedOSCSender instance for network communication
+            show_fps: Boolean to enable FPS display
+            config: Configuration object
+        """
         self.osc_sender = osc_sender
         self.show_fps = show_fps
         self.config = config
         self.fps_counter = 0
         self.fps_start_time = time.time() if show_fps else None
         self.results = None  # For Tasks async results
-        
+    
+    # ------------------------------------------------------------------------
+    # OSC data transmission methods
+    # ------------------------------------------------------------------------
+    
     def send_pose_data(self, pose_landmarks, pose_world_landmarks, timestamp):
-        """Send pose data via OSC"""
+        """Send pose data via OSC (single pose)"""
         if pose_landmarks:
             osc_payload = {
                 "timestamp": timestamp,
@@ -45,7 +67,7 @@ class PoseProcessor:
             self.osc_sender.send_message("/pose/world", json.dumps(world_payload))
     
     def send_bounds_data(self, landmarks, world_landmarks):
-        """Send bounds data via OSC"""
+        """Send bounding box data via OSC (single pose)"""
         if landmarks:
             bounds = get_pose_bounds_with_values(landmarks)
             self.osc_sender.send_message("/pose/raw_bounds", json.dumps(bounds))
@@ -55,7 +77,7 @@ class PoseProcessor:
             self.osc_sender.send_message("/pose/world_bounds", json.dumps(world_bounds))
     
     def send_empty_data(self, timestamp):
-        """Send empty data to clear cache on receiving machine"""
+        """Send empty data to clear stale data on receiving machine"""
         empty_payload = {
             "timestamp": timestamp,
             "landmarks": []
@@ -67,7 +89,7 @@ class PoseProcessor:
         self.osc_sender.send_message("/mp/status", json.dumps({"status": 0}))
     
     def send_multiple_pose_data(self, all_pose_landmarks, all_pose_world_landmarks, timestamp):
-        """Send multiple pose data via OSC"""
+        """Send data for multiple detected poses via OSC"""
         if all_pose_landmarks:
             multi_pose_payload = {
                 "timestamp": timestamp,
@@ -134,8 +156,12 @@ class PoseProcessor:
             }
             self.osc_sender.send_message("/pose/multi_world_bounds", json.dumps(multi_world_bounds_payload))
 
+    # ------------------------------------------------------------------------
+    # Performance monitoring
+    # ------------------------------------------------------------------------
+    
     def update_fps(self, backend_name):
-        """Update and display FPS if enabled"""
+        """Update and display FPS if enabled (every 30 frames)"""
         if self.show_fps:
             self.fps_counter += 1
             if self.fps_counter % 30 == 0:
@@ -145,10 +171,27 @@ class PoseProcessor:
                 self.fps_start_time = fps_end_time
 
 
+# ============================================================================
+# MEDIAPIPE TASKS PROCESSOR (Modern API with GPU support)
+# ============================================================================
 class TasksPoseProcessor(PoseProcessor):
-    """MediaPipe Tasks pose processor"""
+    """
+    MediaPipe Tasks pose processor
+    Supports GPU acceleration and multi-pose detection
+    Recommended for new projects
+    """
     
     def __init__(self, osc_sender, show_fps=False, config=None, force_cpu=False, is_apple_silicon=None):
+        """
+        Initialize Tasks processor
+        
+        Args:
+            osc_sender: ThreadedOSCSender instance
+            show_fps: Boolean to enable FPS display
+            config: Configuration object
+            force_cpu: Force CPU delegate even if GPU available
+            is_apple_silicon: Override Apple Silicon detection
+        """
         super().__init__(osc_sender, show_fps, config)
         self.force_cpu = force_cpu
         # Use passed value or detect automatically
@@ -156,14 +199,15 @@ class TasksPoseProcessor(PoseProcessor):
         self.use_gpu = False  # Will be set during setup
     
     def setup_processor(self):
-        """Setup MediaPipe Tasks processor"""
+        """Setup MediaPipe Tasks processor with GPU/CPU fallback"""
         try:
-            # Import MediaPipe Tasks
+            # Import MediaPipe Tasks API
             BaseOptions = mp.tasks.BaseOptions
             PoseLandmarker = mp.tasks.vision.PoseLandmarker
             PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
             VisionRunningMode = mp.tasks.vision.RunningMode
             
+            # Download model if needed
             model_path = download_pose_model()
             
             if not model_path or not os.path.exists(model_path):
@@ -173,7 +217,9 @@ class TasksPoseProcessor(PoseProcessor):
             # Get MediaPipe configuration
             mp_config = self.config.get('mediapipe') if self.config else {}
             
-            # Determine delegate strategy
+            # ------------------------------------------------------------------------
+            # Determine GPU/CPU delegate strategy
+            # ------------------------------------------------------------------------
             if self.force_cpu:
                 print("🔧 Forced CPU delegate via command line")
                 use_gpu_delegate = False
@@ -185,7 +231,9 @@ class TasksPoseProcessor(PoseProcessor):
             landmarker = None
             backend_name = None
             
+            # ------------------------------------------------------------------------
             # Try GPU delegate first (unless forced to CPU)
+            # ------------------------------------------------------------------------
             if use_gpu_delegate:
                 print("🎯 Attempting GPU delegate...")
                 try:
@@ -215,7 +263,9 @@ class TasksPoseProcessor(PoseProcessor):
                     print(f"⚠️  GPU delegate failed during initialization: {gpu_error}")
                     landmarker = None
             
+            # ------------------------------------------------------------------------
             # Fallback to CPU delegate if GPU failed or was not attempted
+            # ------------------------------------------------------------------------
             if landmarker is None:
                 print("🔄 Using CPU delegate...")
                 try:
@@ -254,17 +304,43 @@ class TasksPoseProcessor(PoseProcessor):
             return None, None, None, False
     
     def _result_callback(self, result, output_image, timestamp_ms):
-        """Callback for async pose detection results"""
+        """
+        Callback for async pose detection results from MediaPipe Tasks
+        Called automatically when processing completes
+        """
         self.results = result
     
     def process_frame(self, frame, landmarker, backend_name, timestamp_counter):
-        """Process a single frame with MediaPipe Tasks"""
+        """
+        Process a single frame with MediaPipe Tasks
+        Handles frame resizing, color conversion, and Apple Silicon compatibility
+        
+        Args:
+            frame: Input frame from camera/NDI
+            landmarker: MediaPipe PoseLandmarker instance
+            backend_name: Backend name for FPS display
+            timestamp_counter: Frame counter for async processing
+            
+        Returns:
+            Annotated frame with landmarks drawn
+        """
         try:
             if frame is None or frame.size == 0:
                 return frame
             
+            # Resize frame for processing if needed (virtual cameras may ignore resolution settings)
+            camera_config = self.config.get('camera') if self.config else {}
+            proc_width = camera_config.get('processing_width', 640)
+            proc_height = camera_config.get('processing_height', 480)
+            
+            h, w = frame.shape[:2]
+            if w != proc_width or h != proc_height:
+                process_frame = cv2.resize(frame, (proc_width, proc_height), interpolation=cv2.INTER_LINEAR)
+            else:
+                process_frame = frame
+            
             # Convert to RGB for MediaPipe
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            rgb_frame = cv2.cvtColor(process_frame, cv2.COLOR_BGR2RGB)
             
             # On Apple Silicon with GPU, use SRGBA format (4 channels) for Metal compatibility
             # The Metal GPU buffer doesn't support SRGB (3 channels), only SRGBA
@@ -279,8 +355,8 @@ class TasksPoseProcessor(PoseProcessor):
             # Process with MediaPipe Tasks (async)
             landmarker.detect_async(mp_image, timestamp_counter)
             
-            # Convert back to BGR for display
-            image = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+            # Use original frame for display (higher quality), resized frame was just for processing
+            image = frame.copy()
             timestamp = time.time()
             
             # Process results if available
@@ -330,7 +406,14 @@ class TasksPoseProcessor(PoseProcessor):
             return frame
     
     def _draw_landmarks(self, image, landmarks):
-        """Draw landmarks on image"""
+        """
+        Draw pose landmarks on image
+        Uses configuration for colors and styling
+        
+        Args:
+            image: Image to draw on
+            landmarks: Landmark list to draw
+        """
         # Get display configuration
         display_config = self.config.get('display') if self.config else {}
         landmark_color = tuple(display_config.get('landmark_color', [245, 117, 66]))
@@ -364,11 +447,24 @@ class TasksPoseProcessor(PoseProcessor):
         )
 
 
+# ============================================================================
+# LEGACY MEDIAPIPE PROCESSOR (Older API, CPU only, single pose)
+# ============================================================================
 class LegacyPoseProcessor(PoseProcessor):
-    """Legacy MediaPipe pose processor"""
+    """
+    Legacy MediaPipe pose processor
+    Uses older API, CPU only, single pose detection
+    Fallback when Tasks API is not available
+    """
     
     def setup_processor(self):
-        """Setup Legacy MediaPipe processor"""
+        """
+        Setup Legacy MediaPipe processor
+        Only supports single pose detection
+        
+        Returns:
+            Tuple of (pose_context, backend_name, window_title)
+        """
         # Get MediaPipe configuration
         mp_config = self.config.get('mediapipe') if self.config else {}
         
@@ -393,7 +489,18 @@ class LegacyPoseProcessor(PoseProcessor):
         return pose_context, backend_name, window_title
     
     def process_frame(self, frame, pose_context, backend_name):
-        """Process a single frame with Legacy MediaPipe"""
+        """
+        Process a single frame with Legacy MediaPipe
+        Simpler processing for single pose only
+        
+        Args:
+            frame: Input frame from camera/NDI
+            pose_context: MediaPipe Pose context manager
+            backend_name: Backend name for FPS display
+            
+        Returns:
+            Annotated frame with landmarks drawn
+        """
         try:
             # Convert to RGB
             image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -442,7 +549,14 @@ class LegacyPoseProcessor(PoseProcessor):
             return frame
     
     def _draw_landmarks(self, image, pose_landmarks):
-        """Draw landmarks on image"""
+        """
+        Draw pose landmarks on image
+        Uses configuration for colors and styling
+        
+        Args:
+            image: Image to draw on
+            pose_landmarks: MediaPipe pose landmarks object
+        """
         # Get display configuration
         display_config = self.config.get('display') if self.config else {}
         landmark_color = tuple(display_config.get('landmark_color', [245, 117, 66]))
@@ -469,6 +583,9 @@ class LegacyPoseProcessor(PoseProcessor):
         )
 
 
-# Legacy aliases for backward compatibility
+# ============================================================================
+# BACKWARD COMPATIBILITY ALIASES
+# ============================================================================
+# Legacy aliases for older code
 GPUPoseProcessor = TasksPoseProcessor
 CPUPoseProcessor = LegacyPoseProcessor
