@@ -47,7 +47,52 @@ uv pip install opencv-python mediapipe python-osc
 uv venv
 source .venv/bin/activate
 uv pip install opencv-python mediapipe python-osc
-uv run python server.py
+uv run python main.py pose
+```
+
+### Command Line Options
+
+The application requires a tracking mode as the first argument:
+- `pose` - Track body pose landmarks
+- `hand` - Track hand landmarks  
+- `all` - Track both pose and hand landmarks simultaneously
+
+```sh
+# Show help
+python main.py --help
+
+# Pose tracking only
+python main.py pose
+
+# Hand tracking only
+python main.py hand
+
+# Both pose and hand tracking
+python main.py all
+
+# Show FPS counter
+python main.py pose --fps
+
+# Use specific camera device
+python main.py hand --camera 1
+
+# Use NDI input
+python main.py all --ndi --ndi-source "My NDI Source"
+
+# Force CPU processing (useful for stability)
+python main.py pose --force-cpu
+
+# Force GPU processing (warning: memory leak on Apple Silicon)
+python main.py hand --force-gpu
+
+# Use legacy MediaPipe API
+python main.py pose --force-legacy
+
+# Override OSC target
+python main.py all --host 192.168.1.100 --port 9000
+
+# Combine options
+python main.py all --fps --force-cpu
 ```
 
 4. View the output:
@@ -131,6 +176,55 @@ Pose, right hand, and left hand landmarks are each sent as their own JSON bundle
   "min_y": {"id": 0, "x": 0.4, "y": 0.05, "z": -0.4, "visibility": 0.96},
   "max_z": {"id": 12, "x": 0.6, "y": 0.4, "z": 0.2, "visibility": 0.97},
   "min_z": {"id": 5, "x": 0.3, "y": 0.7, "z": -0.5, "visibility": 0.95}
+}
+```
+
+### Hand Tracking Mode OSC Messages
+
+When using `--hand` mode, the following OSC channels are used:
+
+#### OSC Channels (Hand Mode)
+
+- `/hand/0/raw` (JSON String): Individual hand #0 landmarks with handedness
+- `/hand/1/raw` (JSON String): Individual hand #1 landmarks with handedness
+- `/hand/0/bounds` (JSON String): Bounds for hand #0
+- `/hand/1/bounds` (JSON String): Bounds for hand #1
+- `/hand/multi_raw` (JSON String): All hands combined
+- `/hand/multi_bounds` (JSON String): All hand bounds combined
+- `/hand/status` (JSON String): Number of hands detected
+
+#### Example Hand Payload
+
+**Single Hand** (`/hand/0/raw`):
+```json
+{
+  "timestamp": 1720000000.123,
+  "hand_index": 0,
+  "handedness": "Left",
+  "landmarks": [
+    {
+      "type": "hand_0",
+      "id": 0,
+      "x": 0.52,
+      "y": 0.48,
+      "z": -0.12,
+      "visibility": null
+    }
+    // ... 21 hand landmarks total ...
+  ]
+}
+```
+
+**Multiple Hands** (`/hand/multi_raw`):
+```json
+{
+  "timestamp": 1720000000.123,
+  "hands": [
+    [/* hand 0 landmarks */],
+    [/* hand 1 landmarks */]
+  ],
+  "handedness": ["Left", "Right"],
+  "count": 2
 }
 ```
 

@@ -122,7 +122,7 @@ class NDICapture:
         # Get initial frame to determine resolution
         print("⏳ Waiting for first frame...")
         for _ in range(100):  # Try for up to 10 seconds
-            frame_type, video, _, _ = ndi.recv_capture_v2(self.receiver, 100)
+            frame_type, video, audio, metadata = ndi.recv_capture_v2(self.receiver, 100)
             if frame_type == ndi.FRAME_TYPE_VIDEO:
                 self._frame_width = video.xres
                 self._frame_height = video.yres
@@ -130,6 +130,10 @@ class NDICapture:
                 ndi.recv_free_video_v2(self.receiver, video)
                 print(f"📐 Resolution: {self._frame_width}x{self._frame_height} @ {self._fps:.1f}fps")
                 break
+            elif frame_type == ndi.FRAME_TYPE_AUDIO:
+                ndi.recv_free_audio_v2(self.receiver, audio)
+            elif frame_type == ndi.FRAME_TYPE_METADATA:
+                ndi.recv_free_metadata(self.receiver, metadata)
         else:
             print("⚠️  Could not determine resolution from first frame")
     
@@ -154,7 +158,7 @@ class NDICapture:
         
         # Try multiple times with shorter timeout for better responsiveness
         for _ in range(10):  # Try up to 10 times with 500ms each = 5s total
-            frame_type, video, _, _ = ndi.recv_capture_v2(self.receiver, 500)
+            frame_type, video, audio, metadata = ndi.recv_capture_v2(self.receiver, 500)
             
             if frame_type == ndi.FRAME_TYPE_VIDEO:
                 # Convert to numpy array
@@ -164,7 +168,7 @@ class NDICapture:
                 self._frame_width = video.xres
                 self._frame_height = video.yres
                 
-                # Free the NDI frame
+                # Free the NDI frame - CRITICAL to prevent memory leak
                 ndi.recv_free_video_v2(self.receiver, video)
                 
                 # NDI gives us BGRX (4 channels), convert to BGR (3 channels) for OpenCV
@@ -172,6 +176,16 @@ class NDICapture:
                     frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
                 
                 return True, frame
+            
+            elif frame_type == ndi.FRAME_TYPE_AUDIO:
+                # Free audio frames to prevent memory leak
+                ndi.recv_free_audio_v2(self.receiver, audio)
+                continue
+            
+            elif frame_type == ndi.FRAME_TYPE_METADATA:
+                # Free metadata frames to prevent memory leak
+                ndi.recv_free_metadata(self.receiver, metadata)
+                continue
             
             elif frame_type == ndi.FRAME_TYPE_NONE:
                 # No frame yet, keep trying

@@ -9,13 +9,18 @@ Main package initialization and exports
 # ============================================================================
 from .osc_sender import ThreadedOSCSender
 from .pose_utils import get_pose_bounds_with_values, landmark_dict, process_landmarks_to_dict
-from .model_downloader import download_pose_model
+from .model_downloader import download_pose_model, download_hand_model
 from .pose_processor import (
     PoseProcessor, 
     TasksPoseProcessor, 
     LegacyPoseProcessor, 
     GPUPoseProcessor, 
     CPUPoseProcessor
+)
+from .hand_processor import (
+    HandProcessor,
+    TasksHandProcessor,
+    LegacyHandProcessor
 )
 from .config import Config, get_config
 from .ndi_capture import NDICapture, list_ndi_sources, NDI_AVAILABLE
@@ -35,6 +40,7 @@ __all__ = [
     
     # Model Management
     'download_pose_model',
+    'download_hand_model',
     
     # Pose Processors
     'PoseProcessor',
@@ -42,6 +48,11 @@ __all__ = [
     'LegacyPoseProcessor',
     'GPUPoseProcessor',
     'CPUPoseProcessor',
+    
+    # Hand Processors
+    'HandProcessor',
+    'TasksHandProcessor',
+    'LegacyHandProcessor',
     
     # Configuration
     'Config',

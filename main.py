@@ -15,6 +15,7 @@ from pythonosc import udp_client
 
 # Import modular components
 from src import ThreadedOSCSender, TasksPoseProcessor, LegacyPoseProcessor, get_config
+from src import TasksHandProcessor, LegacyHandProcessor
 from src import NDICapture, list_ndi_sources, NDI_AVAILABLE
 
 
@@ -36,10 +37,12 @@ parser.add_argument('--host', help='OSC host address (overrides config)')
 parser.add_argument('--port', type=int, help='OSC port (overrides config)')
 parser.add_argument('--camera', type=int, help='Camera device ID (overrides config)')
 parser.add_argument('--force-cpu', action='store_true', help='Force CPU delegate (skip GPU)')
+parser.add_argument('--force-gpu', action='store_true', help='Force GPU delegate (WARNING: has memory leak on Apple Silicon)')
 parser.add_argument('--force-legacy', action='store_true', help='Force Legacy MediaPipe (skip Tasks API)')
 parser.add_argument('--ndi', action='store_true', help='Use NDI input instead of camera')
 parser.add_argument('--ndi-source', type=str, help='NDI source name to connect to')
 parser.add_argument('--list-ndi', action='store_true', help='List available NDI sources and exit')
+parser.add_argument('mode', choices=['pose', 'hand', 'all'], help='Tracking mode: pose, hand, or all (both)')
 args = parser.parse_args()
 
 
@@ -188,6 +191,50 @@ def setup_camera(config, use_ndi=False, ndi_source=None):
 
 
 # ============================================================================
+# LEGACY PROCESSING LOOP HELPER
+# ============================================================================
+def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx, 
+                 display_config, window_title, max_consecutive_failures, show_fps, tracking_mode):
+    """
+    Helper function to run the legacy processing loop
+    Handles both single and combined processor modes
+    """
+    consecutive_failures = 0
+    
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            consecutive_failures += 1
+            if consecutive_failures >= max_consecutive_failures:
+                print(f"❌ Too many consecutive frame failures ({consecutive_failures})")
+                break
+            continue
+        
+        consecutive_failures = 0
+        
+        try:
+            image = frame.copy()
+            
+            # Process pose if enabled
+            if pose_processor and pose_ctx:
+                image = pose_processor.process_frame(image, pose_ctx, "Pose")
+            
+            # Process hand if enabled
+            if hand_processor and hand_ctx:
+                image = hand_processor.process_frame(image, hand_ctx, "Hand")
+            
+            if display_config['show_window']:
+                cv2.imshow(window_title, image)
+            
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+                
+        except Exception as frame_error:
+            print(f"⚠️  Legacy frame processing error: {frame_error}")
+            continue
+
+
+# ============================================================================
 # MAIN APPLICATION FUNCTION
 # ============================================================================
 def main():
@@ -215,55 +262,129 @@ def main():
     cap = setup_camera(config, use_ndi=args.ndi, ndi_source=args.ndi_source)
     
     # ------------------------------------------------------------------------
-    # Initialize pose processor (Tasks API with GPU/CPU fallback)
+    # Initialize processor(s) based on mode (pose/hand/all)
     # ------------------------------------------------------------------------
     show_fps = performance_config['show_fps']
-    
-    # Try MediaPipe Tasks first (preferred), fallback to Legacy
-    processor = None
-    landmarker = None
-    backend_name = None
-    window_title = None
-    is_tasks = False
-    timestamp_counter = 0
+    tracking_mode = args.mode
     
     # Determine processing strategy
     use_tasks = not args.force_legacy
     force_cpu = args.force_cpu
+    force_gpu = args.force_gpu
+    timestamp_counter = 0
     
-    # Try Tasks processor first (unless forced to legacy)
-    if use_tasks:
-        try:
-            processor = TasksPoseProcessor(
-                threaded_osc, 
-                show_fps=show_fps, 
-                config=config,
-                force_cpu=force_cpu,
-                is_apple_silicon=IS_APPLE_SILICON
-            )
-            landmarker, backend_name, window_title, success = processor.setup_processor()
-            if success:
-                is_tasks = True
-                print("✅ Using MediaPipe Tasks")
-            else:
-                processor = None
-        except Exception as e:
-            print(f"⚠️  Tasks processor failed: {e}")
-            processor = None
+    # Processor containers
+    pose_processor = None
+    pose_landmarker = None
+    pose_is_tasks = False
+    
+    hand_processor = None
+    hand_landmarker = None
+    hand_is_tasks = False
+    
+    backend_names = []
+    window_title = "MediaPipe OSC Detection"
     
     # ------------------------------------------------------------------------
-    # Fallback to Legacy processor if Tasks failed or was skipped
+    # Setup Pose Processor (if mode is 'pose' or 'all')
     # ------------------------------------------------------------------------
-    if processor is None:
-        try:
-            processor = LegacyPoseProcessor(threaded_osc, show_fps=show_fps, config=config)
-            landmarker, backend_name, window_title = processor.setup_processor()
-            is_tasks = False
-            print("✅ Using Legacy MediaPipe")
-        except Exception as e:
-            print(f"❌ Legacy processor setup failed: {e}")
-            print("🛑 Cannot initialize any processing backend")
-            return
+    if tracking_mode in ['pose', 'all']:
+        print("🏃 Initializing pose tracking...")
+        if use_tasks:
+            try:
+                pose_processor = TasksPoseProcessor(
+                    threaded_osc, 
+                    show_fps=show_fps,  # Enable FPS for pose in all modes
+                    config=config,
+                    force_cpu=force_cpu,
+                    force_gpu=force_gpu,
+                    is_apple_silicon=IS_APPLE_SILICON
+                )
+                pose_landmarker, pose_backend, _, success = pose_processor.setup_processor()
+                if success:
+                    pose_is_tasks = True
+                    backend_names.append(pose_backend)
+                    print("✅ Using MediaPipe Tasks (Pose)")
+                else:
+                    pose_processor = None
+            except Exception as e:
+                print(f"⚠️  Tasks pose processor failed: {e}")
+                pose_processor = None
+        
+        if pose_processor is None:
+            try:
+                pose_processor = LegacyPoseProcessor(
+                    threaded_osc, 
+                    show_fps=show_fps,  # Enable FPS for pose in all modes
+                    config=config
+                )
+                pose_landmarker, pose_backend, _ = pose_processor.setup_processor()
+                pose_is_tasks = False
+                backend_names.append(pose_backend)
+                print("✅ Using Legacy MediaPipe (Pose)")
+            except Exception as e:
+                print(f"❌ Legacy pose processor setup failed: {e}")
+                if tracking_mode == 'pose':
+                    print("🛑 Cannot initialize pose processing backend")
+                    return
+    
+    # ------------------------------------------------------------------------
+    # Setup Hand Processor (if mode is 'hand' or 'all')
+    # ------------------------------------------------------------------------
+    if tracking_mode in ['hand', 'all']:
+        print("✋ Initializing hand tracking...")
+        # Only enable FPS on hand if pose is not running (to avoid duplicate output)
+        hand_show_fps = show_fps if tracking_mode == 'hand' else False
+        if use_tasks:
+            try:
+                hand_processor = TasksHandProcessor(
+                    threaded_osc, 
+                    show_fps=hand_show_fps,
+                    config=config,
+                    force_cpu=force_cpu,
+                    force_gpu=force_gpu,
+                    is_apple_silicon=IS_APPLE_SILICON
+                )
+                hand_landmarker, hand_backend, _, success = hand_processor.setup_processor()
+                if success:
+                    hand_is_tasks = True
+                    backend_names.append(hand_backend)
+                    print("✅ Using MediaPipe Tasks (Hand)")
+                else:
+                    hand_processor = None
+            except Exception as e:
+                print(f"⚠️  Tasks hand processor failed: {e}")
+                hand_processor = None
+        
+        if hand_processor is None:
+            try:
+                hand_processor = LegacyHandProcessor(
+                    threaded_osc, 
+                    show_fps=show_fps if tracking_mode == 'hand' else False,
+                    config=config
+                )
+                hand_landmarker, hand_backend, _ = hand_processor.setup_processor()
+                hand_is_tasks = False
+                backend_names.append(hand_backend)
+                print("✅ Using Legacy MediaPipe (Hand)")
+            except Exception as e:
+                print(f"❌ Legacy hand processor setup failed: {e}")
+                if tracking_mode == 'hand':
+                    print("🛑 Cannot initialize hand processing backend")
+                    return
+    
+    # Verify at least one processor initialized for 'all' mode
+    if tracking_mode == 'all' and pose_processor is None and hand_processor is None:
+        print("🛑 Cannot initialize any processing backend")
+        return
+    
+    # Set window title based on mode
+    if tracking_mode == 'pose':
+        window_title = "MediaPipe Pose Detection"
+    elif tracking_mode == 'hand':
+        window_title = "MediaPipe Hand Detection"
+    else:
+        window_title = "MediaPipe Pose + Hand Detection"
     
     # ------------------------------------------------------------------------
     # Configure display window
@@ -271,7 +392,9 @@ def main():
     if display_config.get('window_title'):
         window_title = display_config['window_title']
     
-    print(f"🚀 Backend: {backend_name}")
+    backend_str = " + ".join(backend_names) if backend_names else "None"
+    print(f"🚀 Mode: {tracking_mode.upper()}")
+    print(f"🚀 Backend(s): {backend_str}")
     print(f"🖼️  Window: {window_title}")
     
     # ========================================================================
@@ -283,7 +406,11 @@ def main():
         is_ndi = hasattr(cap, 'getBackendName') and cap.getBackendName() == "NDI"
         max_consecutive_failures = 100 if is_ndi else 30  # NDI: ~5s, Camera: ~1s
         
-        if is_tasks:
+        # Determine if we're using Tasks API (all processors must use same mode for simplicity)
+        # For 'all' mode, we process both sequentially on same frame
+        use_tasks_loop = (pose_is_tasks if pose_processor else False) or (hand_is_tasks if hand_processor else False)
+        
+        if use_tasks_loop:
             # Tasks processing with async callback
             while cap.isOpened():
                 ret, frame = cap.read()
@@ -292,13 +419,21 @@ def main():
                     if consecutive_failures >= max_consecutive_failures:
                         print(f"❌ Too many consecutive frame failures ({consecutive_failures})")
                         break
-                    continue  # Skip this frame, try again
+                    continue
                 
-                consecutive_failures = 0  # Reset on successful read
+                consecutive_failures = 0
                 
                 try:
                     timestamp_counter += 1
-                    image = processor.process_frame(frame, landmarker, backend_name, timestamp_counter)
+                    image = frame.copy()
+                    
+                    # Process pose if enabled
+                    if pose_processor and pose_is_tasks:
+                        image = pose_processor.process_frame(image, pose_landmarker, "Pose", timestamp_counter)
+                    
+                    # Process hand if enabled
+                    if hand_processor and hand_is_tasks:
+                        image = hand_processor.process_frame(image, hand_landmarker, "Hand", timestamp_counter)
                     
                     if display_config['show_window']:
                         cv2.imshow(window_title, image)
@@ -311,29 +446,23 @@ def main():
                     continue
         else:
             # Legacy processing with context manager
-            with landmarker as pose:
-                while cap.isOpened():
-                    ret, frame = cap.read()
-                    if not ret:
-                        consecutive_failures += 1
-                        if consecutive_failures >= max_consecutive_failures:
-                            print(f"❌ Too many consecutive frame failures ({consecutive_failures})")
-                            break
-                        continue  # Skip this frame, try again
-                    
-                    consecutive_failures = 0  # Reset on successful read
-                    
-                    try:
-                        image = processor.process_frame(frame, pose, backend_name)
-                        
-                        if display_config['show_window']:
-                            cv2.imshow(window_title, image)
-                        
-                        if cv2.waitKey(1) & 0xFF == ord('q'):
-                            break
-                    except Exception as frame_error:
-                        print(f"⚠️  Legacy frame processing error: {frame_error}")
-                        continue
+            # Create context managers for active processors
+            pose_ctx = pose_landmarker if pose_processor and not pose_is_tasks else None
+            hand_ctx = hand_landmarker if hand_processor and not hand_is_tasks else None
+            
+            # Handle legacy context managers
+            if pose_ctx and hand_ctx:
+                with pose_ctx as pose, hand_ctx as hand:
+                    _legacy_loop(cap, pose_processor, pose, hand_processor, hand, 
+                                display_config, window_title, max_consecutive_failures, show_fps, tracking_mode)
+            elif pose_ctx:
+                with pose_ctx as pose:
+                    _legacy_loop(cap, pose_processor, pose, None, None,
+                                display_config, window_title, max_consecutive_failures, show_fps, tracking_mode)
+            elif hand_ctx:
+                with hand_ctx as hand:
+                    _legacy_loop(cap, None, None, hand_processor, hand,
+                                display_config, window_title, max_consecutive_failures, show_fps, tracking_mode)
     
     except KeyboardInterrupt:
         print("\n🛑 Interrupted by user")

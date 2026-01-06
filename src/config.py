@@ -31,8 +31,8 @@ class Config:
         },
         "camera": {
             "device_id": 0,
-            "width": 1920,
-            "height": 1080,
+            "width": 640,
+            "height": 480,
             "fps": 30,
             "buffer_size": 1,
             "processing_width": 640,
@@ -48,6 +48,17 @@ class Config:
             "smooth_landmarks": True,
             "enable_segmentation": False,
             "num_poses": 1  # Note: Only supported in GPU mode (MediaPipe Tasks), CPU mode limited to 1
+        },
+        "hand": {
+            "num_hands": 2,
+            "model_complexity": 0,
+            "min_detection_confidence": 0.5,
+            "min_presence_confidence": 0.5,
+            "min_tracking_confidence": 0.5,
+            "left_landmark_color": [0, 255, 0],      # Green for left hand
+            "left_connection_color": [0, 200, 0],
+            "right_landmark_color": [255, 0, 0],    # Red for right hand (BGR)
+            "right_connection_color": [200, 0, 0]
         },
         "performance": {
             "prefer_gpu": True,

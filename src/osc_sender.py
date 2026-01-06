@@ -31,6 +31,8 @@ class ThreadedOSCSender:
         self.client = client
         self.message_queue = queue.Queue(maxsize=queue_size)
         self.running = True
+        self.dropped_count = 0
+        self.sent_count = 0
         
         # Start background thread (daemon=True means it won't prevent program exit)
         self.thread = threading.Thread(target=self._send_messages, daemon=True)
@@ -46,13 +48,17 @@ class ThreadedOSCSender:
                 # Get message with timeout to periodically check if still running
                 address, message = self.message_queue.get(timeout=0.1)
                 self.client.send_message(address, message)
+                self.sent_count += 1
                 self.message_queue.task_done()
+                # Explicitly delete message reference to free memory
+                del message
             except queue.Empty:
                 # No message available, continue waiting
                 continue
             except Exception as e:
                 # Log error but continue processing
                 print(f"OSC send error: {e}")
+                self.dropped_count += 1
     
     def send_message(self, address, message):
         """
@@ -66,8 +72,18 @@ class ThreadedOSCSender:
             # Non-blocking put - if queue is full, skip message to maintain performance
             self.message_queue.put_nowait((address, message))
         except queue.Full:
-            # Drop message if queue is full to prevent blocking
-            pass
+            # Drop message if queue is full to prevent blocking and memory buildup
+            self.dropped_count += 1
+            # Explicitly delete the message that wasn't queued
+            del message
+    
+    def get_stats(self):
+        """Get sender statistics"""
+        return {
+            'sent': self.sent_count,
+            'dropped': self.dropped_count,
+            'queued': self.message_queue.qsize()
+        }
     
     def stop(self):
         """
