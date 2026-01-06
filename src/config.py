@@ -47,11 +47,12 @@ class Config:
             "min_pose_presence_confidence": 0.5,
             "smooth_landmarks": True,
             "enable_segmentation": False,
-            "num_poses": 1  # Note: Only supported in GPU mode (MediaPipe Tasks), CPU mode limited to 1
+            "num_poses": 1,  # Note: Only supported in GPU mode (MediaPipe Tasks), CPU mode limited to 1
+            "pose_model_type": "lite"  # lite, full, or heavy
         },
         "hand": {
             "num_hands": 2,
-            "model_complexity": 0,
+            "model_complexity": 1,
             "min_detection_confidence": 0.5,
             "min_presence_confidence": 0.5,
             "min_tracking_confidence": 0.5,

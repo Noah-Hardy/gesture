@@ -235,15 +235,18 @@ class TasksPoseProcessor(PoseProcessor):
             PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
             VisionRunningMode = mp.tasks.vision.RunningMode
             
+            # Get MediaPipe configuration
+            mp_config = self.config.get('mediapipe') if self.config else {}
+            
+            # Get pose model type from config
+            pose_model_type = mp_config.get('pose_model_type', 'lite')
+            
             # Download model if needed
-            model_path = download_pose_model()
+            model_path = download_pose_model(pose_model_type)
             
             if not model_path or not os.path.exists(model_path):
                 print("❌ Model file not available")
                 return None, None, None, False
-            
-            # Get MediaPipe configuration
-            mp_config = self.config.get('mediapipe') if self.config else {}
             
             # ------------------------------------------------------------------------
             # Determine GPU/CPU delegate strategy

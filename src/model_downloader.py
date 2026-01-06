@@ -18,7 +18,11 @@ import urllib.request
 TASKS_DIR = os.path.join(os.path.dirname(__file__), "tasks")
 
 # Model URLs
-POSE_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
+POSE_MODEL_URLS = {
+    "lite": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+    "full": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
+    "heavy": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task"
+}
 HAND_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
 
 
@@ -38,30 +42,39 @@ def get_model_path(model_name):
     return os.path.join(TASKS_DIR, model_name)
 
 
-def download_pose_model():
+def download_pose_model(model_type="lite"):
     """
     Download the official MediaPipe pose landmarker model if not present
-    Uses lightweight model optimized for real-time performance
+    
+    Args:
+        model_type: Type of model to use - "lite", "full", or "heavy" (default: "lite")
     
     Returns:
         str: Path to the model file, or None if download fails
     """
-    model_path = get_model_path("pose_landmarker_lite.task")
+    # Validate model type
+    if model_type not in POSE_MODEL_URLS:
+        print(f"⚠️  Invalid model type '{model_type}', defaulting to 'lite'")
+        model_type = "lite"
+    
+    model_filename = f"pose_landmarker_{model_type}.task"
+    model_path = get_model_path(model_filename)
+    model_url = POSE_MODEL_URLS[model_type]
     
     # Ensure tasks directory exists
     os.makedirs(TASKS_DIR, exist_ok=True)
     
     # Check if model already exists
     if not os.path.exists(model_path):
-        print(f"📥 Downloading pose model from Google...")
+        print(f"📥 Downloading pose model ({model_type}) from Google...")
         try:
-            urllib.request.urlretrieve(POSE_MODEL_URL, model_path)
+            urllib.request.urlretrieve(model_url, model_path)
             print(f"✅ Downloaded model to {model_path}")
         except Exception as e:
             print(f"❌ Failed to download model: {e}")
             return None
     else:
-        print(f"📁 Using existing model: {model_path}")
+        print(f"📁 Using existing {model_type} model: {model_path}")
     
     return model_path
 

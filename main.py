@@ -42,6 +42,7 @@ parser.add_argument('--force-legacy', action='store_true', help='Force Legacy Me
 parser.add_argument('--ndi', action='store_true', help='Use NDI input instead of camera')
 parser.add_argument('--ndi-source', type=str, help='NDI source name to connect to')
 parser.add_argument('--list-ndi', action='store_true', help='List available NDI sources and exit')
+parser.add_argument('--pose-model', choices=['lite', 'full', 'heavy'], default='lite', help='Pose model type: lite (fastest), full (balanced), or heavy (most accurate) (default: lite)')
 parser.add_argument('mode', choices=['pose', 'hand', 'all'], help='Tracking mode: pose, hand, or all (both)')
 args = parser.parse_args()
 
@@ -63,6 +64,8 @@ if args.port:
     config.set('osc', 'port', args.port)
 if args.camera:
     config.set('camera', 'device_id', args.camera)
+if args.pose_model:
+    config.set('mediapipe', 'pose_model_type', args.pose_model)
 
 
 # ============================================================================

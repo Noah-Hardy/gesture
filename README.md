@@ -70,6 +70,12 @@ python main.py hand
 # Both pose and hand tracking
 python main.py all
 
+# Use full pose model (more accurate, slower)
+python main.py pose --pose-model full
+
+# Use heavy pose model (most accurate, slowest)
+python main.py pose --pose-model heavy
+
 # Show FPS counter
 python main.py pose --fps
 
