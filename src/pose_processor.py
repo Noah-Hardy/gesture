@@ -453,12 +453,17 @@ class TasksPoseProcessor(PoseProcessor):
                             pose_world_landmarks = process_landmarks_to_dict(pose_world_landmark, f"pose_world_{i}")
                             all_pose_world_landmarks.append(pose_world_landmarks)
                     
-                    # Send data for all poses
-                    self.send_multiple_pose_data(all_pose_landmarks, all_pose_world_landmarks, timestamp)
-                    self.send_multiple_bounds_data(
-                        self.results.pose_landmarks,
-                        self.results.pose_world_landmarks if all_pose_world_landmarks else None
-                    )
+                    # Send data for each pose individually
+                    for i in range(len(all_pose_landmarks)):
+                        pose_landmarks = all_pose_landmarks[i]
+                        pose_world_landmarks = all_pose_world_landmarks[i] if i < len(all_pose_world_landmarks) else None
+                        self.send_pose_data(pose_landmarks, pose_world_landmarks, timestamp)
+                        
+                        # Send bounds for this pose
+                        self.send_bounds_data(
+                            self.results.pose_landmarks[i],
+                            self.results.pose_world_landmarks[i] if pose_world_landmarks else None
+                        )
                     
                     self.osc_sender.send_message("/mp/status", compact_json({"status": len(self.results.pose_landmarks)}))
                     
