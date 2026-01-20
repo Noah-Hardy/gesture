@@ -63,7 +63,10 @@ class Config:
         },
         "performance": {
             "prefer_gpu": True,
-            "show_fps": False
+            "show_fps": False,
+            "target_fps": 0,  # 0 = uncapped, set to 30 for stable 30fps cap
+            "gc_enabled": True,  # Enable/disable garbage collection (disable for smoother FPS)
+            "gc_interval": 60  # Garbage collection interval in frames (higher = smoother but more memory)
         },
         "display": {
             "show_window": True,

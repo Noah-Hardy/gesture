@@ -43,6 +43,7 @@ parser.add_argument('--ndi', action='store_true', help='Use NDI input instead of
 parser.add_argument('--ndi-source', type=str, help='NDI source name to connect to')
 parser.add_argument('--list-ndi', action='store_true', help='List available NDI sources and exit')
 parser.add_argument('--pose-model', choices=['lite', 'full', 'heavy'], default='lite', help='Pose model type: lite (fastest), full (balanced), or heavy (most accurate) (default: lite)')
+parser.add_argument('--fps-cap', type=int, help='Cap frame rate for stability (e.g., 30). If not set, runs uncapped.')
 parser.add_argument('mode', choices=['pose', 'hand', 'all'], help='Tracking mode: pose, hand, or all (both)')
 args = parser.parse_args()
 
@@ -66,6 +67,8 @@ if args.camera:
     config.set('camera', 'device_id', args.camera)
 if args.pose_model:
     config.set('mediapipe', 'pose_model_type', args.pose_model)
+if args.fps_cap:
+    config.set('performance', 'target_fps', args.fps_cap)
 
 
 # ============================================================================
@@ -197,14 +200,27 @@ def setup_camera(config, use_ndi=False, ndi_source=None):
 # LEGACY PROCESSING LOOP HELPER
 # ============================================================================
 def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx, 
-                 display_config, window_title, max_consecutive_failures, show_fps, tracking_mode):
+                 display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
+                 frame_interval=0):
     """
     Helper function to run the legacy processing loop
     Handles both single and combined processor modes
+    
+    Args:
+        frame_interval: Minimum time between frames (0 = uncapped)
     """
     consecutive_failures = 0
+    last_frame_time = time.time()
     
     while cap.isOpened():
+        # Frame rate limiting
+        if frame_interval > 0:
+            current_time = time.time()
+            elapsed = current_time - last_frame_time
+            if elapsed < frame_interval:
+                time.sleep(frame_interval - elapsed)
+            last_frame_time = time.time()
+        
         ret, frame = cap.read()
         if not ret:
             consecutive_failures += 1
@@ -216,7 +232,8 @@ def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
         consecutive_failures = 0
         
         try:
-            image = frame.copy()
+            # Use frame directly - processors handle resizing internally
+            image = frame
             
             # Process pose if enabled
             if pose_processor and pose_ctx:
@@ -258,6 +275,17 @@ def main():
     print(f"🌐 OSC Target: {osc_config['host']}:{osc_config['port']}")
     osc_client = udp_client.SimpleUDPClient(osc_config['host'], osc_config['port'])
     threaded_osc = ThreadedOSCSender(osc_client, queue_size=osc_config['queue_size'])
+    
+    # ------------------------------------------------------------------------
+    # Frame rate limiting setup
+    # ------------------------------------------------------------------------
+    target_fps = performance_config.get('target_fps', 0)
+    if target_fps > 0:
+        frame_interval = 1.0 / target_fps
+        print(f"⏱️  Frame rate capped at {target_fps} FPS ({frame_interval*1000:.1f}ms/frame)")
+    else:
+        frame_interval = 0
+        print("⏱️  Frame rate: uncapped")
     
     # ------------------------------------------------------------------------
     # Setup camera or NDI capture
@@ -415,7 +443,18 @@ def main():
         
         if use_tasks_loop:
             # Tasks processing with async callback
+            last_frame_time = time.time()
+            
             while cap.isOpened():
+                # Frame rate limiting - sleep to maintain target fps
+                if frame_interval > 0:
+                    current_time = time.time()
+                    elapsed = current_time - last_frame_time
+                    if elapsed < frame_interval:
+                        sleep_time = frame_interval - elapsed
+                        time.sleep(sleep_time)
+                    last_frame_time = time.time()
+                
                 ret, frame = cap.read()
                 if not ret:
                     consecutive_failures += 1
@@ -428,7 +467,8 @@ def main():
                 
                 try:
                     timestamp_counter += 1
-                    image = frame.copy()
+                    # Use frame directly - processors handle resizing internally
+                    image = frame
                     
                     # Process pose if enabled
                     if pose_processor and pose_is_tasks:
@@ -457,15 +497,18 @@ def main():
             if pose_ctx and hand_ctx:
                 with pose_ctx as pose, hand_ctx as hand:
                     _legacy_loop(cap, pose_processor, pose, hand_processor, hand, 
-                                display_config, window_title, max_consecutive_failures, show_fps, tracking_mode)
+                                display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
+                                frame_interval)
             elif pose_ctx:
                 with pose_ctx as pose:
                     _legacy_loop(cap, pose_processor, pose, None, None,
-                                display_config, window_title, max_consecutive_failures, show_fps, tracking_mode)
+                                display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
+                                frame_interval)
             elif hand_ctx:
                 with hand_ctx as hand:
                     _legacy_loop(cap, None, None, hand_processor, hand,
-                                display_config, window_title, max_consecutive_failures, show_fps, tracking_mode)
+                                display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
+                                frame_interval)
     
     except KeyboardInterrupt:
         print("\n🛑 Interrupted by user")

@@ -69,6 +69,8 @@ class HandProcessor:
         self.pending_frames = 0
         self.max_pending_frames = 1
         self.skipped_frames = 0
+        self._last_detection_state = False  # Track if we had detection last time
+        self._has_fresh_results = False  # Track if callback delivered new results
         
         # Pre-allocated buffer for resizing to prevent memory fragmentation
         self._resize_buffer = None
@@ -173,9 +175,15 @@ class HandProcessor:
                     print(f"{backend_name} FPS: {actual_fps:.2f} | Skipped: {self.skipped_frames}")
                 self.fps_start_time = fps_end_time
         
-        # Force garbage collection every 30 frames to prevent memory buildup
-        if self.frame_counter % 30 == 0:
-            gc.collect()
+        # Force garbage collection at configurable interval (higher = smoother but more memory)
+        # Can be disabled entirely via gc_enabled config option
+        if self.config:
+            performance_config = self.config.get('performance')
+            gc_enabled = performance_config.get('gc_enabled', True)
+            if gc_enabled:
+                gc_interval = performance_config.get('gc_interval', 60)
+                if self.frame_counter % gc_interval == 0:
+                    gc.collect()
 
 
 # ============================================================================
@@ -313,6 +321,7 @@ class TasksHandProcessor(HandProcessor):
         Callback for async hand detection results from MediaPipe Tasks
         """
         self.results = result
+        self._has_fresh_results = True  # Mark that we have new results to process
         self.pending_frames = max(0, self.pending_frames - 1)
         del output_image
     
@@ -387,11 +396,14 @@ class TasksHandProcessor(HandProcessor):
             else:
                 image = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
             
-            # Process results if available
-            if self.results is not None:
+            # Only process and send OSC when we have fresh results from the callback
+            # This ensures OSC messages are synchronized with actual detection rate
+            if self._has_fresh_results and self.results is not None:
+                self._has_fresh_results = False  # Reset flag
                 hands_detected = bool(self.results.hand_landmarks)
                 
                 if hands_detected and len(self.results.hand_landmarks) > 0:
+                    self._last_detection_state = True
                     all_hand_landmarks = []
                     all_hand_world_landmarks = []
                     all_handedness = []
@@ -438,11 +450,20 @@ class TasksHandProcessor(HandProcessor):
                     del all_hand_world_landmarks
                     del all_handedness
                 else:
-                    self.send_empty_hand_data(timestamp)
+                    # Only send empty data once when transitioning from detected to not detected
+                    if self._last_detection_state:
+                        self.send_empty_hand_data(timestamp)
+                        self._last_detection_state = False
                 
                 self.results = None
-            else:
-                self.send_empty_hand_data(timestamp)
+            elif self.results is not None:
+                # We have results but they're stale, just draw landmarks
+                if self.results.hand_landmarks:
+                    for i, hand_landmark in enumerate(self.results.hand_landmarks):
+                        handedness = "Unknown"
+                        if self.results.handedness and i < len(self.results.handedness):
+                            handedness = self.results.handedness[i][0].category_name
+                        self._draw_landmarks(image, hand_landmark, handedness)
             
             del rgb_frame
             if 'rgba_frame' in locals():
@@ -454,6 +475,7 @@ class TasksHandProcessor(HandProcessor):
         except Exception as e:
             print(f"⚠️  Hand frame processing error: {e}")
             self.results = None
+            self._has_fresh_results = False
             return frame
     
     def _draw_landmarks(self, image, landmarks, handedness="Unknown"):

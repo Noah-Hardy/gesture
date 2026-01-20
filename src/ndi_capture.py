@@ -157,8 +157,8 @@ class NDICapture:
             return False, None
         
         # Try multiple times with shorter timeout for better responsiveness
-        for _ in range(10):  # Try up to 10 times with 500ms each = 5s total
-            frame_type, video, audio, metadata = ndi.recv_capture_v2(self.receiver, 500)
+        for _ in range(20):  # Try up to 20 times with 50ms each = 1s total
+            frame_type, video, audio, metadata = ndi.recv_capture_v2(self.receiver, 50)
             
             if frame_type == ndi.FRAME_TYPE_VIDEO:
                 # Convert to numpy array

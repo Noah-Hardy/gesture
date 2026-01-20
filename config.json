@@ -16,7 +16,7 @@
   },
   "mediapipe": {
     "model_complexity": 0,
-    "num_poses": 3,
+    "num_poses": 1,
     "min_detection_confidence": 0.7,
     "min_tracking_confidence": 0.3,
     "min_pose_presence_confidence": 0.3,
@@ -25,7 +25,10 @@
   },
   "performance": {
     "prefer_gpu": true,
-    "show_fps": false
+    "show_fps": true,
+    "gc_interval": 60,
+    "target_fps": 30,
+    "gc_enabled": false
   },
   "display": {
     "show_window": true,

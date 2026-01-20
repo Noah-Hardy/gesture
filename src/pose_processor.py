@@ -65,6 +65,8 @@ class PoseProcessor:
         self.pending_frames = 0  # Track frames in MediaPipe's async queue
         self.max_pending_frames = 1  # Maximum frames to queue before skipping (reduced to 1 to prevent buildup)
         self.skipped_frames = 0  # Count of frames skipped due to backpressure
+        self._last_detection_state = False  # Track if we had detection last time (for transition to empty)
+        self._has_fresh_results = False  # Track if callback delivered new results
         
         # Pre-allocated buffer for resizing to prevent memory fragmentation
         self._resize_buffer = None
@@ -192,9 +194,15 @@ class PoseProcessor:
                     print(f"{backend_name} FPS: {actual_fps:.2f} | Skipped: {self.skipped_frames}")
                 self.fps_start_time = fps_end_time
         
-        # Force garbage collection every 30 frames to prevent memory buildup
-        if self.frame_counter % 30 == 0:
-            gc.collect()
+        # Force garbage collection at configurable interval (higher = smoother but more memory)
+        # Can be disabled entirely via gc_enabled config option
+        if self.config:
+            performance_config = self.config.get('performance')
+            gc_enabled = performance_config.get('gc_enabled', True)
+            if gc_enabled:
+                gc_interval = performance_config.get('gc_interval', 60)
+                if self.frame_counter % gc_interval == 0:
+                    gc.collect()
 
 
 # ============================================================================
@@ -347,6 +355,7 @@ class TasksPoseProcessor(PoseProcessor):
         Note: We only store the result, not the output_image to avoid memory leaks
         """
         self.results = result
+        self._has_fresh_results = True  # Mark that we have new results to process
         # Decrement pending frame counter
         self.pending_frames = max(0, self.pending_frames - 1)
         # Explicitly don't store output_image - it's not needed and causes memory leaks
@@ -432,11 +441,14 @@ class TasksPoseProcessor(PoseProcessor):
             else:
                 image = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
             
-            # Process results if available
-            if self.results is not None:
+            # Only process and send OSC when we have fresh results from the callback
+            # This ensures OSC messages are synchronized with actual detection rate
+            if self._has_fresh_results and self.results is not None:
+                self._has_fresh_results = False  # Reset flag
                 pose_detected = bool(self.results.pose_landmarks)
                 
                 if pose_detected and len(self.results.pose_landmarks) > 0:
+                    self._last_detection_state = True
                     # Process all detected poses
                     all_pose_landmarks = []
                     all_pose_world_landmarks = []
@@ -475,13 +487,18 @@ class TasksPoseProcessor(PoseProcessor):
                     del all_pose_landmarks
                     del all_pose_world_landmarks
                 else:
-                    self.send_empty_data(timestamp)
+                    # Only send empty data once when transitioning from detected to not detected
+                    if self._last_detection_state:
+                        self.send_empty_data(timestamp)
+                        self._last_detection_state = False
                 
                 # Clear results after processing to prevent accumulation
                 self.results = None
-            else:
-                # No results yet
-                self.send_empty_data(timestamp)
+            elif self.results is not None:
+                # We have results but they're stale (already processed), just draw landmarks
+                if self.results.pose_landmarks:
+                    for pose_landmark in self.results.pose_landmarks:
+                        self._draw_landmarks(image, pose_landmark)
             
             # Clear intermediate frames to free memory
             del rgb_frame
@@ -495,6 +512,7 @@ class TasksPoseProcessor(PoseProcessor):
             print(f"⚠️  Tasks frame processing error: {e}")
             # Clear results on error to prevent memory leak
             self.results = None
+            self._has_fresh_results = False
             return frame
     
     def _draw_landmarks(self, image, landmarks):
