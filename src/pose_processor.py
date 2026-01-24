@@ -487,6 +487,8 @@ class TasksPoseProcessor(PoseProcessor):
                     del all_pose_landmarks
                     del all_pose_world_landmarks
                 else:
+                    # Always send status message so receivers know program is running
+                    self.osc_sender.send_message("/mp/status", compact_json({"status": 0}))
                     # Only send empty data once when transitioning from detected to not detected
                     if self._last_detection_state:
                         self.send_empty_data(timestamp)
@@ -499,6 +501,11 @@ class TasksPoseProcessor(PoseProcessor):
                 if self.results.pose_landmarks:
                     for pose_landmark in self.results.pose_landmarks:
                         self._draw_landmarks(image, pose_landmark)
+                # Send status based on stale results (still shows program is running)
+                self.osc_sender.send_message("/mp/status", compact_json({"status": len(self.results.pose_landmarks) if self.results.pose_landmarks else 0}))
+            else:
+                # No results yet - still send status so receivers know program is running
+                self.osc_sender.send_message("/mp/status", compact_json({"status": 0}))
             
             # Clear intermediate frames to free memory
             del rgb_frame
@@ -682,7 +689,8 @@ class LegacyPoseProcessor(PoseProcessor):
                 del pose_landmarks
                 del pose_world_landmarks
             else:
-                self.send_empty_data(timestamp)
+                # Always send status message so receivers know program is running
+                self.osc_sender.send_message("/mp/status", compact_json({"status": 0}))
             
             self.update_fps(backend_name)
             return image

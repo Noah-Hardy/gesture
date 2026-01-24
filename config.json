@@ -21,7 +21,8 @@
     "min_tracking_confidence": 0.3,
     "min_pose_presence_confidence": 0.3,
     "smooth_landmarks": true,
-    "enable_segmentation": false
+    "enable_segmentation": false,
+    "pose_model_type": "full"
   },
   "performance": {
     "prefer_gpu": true,

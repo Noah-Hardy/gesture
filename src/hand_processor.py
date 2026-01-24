@@ -450,6 +450,8 @@ class TasksHandProcessor(HandProcessor):
                     del all_hand_world_landmarks
                     del all_handedness
                 else:
+                    # Always send status message so receivers know program is running
+                    self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
                     # Only send empty data once when transitioning from detected to not detected
                     if self._last_detection_state:
                         self.send_empty_hand_data(timestamp)
@@ -464,6 +466,11 @@ class TasksHandProcessor(HandProcessor):
                         if self.results.handedness and i < len(self.results.handedness):
                             handedness = self.results.handedness[i][0].category_name
                         self._draw_landmarks(image, hand_landmark, handedness)
+                # Send status based on stale results (still shows program is running)
+                self.osc_sender.send_message("/hand/status", compact_json({"status": len(self.results.hand_landmarks) if self.results.hand_landmarks else 0}))
+            else:
+                # No results yet - still send status so receivers know program is running
+                self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
             
             del rgb_frame
             if 'rgba_frame' in locals():
@@ -661,7 +668,8 @@ class LegacyHandProcessor(HandProcessor):
                 del all_hand_world_landmarks
                 del all_handedness
             else:
-                self.send_empty_hand_data(timestamp)
+                # Always send status message so receivers know program is running
+                self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
             
             self.update_fps(backend_name)
             return image
