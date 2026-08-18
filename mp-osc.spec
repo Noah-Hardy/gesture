@@ -7,8 +7,9 @@ the launcher GUI relaunches this same frozen executable as a subprocess with
 CLI arguments, and a onefile build would re-extract the ~500MB payload on every
 launch instead of sharing one sys._MEIPASS directory.
 
-Build with scripts/build_app.sh, not by calling pyinstaller directly, so the
-heavy pose model is downloaded into src/tasks/ before it gets bundled.
+Build with scripts/build_app.sh, not by calling pyinstaller directly. The .task
+models are not kept in the repository, and that script downloads them into
+src/tasks/ before they get bundled.
 """
 
 import os
@@ -26,7 +27,22 @@ ENTITLEMENTS = os.environ.get('MPOSC_ENTITLEMENTS') or None
 datas = collect_data_files('mediapipe')
 
 # Landmarker models resolved at runtime via sys._MEIPASS/src/tasks/<name>.task
-# (see src/model_downloader._bundled_tasks_dir).
+# (see src/model_downloader._bundled_tasks_dir). They are gitignored downloads,
+# so fail loudly rather than shipping a bundle that has to fetch them itself.
+EXPECTED_MODELS = [
+    'pose_landmarker_lite.task',
+    'pose_landmarker_full.task',
+    'pose_landmarker_heavy.task',
+    'hand_landmarker.task',
+    'holistic_landmarker.task',
+]
+_missing = [m for m in EXPECTED_MODELS if not os.path.exists(os.path.join('src/tasks', m))]
+if _missing:
+    raise SystemExit(
+        'Missing landmarker models in src/tasks/: ' + ', '.join(_missing) +
+        '\nBuild with ./scripts/build_app.sh, which downloads them first.'
+    )
+
 datas += [('src/tasks', 'src/tasks')]
 
 # ndi-python keeps libndi.dylib inside the NDIlib package next to the extension

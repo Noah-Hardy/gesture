@@ -49,7 +49,7 @@ The launcher does not run MediaPipe in-process. It builds a command line from th
 open dist/MP-OSC.app
 ```
 
-The script downloads the heavy pose model so it ships inside the bundle, runs PyInstaller against `mp-osc.spec`, and ad-hoc signs the result. Expect a few minutes and roughly 300 MB in `dist/`.
+The script downloads all five landmarker models so they ship inside the bundle, runs PyInstaller against `mp-osc.spec`, and ad-hoc signs the result. The models are not kept in the repository — they are gitignored downloads of roughly 64 MB, fetched once and reused by later builds. Expect a few minutes and roughly 300 MB in `dist/`.
 
 Build requirements:
 
@@ -65,7 +65,7 @@ Build requirements:
   Tkinter is a separate Homebrew formula (`python-tk@3.10`); without it the launcher window cannot start. This combination matters for packaging: Homebrew's Tcl/Tk 8.6 lives under `/opt/homebrew` and gets bundled into the app, whereas macOS system Pythons link against the deprecated `/System/Library` Tcl/Tk 8.5, which PyInstaller will not bundle.
 - **Xcode Command Line Tools** (`xcode-select --install`) for `codesign`.
 - **PyInstaller**, installed with the dev dependency group above.
-- **Internet access on the first build**, to fetch the heavy pose model.
+- **Internet access on the first build**, to fetch the landmarker models into `src/tasks/`. Later builds reuse whatever is already there.
 
 No NDI SDK installation is needed — `libndi.dylib` ships inside the `ndi-python` wheel and is bundled automatically.
 

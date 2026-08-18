@@ -4,8 +4,13 @@
 #
 # Produces dist/MP-OSC.app -- a self-contained, ad-hoc signed, arm64 onedir
 # bundle containing Python, mediapipe, ndi-python (libndi.dylib) and the
-# landmarker models from src/tasks/. Takes several minutes and roughly 2GB of
-# scratch space in build/.
+# landmarker models. Takes several minutes and roughly 2GB of scratch space
+# in build/.
+#
+# The .task models are not kept in the repository. This script downloads every
+# model the app can select into src/tasks/ first, so the bundle ships with all
+# of them and a packaged app never has to reach the network for a model.
+# Already-downloaded models are reused, so repeat builds do not re-fetch.
 #
 # Usage: ./scripts/build_app.sh
 #
@@ -13,8 +18,23 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-echo "==> Fetching the heavy pose model so it ships inside the bundle"
-uv run python -c "from src.model_downloader import download_pose_model; download_pose_model('heavy')"
+echo "==> Fetching the landmarker models so they ship inside the bundle"
+uv run python - <<'PY'
+import sys
+
+from src.model_downloader import (
+    download_hand_model,
+    download_holistic_model,
+    download_pose_model,
+)
+
+jobs = [(f"pose ({t})", lambda t=t: download_pose_model(t)) for t in ("lite", "full", "heavy")]
+jobs += [("hand", download_hand_model), ("holistic", download_holistic_model)]
+
+for label, fetch in jobs:
+    if not fetch():
+        sys.exit(f"Failed to obtain the {label} model; aborting the build")
+PY
 
 echo "==> Running PyInstaller"
 uv run pyinstaller --noconfirm --clean mp-osc.spec
