@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened runtime entitlements, required for notarizing MP-OSC.
+
+  Only used when building with a real Developer ID (see scripts/release.sh).
+  An ad-hoc build ignores this file.
+-->
+<plist version="1.0">
+<dict>
+    <!-- TensorFlow Lite / XNNPACK generate executable code at runtime -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- PyInstaller loads many bundled dylibs that are not signed by this team -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!-- Camera capture. Pairs with NSCameraUsageDescription in the Info.plist -->
+    <key>com.apple.security.device.camera</key>
+    <true/>
+</dict>
+</plist>

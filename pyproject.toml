@@ -3,5 +3,17 @@ name = "mp-osc"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.9"
-dependencies = []
+requires-python = ">=3.11"
+dependencies = [
+    "mediapipe<=0.10.21",
+    "ndi-python>=6.3.2",
+    "numpy<2",
+    "opencv-python",
+    "psutil>=7.2.1",
+    "python-osc",
+]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.0,<7",
+]

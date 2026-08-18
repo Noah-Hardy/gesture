@@ -179,3 +179,18 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# macOS app bundle build artifacts
+#   build/ and dist/ are already ignored under "Distribution / packaging" above.
+#   PyInstaller spec files are ignored by the generic *.spec rule above, but
+#   mp-osc.spec is hand-written source and must stay tracked.
+!mp-osc.spec
+
+# macOS Finder metadata
+.DS_Store
+
+# Landmarker models
+#   Downloaded on demand at runtime, and by scripts/build_app.sh before the
+#   app bundle is built. They are large binaries (~64MB total) that Google
+#   serves from a stable URL, so there is no reason to keep them in history.
+src/tasks/*.task
