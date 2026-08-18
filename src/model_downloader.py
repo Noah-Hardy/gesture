@@ -8,14 +8,34 @@ Handles automatic downloading of pose and hand landmarker models
 # IMPORTS
 # ============================================================================
 import os
+import sys
 import urllib.request
+
+
+# ============================================================================
+# PATH RESOLUTION
+# ============================================================================
+def _bundled_tasks_dir() -> str:
+    """Read-only directory holding models shipped with the app."""
+    if getattr(sys, 'frozen', False):
+        return os.path.join(sys._MEIPASS, 'src', 'tasks')
+    return os.path.join(os.path.dirname(__file__), 'tasks')
+
+
+def _writable_tasks_dir() -> str:
+    """Directory models can be downloaded into."""
+    if getattr(sys, 'frozen', False):
+        d = os.path.join(os.path.expanduser('~/Library/Application Support'), 'mp-osc', 'models')
+        os.makedirs(d, exist_ok=True)
+        return d
+    return _bundled_tasks_dir()
 
 
 # ============================================================================
 # CONSTANTS
 # ============================================================================
-# Directory where task models are stored
-TASKS_DIR = os.path.join(os.path.dirname(__file__), "tasks")
+# Directory where downloaded task models are stored
+TASKS_DIR = _writable_tasks_dir()
 
 # Model URLs
 POSE_MODEL_URLS = {
@@ -24,6 +44,7 @@ POSE_MODEL_URLS = {
     "heavy": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task"
 }
 HAND_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+HOLISTIC_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/holistic_landmarker/holistic_landmarker/float16/1/holistic_landmarker.task"
 
 
 # ============================================================================
@@ -31,14 +52,17 @@ HAND_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarke
 # ============================================================================
 def get_model_path(model_name):
     """
-    Get the full path to a model file in the tasks directory
-    
+    Get the full path to a model file, preferring a bundled model
+
     Args:
         model_name: Name of the model file (e.g., "pose_landmarker_lite.task")
-        
+
     Returns:
-        str: Full path to the model file
+        str: Full path to the model file (bundled if present, else download location)
     """
+    bundled = os.path.join(_bundled_tasks_dir(), model_name)
+    if os.path.exists(bundled):
+        return bundled
     return os.path.join(TASKS_DIR, model_name)
 
 
@@ -58,24 +82,56 @@ def download_pose_model(model_type="lite"):
         model_type = "lite"
     
     model_filename = f"pose_landmarker_{model_type}.task"
-    model_path = get_model_path(model_filename)
     model_url = POSE_MODEL_URLS[model_type]
-    
+
+    # Use an existing model (bundled or previously downloaded) if available
+    existing_path = get_model_path(model_filename)
+    if os.path.exists(existing_path):
+        print(f"📁 Using existing {model_type} model: {existing_path}")
+        return existing_path
+
     # Ensure tasks directory exists
     os.makedirs(TASKS_DIR, exist_ok=True)
-    
-    # Check if model already exists
-    if not os.path.exists(model_path):
-        print(f"📥 Downloading pose model ({model_type}) from Google...")
-        try:
-            urllib.request.urlretrieve(model_url, model_path)
-            print(f"✅ Downloaded model to {model_path}")
-        except Exception as e:
-            print(f"❌ Failed to download model: {e}")
-            return None
-    else:
-        print(f"📁 Using existing {model_type} model: {model_path}")
-    
+    model_path = os.path.join(TASKS_DIR, model_filename)
+
+    print(f"📥 Downloading pose model ({model_type}) from Google...")
+    try:
+        urllib.request.urlretrieve(model_url, model_path)
+        print(f"✅ Downloaded model to {model_path}")
+    except Exception as e:
+        print(f"❌ Failed to download model: {e}")
+        return None
+
+    return model_path
+
+
+def download_holistic_model():
+    """
+    Download the official MediaPipe holistic landmarker model if not present
+
+    Returns:
+        str: Path to the model file, or None if download fails
+    """
+    model_filename = "holistic_landmarker.task"
+
+    # Use an existing model (bundled or previously downloaded) if available
+    existing_path = get_model_path(model_filename)
+    if os.path.exists(existing_path):
+        print(f"📁 Using existing model: {existing_path}")
+        return existing_path
+
+    # Ensure tasks directory exists
+    os.makedirs(TASKS_DIR, exist_ok=True)
+    model_path = os.path.join(TASKS_DIR, model_filename)
+
+    print(f"📥 Downloading holistic model from Google...")
+    try:
+        urllib.request.urlretrieve(HOLISTIC_MODEL_URL, model_path)
+        print(f"✅ Downloaded model to {model_path}")
+    except Exception as e:
+        print(f"❌ Failed to download model: {e}")
+        return None
+
     return model_path
 
 
@@ -86,21 +142,24 @@ def download_hand_model():
     Returns:
         str: Path to the model file, or None if download fails
     """
-    model_path = get_model_path("hand_landmarker.task")
-    
+    model_filename = "hand_landmarker.task"
+
+    # Use an existing model (bundled or previously downloaded) if available
+    existing_path = get_model_path(model_filename)
+    if os.path.exists(existing_path):
+        print(f"📁 Using existing model: {existing_path}")
+        return existing_path
+
     # Ensure tasks directory exists
     os.makedirs(TASKS_DIR, exist_ok=True)
-    
-    # Check if model already exists
-    if not os.path.exists(model_path):
-        print(f"📥 Downloading hand model from Google...")
-        try:
-            urllib.request.urlretrieve(HAND_MODEL_URL, model_path)
-            print(f"✅ Downloaded model to {model_path}")
-        except Exception as e:
-            print(f"❌ Failed to download model: {e}")
-            return None
-    else:
-        print(f"📁 Using existing model: {model_path}")
-    
+    model_path = os.path.join(TASKS_DIR, model_filename)
+
+    print(f"📥 Downloading hand model from Google...")
+    try:
+        urllib.request.urlretrieve(HAND_MODEL_URL, model_path)
+        print(f"✅ Downloaded model to {model_path}")
+    except Exception as e:
+        print(f"❌ Failed to download model: {e}")
+        return None
+
     return model_path

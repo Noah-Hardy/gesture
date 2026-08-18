@@ -10,31 +10,25 @@ Supports GPU acceleration and multi-hand tracking
 # ============================================================================
 import os
 import time
-import json
 import platform
 import gc
+import threading
 import cv2
 import numpy as np
 import mediapipe as mp
 from mediapipe.framework.formats import landmark_pb2
 
-from .pose_utils import get_pose_bounds_with_values, process_landmarks_to_dict
+from .pose_utils import get_pose_bounds_with_values, process_landmarks_to_dict, compact_json
 from .model_downloader import download_hand_model
+
+# Optional psutil import for memory monitoring
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 # Platform detection for GPU compatibility
 IS_APPLE_SILICON = platform.system() == "Darwin" and platform.machine() == "arm64"
-
-
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
-def compact_json(data):
-    """
-    Create compact JSON string to minimize memory usage
-    Creates new string each time to avoid interning issues
-    """
-    json_str = json.dumps(data, separators=(',', ':'))
-    return json_str
 
 
 # ============================================================================
@@ -71,10 +65,56 @@ class HandProcessor:
         self.skipped_frames = 0
         self._last_detection_state = False  # Track if we had detection last time
         self._has_fresh_results = False  # Track if callback delivered new results
-        
+        self._display_results = None  # Main-thread-only copy of last taken results for stale drawing
+
+        # Lock protecting results/pending_frames shared with MediaPipe's worker thread
+        self._results_lock = threading.Lock()
+
         # Pre-allocated buffer for resizing to prevent memory fragmentation
         self._resize_buffer = None
         self._rgb_buffer = None
+
+        # Cache per-frame config lookups (config is not mutated after construction)
+        camera_config = config.get('camera') if config else {}
+        self._proc_width = camera_config.get('processing_width', 640)
+        self._proc_height = camera_config.get('processing_height', 480)
+
+        if config:
+            performance_config = config.get('performance')
+            self._gc_enabled = performance_config.get('gc_enabled', True)
+            self._gc_interval = performance_config.get('gc_interval', 60)
+        else:
+            self._gc_enabled = False
+            self._gc_interval = 60
+
+        # Pre-build DrawingSpec objects for left/right hand rendering
+        display_config = config.get('display') if config else {}
+        hand_config = config.get('hand') if config else {}
+        landmark_thickness = display_config.get('landmark_thickness', 1)
+        landmark_radius = display_config.get('landmark_radius', 2)
+        connection_thickness = display_config.get('connection_thickness', 1)
+        connection_radius = display_config.get('connection_radius', 1)
+
+        self._left_landmark_spec = mp.solutions.drawing_utils.DrawingSpec(
+            color=tuple(hand_config.get('left_landmark_color', [0, 255, 0])),  # Green
+            thickness=landmark_thickness,
+            circle_radius=landmark_radius
+        )
+        self._left_connection_spec = mp.solutions.drawing_utils.DrawingSpec(
+            color=tuple(hand_config.get('left_connection_color', [0, 200, 0])),
+            thickness=connection_thickness,
+            circle_radius=connection_radius
+        )
+        self._right_landmark_spec = mp.solutions.drawing_utils.DrawingSpec(
+            color=tuple(hand_config.get('right_landmark_color', [255, 0, 0])),  # Red/Blue
+            thickness=landmark_thickness,
+            circle_radius=landmark_radius
+        )
+        self._right_connection_spec = mp.solutions.drawing_utils.DrawingSpec(
+            color=tuple(hand_config.get('right_connection_color', [200, 0, 0])),
+            thickness=connection_thickness,
+            circle_radius=connection_radius
+        )
     
     # ------------------------------------------------------------------------
     # OSC data transmission methods
@@ -120,8 +160,12 @@ class HandProcessor:
             "timestamp": timestamp,
             "landmarks": []
         }
-        self.osc_sender.send_message("/hand/raw", compact_json(empty_payload))
-        self.osc_sender.send_message("/hand/bounds", compact_json({}))
+        # Clear the per-hand channels actually used by send_hand_data/send_hand_bounds_data
+        for hand_prefix in ("left_hand", "right_hand"):
+            self.osc_sender.send_message(f"/{hand_prefix}/raw", compact_json(empty_payload))
+            self.osc_sender.send_message(f"/{hand_prefix}/world", compact_json(empty_payload))
+            self.osc_sender.send_message(f"/{hand_prefix}/bounds", compact_json({}))
+            self.osc_sender.send_message(f"/{hand_prefix}/world_bounds", compact_json({}))
         self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
     
     def send_multiple_hand_data(self, all_hand_landmarks, all_handedness, timestamp):
@@ -163,27 +207,21 @@ class HandProcessor:
             if self.fps_counter % 30 == 0:
                 fps_end_time = time.time()
                 actual_fps = 30 / (fps_end_time - self.fps_start_time)
-                try:
-                    import psutil
+                if psutil is not None:
                     process = psutil.Process()
                     mem_mb = process.memory_info().rss / 1024 / 1024
                     osc_stats = self.osc_sender.get_stats()
                     print(f"{backend_name} FPS: {actual_fps:.2f} | Memory: {mem_mb:.1f}MB | "
                           f"OSC Sent: {osc_stats['sent']} Dropped: {osc_stats['dropped']} Queued: {osc_stats['queued']} | "
                           f"Pending: {self.pending_frames} Skipped: {self.skipped_frames}")
-                except ImportError:
+                else:
                     print(f"{backend_name} FPS: {actual_fps:.2f} | Skipped: {self.skipped_frames}")
                 self.fps_start_time = fps_end_time
-        
+
         # Force garbage collection at configurable interval (higher = smoother but more memory)
         # Can be disabled entirely via gc_enabled config option
-        if self.config:
-            performance_config = self.config.get('performance')
-            gc_enabled = performance_config.get('gc_enabled', True)
-            if gc_enabled:
-                gc_interval = performance_config.get('gc_interval', 60)
-                if self.frame_counter % gc_interval == 0:
-                    gc.collect()
+        if self._gc_enabled and self.frame_counter % self._gc_interval == 0:
+            gc.collect()
 
 
 # ============================================================================
@@ -319,10 +357,12 @@ class TasksHandProcessor(HandProcessor):
     def _result_callback(self, result, output_image, timestamp_ms):
         """
         Callback for async hand detection results from MediaPipe Tasks
+        Runs on MediaPipe's worker thread - state updates guarded by lock
         """
-        self.results = result
-        self._has_fresh_results = True  # Mark that we have new results to process
-        self.pending_frames = max(0, self.pending_frames - 1)
+        with self._results_lock:
+            self.results = result
+            self._has_fresh_results = True  # Mark that we have new results to process
+            self.pending_frames = max(0, self.pending_frames - 1)
         del output_image
     
     def process_frame(self, frame, landmarker, backend_name, timestamp_counter):
@@ -343,10 +383,9 @@ class TasksHandProcessor(HandProcessor):
                 return frame
             
             # Always resize frame for consistent display
-            camera_config = self.config.get('camera') if self.config else {}
-            proc_width = camera_config.get('processing_width', 640)
-            proc_height = camera_config.get('processing_height', 480)
-            
+            proc_width = self._proc_width
+            proc_height = self._proc_height
+
             h, w = frame.shape[:2]
             if w != proc_width or h != proc_height:
                 if (self._resize_buffer is None or 
@@ -383,8 +422,9 @@ class TasksHandProcessor(HandProcessor):
             
             # Process with MediaPipe Tasks (async)
             landmarker.detect_async(mp_image, timestamp_counter)
-            self.pending_frames += 1
-            
+            with self._results_lock:
+                self.pending_frames += 1
+
             del mp_image
             
             timestamp = time.time()
@@ -396,37 +436,47 @@ class TasksHandProcessor(HandProcessor):
             else:
                 image = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
             
+            # Atomically check-and-take fresh results from the callback thread
+            # (hold the lock only for the swap - never during serialization/sends/drawing)
+            fresh_results = None
+            with self._results_lock:
+                if self._has_fresh_results and self.results is not None:
+                    fresh_results = self.results
+                    self.results = None
+                    self._has_fresh_results = False  # Reset flag
+
             # Only process and send OSC when we have fresh results from the callback
             # This ensures OSC messages are synchronized with actual detection rate
-            if self._has_fresh_results and self.results is not None:
-                self._has_fresh_results = False  # Reset flag
-                hands_detected = bool(self.results.hand_landmarks)
-                
-                if hands_detected and len(self.results.hand_landmarks) > 0:
+            if fresh_results is not None:
+                # Keep for stale drawing on frames before the next callback lands (main thread only)
+                self._display_results = fresh_results
+                hands_detected = bool(fresh_results.hand_landmarks)
+
+                if hands_detected and len(fresh_results.hand_landmarks) > 0:
                     self._last_detection_state = True
                     all_hand_landmarks = []
                     all_hand_world_landmarks = []
                     all_handedness = []
-                    
+
                     # Process each detected hand
-                    for i, hand_landmark in enumerate(self.results.hand_landmarks):
+                    for i, hand_landmark in enumerate(fresh_results.hand_landmarks):
                         hand_landmarks = process_landmarks_to_dict(hand_landmark, f"hand_{i}")
                         all_hand_landmarks.append(hand_landmarks)
-                        
+
                         # Get handedness (left/right)
-                        if self.results.handedness and i < len(self.results.handedness):
-                            handedness = self.results.handedness[i][0].category_name
+                        if fresh_results.handedness and i < len(fresh_results.handedness):
+                            handedness = fresh_results.handedness[i][0].category_name
                         else:
                             handedness = "Unknown"
                         all_handedness.append(handedness)
-                    
+
                     # Process world landmarks if available
-                    if (hasattr(self.results, 'hand_world_landmarks') and 
-                        self.results.hand_world_landmarks):
-                        for i, hand_world_landmark in enumerate(self.results.hand_world_landmarks):
+                    if (hasattr(fresh_results, 'hand_world_landmarks') and
+                        fresh_results.hand_world_landmarks):
+                        for i, hand_world_landmark in enumerate(fresh_results.hand_world_landmarks):
                             hand_world_landmarks = process_landmarks_to_dict(hand_world_landmark, f"hand_world_{i}")
                             all_hand_world_landmarks.append(hand_world_landmarks)
-                    
+
                     # Send individual hand data for each hand
                     for i in range(len(all_hand_landmarks)):
                         hand_landmarks = all_hand_landmarks[i]
@@ -434,18 +484,18 @@ class TasksHandProcessor(HandProcessor):
                         handedness = all_handedness[i]
                         self.send_hand_data(hand_landmarks, hand_world_landmarks, handedness, timestamp)
                         self.send_hand_bounds_data(
-                            self.results.hand_landmarks[i],
-                            self.results.hand_world_landmarks[i] if hand_world_landmarks else None,
+                            fresh_results.hand_landmarks[i],
+                            fresh_results.hand_world_landmarks[i] if hand_world_landmarks else None,
                             handedness
                         )
-                    
-                    self.osc_sender.send_message("/hand/status", compact_json({"status": len(self.results.hand_landmarks)}))
-                    
+
+                    self.osc_sender.send_message("/hand/status", compact_json({"status": len(fresh_results.hand_landmarks)}))
+
                     # Draw all hand landmarks
-                    for i, hand_landmark in enumerate(self.results.hand_landmarks):
+                    for i, hand_landmark in enumerate(fresh_results.hand_landmarks):
                         handedness = all_handedness[i] if i < len(all_handedness) else "Unknown"
                         self._draw_landmarks(image, hand_landmark, handedness)
-                    
+
                     del all_hand_landmarks
                     del all_hand_world_landmarks
                     del all_handedness
@@ -456,18 +506,16 @@ class TasksHandProcessor(HandProcessor):
                     if self._last_detection_state:
                         self.send_empty_hand_data(timestamp)
                         self._last_detection_state = False
-                
-                self.results = None
-            elif self.results is not None:
+            elif self._display_results is not None:
                 # We have results but they're stale, just draw landmarks
-                if self.results.hand_landmarks:
-                    for i, hand_landmark in enumerate(self.results.hand_landmarks):
+                if self._display_results.hand_landmarks:
+                    for i, hand_landmark in enumerate(self._display_results.hand_landmarks):
                         handedness = "Unknown"
-                        if self.results.handedness and i < len(self.results.handedness):
-                            handedness = self.results.handedness[i][0].category_name
+                        if self._display_results.handedness and i < len(self._display_results.handedness):
+                            handedness = self._display_results.handedness[i][0].category_name
                         self._draw_landmarks(image, hand_landmark, handedness)
-                # Send status based on stale results (still shows program is running)
-                self.osc_sender.send_message("/hand/status", compact_json({"status": len(self.results.hand_landmarks) if self.results.hand_landmarks else 0}))
+                # No fresh detection this frame - status 0 signals no actively tracked hand
+                self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
             else:
                 # No results yet - still send status so receivers know program is running
                 self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
@@ -481,59 +529,45 @@ class TasksHandProcessor(HandProcessor):
             
         except Exception as e:
             print(f"⚠️  Hand frame processing error: {e}")
-            self.results = None
-            self._has_fresh_results = False
+            # Clear results on error to prevent memory leak (under lock - shared with callback thread)
+            with self._results_lock:
+                self.results = None
+                self._has_fresh_results = False
+            self._display_results = None
             return frame
-    
+
     def _draw_landmarks(self, image, landmarks, handedness="Unknown"):
         """
         Draw hand landmarks on image
-        Uses configuration for colors and styling
+        Uses pre-built DrawingSpec objects cached in __init__
         Different colors for left and right hands
-        
+
         Args:
             image: Image to draw on
             landmarks: Landmark list to draw
             handedness: "Left" or "Right" hand indicator
         """
-        # Get display configuration
-        display_config = self.config.get('display') if self.config else {}
-        hand_config = self.config.get('hand') if self.config else {}
-        
         # Use different colors for left and right hands
         if handedness == "Left":
-            landmark_color = tuple(hand_config.get('left_landmark_color', [0, 255, 0]))  # Green
-            connection_color = tuple(hand_config.get('left_connection_color', [0, 200, 0]))
+            landmark_spec = self._left_landmark_spec
+            connection_spec = self._left_connection_spec
         else:
-            landmark_color = tuple(hand_config.get('right_landmark_color', [255, 0, 0]))  # Red/Blue
-            connection_color = tuple(hand_config.get('right_connection_color', [200, 0, 0]))
-        
-        landmark_thickness = display_config.get('landmark_thickness', 1)
-        landmark_radius = display_config.get('landmark_radius', 2)
-        connection_thickness = display_config.get('connection_thickness', 1)
-        connection_radius = display_config.get('connection_radius', 1)
-        
+            landmark_spec = self._right_landmark_spec
+            connection_spec = self._right_connection_spec
+
         # Convert landmarks for drawing
         hand_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
         hand_landmarks_proto.landmark.extend([
-            landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z) 
+            landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z)
             for landmark in landmarks
         ])
-        
+
         mp.solutions.drawing_utils.draw_landmarks(
             image,
             hand_landmarks_proto,
             HAND_CONNECTIONS,
-            mp.solutions.drawing_utils.DrawingSpec(
-                color=landmark_color, 
-                thickness=landmark_thickness, 
-                circle_radius=landmark_radius
-            ),
-            mp.solutions.drawing_utils.DrawingSpec(
-                color=connection_color, 
-                thickness=connection_thickness, 
-                circle_radius=connection_radius
-            )
+            landmark_spec,
+            connection_spec
         )
 
 
@@ -563,7 +597,7 @@ class LegacyHandProcessor(HandProcessor):
         hand_context = mp.solutions.hands.Hands(
             static_image_mode=False,
             max_num_hands=hand_config.get('num_hands', 2),
-            model_complexity=hand_config.get('model_complexity', 0),
+            model_complexity=hand_config.get('model_complexity', 1),
             min_detection_confidence=hand_config.get('min_detection_confidence', 0.5),
             min_tracking_confidence=hand_config.get('min_tracking_confidence', 0.5)
         )
@@ -584,10 +618,9 @@ class LegacyHandProcessor(HandProcessor):
         """
         try:
             # Resize frame for processing if needed
-            camera_config = self.config.get('camera') if self.config else {}
-            proc_width = camera_config.get('processing_width', 640)
-            proc_height = camera_config.get('processing_height', 480)
-            
+            proc_width = self._proc_width
+            proc_height = self._proc_height
+
             h, w = frame.shape[:2]
             if w != proc_width or h != proc_height:
                 if (self._resize_buffer is None or 
@@ -683,39 +716,24 @@ class LegacyHandProcessor(HandProcessor):
     def _draw_landmarks_legacy(self, image, hand_landmarks, handedness="Unknown"):
         """
         Draw hand landmarks on image (legacy format)
-        
+        Uses pre-built DrawingSpec objects cached in __init__
+
         Args:
             image: Image to draw on
             hand_landmarks: MediaPipe hand landmarks object
             handedness: "Left" or "Right" hand indicator
         """
-        display_config = self.config.get('display') if self.config else {}
-        hand_config = self.config.get('hand') if self.config else {}
-        
         if handedness == "Left":
-            landmark_color = tuple(hand_config.get('left_landmark_color', [0, 255, 0]))
-            connection_color = tuple(hand_config.get('left_connection_color', [0, 200, 0]))
+            landmark_spec = self._left_landmark_spec
+            connection_spec = self._left_connection_spec
         else:
-            landmark_color = tuple(hand_config.get('right_landmark_color', [255, 0, 0]))
-            connection_color = tuple(hand_config.get('right_connection_color', [200, 0, 0]))
-        
-        landmark_thickness = display_config.get('landmark_thickness', 1)
-        landmark_radius = display_config.get('landmark_radius', 2)
-        connection_thickness = display_config.get('connection_thickness', 1)
-        connection_radius = display_config.get('connection_radius', 1)
-        
+            landmark_spec = self._right_landmark_spec
+            connection_spec = self._right_connection_spec
+
         mp.solutions.drawing_utils.draw_landmarks(
             image,
             hand_landmarks,
             HAND_CONNECTIONS,
-            mp.solutions.drawing_utils.DrawingSpec(
-                color=landmark_color, 
-                thickness=landmark_thickness, 
-                circle_radius=landmark_radius
-            ),
-            mp.solutions.drawing_utils.DrawingSpec(
-                color=connection_color, 
-                thickness=connection_thickness, 
-                circle_radius=connection_radius
-            )
+            landmark_spec,
+            connection_spec
         )

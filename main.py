@@ -10,12 +10,14 @@ Main entry point for pose tracking with network streaming
 import cv2
 import argparse
 import platform
+import sys
 import time
 from pythonosc import udp_client
 
 # Import modular components
 from src import ThreadedOSCSender, TasksPoseProcessor, LegacyPoseProcessor, get_config
 from src import TasksHandProcessor, LegacyHandProcessor
+from src import TasksHolisticProcessor
 from src import NDICapture, list_ndi_sources, NDI_AVAILABLE
 
 
@@ -28,88 +30,123 @@ IS_APPLE_SILICON = platform.system() == "Darwin" and platform.machine() == "arm6
 # ============================================================================
 # COMMAND LINE ARGUMENT PARSING
 # ============================================================================
-parser = argparse.ArgumentParser(description='MediaPipe Pose Detection with OSC')
-parser.add_argument('--fps', action='store_true', help='Show FPS counter (overrides config)')
-parser.add_argument('--config', default='config.json', help='Configuration file path (default: config.json)')
-parser.add_argument('--create-config', action='store_true', help='Create default configuration file and exit')
-parser.add_argument('--show-config', action='store_true', help='Show current configuration and exit')
-parser.add_argument('--host', help='OSC host address (overrides config)')
-parser.add_argument('--port', type=int, help='OSC port (overrides config)')
-parser.add_argument('--camera', type=int, help='Camera device ID (overrides config)')
-parser.add_argument('--force-cpu', action='store_true', help='Force CPU delegate (skip GPU)')
-parser.add_argument('--force-gpu', action='store_true', help='Force GPU delegate (WARNING: has memory leak on Apple Silicon)')
-parser.add_argument('--force-legacy', action='store_true', help='Force Legacy MediaPipe (skip Tasks API)')
-parser.add_argument('--ndi', action='store_true', help='Use NDI input instead of camera')
-parser.add_argument('--ndi-source', type=str, help='NDI source name to connect to')
-parser.add_argument('--list-ndi', action='store_true', help='List available NDI sources and exit')
-parser.add_argument('--pose-model', choices=['lite', 'full', 'heavy'], default='lite', help='Pose model type: lite (fastest), full (balanced), or heavy (most accurate) (default: lite)')
-parser.add_argument('--fps-cap', type=int, help='Cap frame rate for stability (e.g., 30). If not set, runs uncapped.')
-parser.add_argument('mode', choices=['pose', 'hand', 'all'], help='Tracking mode: pose, hand, or all (both)')
-args = parser.parse_args()
+def build_parser():
+    """
+    Build the command line argument parser
+
+    Returns:
+        argparse.ArgumentParser configured with all supported options
+    """
+    parser = argparse.ArgumentParser(description='MediaPipe Pose Detection with OSC')
+    parser.add_argument('--fps', action='store_true', help='Show FPS counter (overrides config)')
+    parser.add_argument('--config', default=None, help='Configuration file path (default: config.json)')
+    parser.add_argument('--create-config', action='store_true', help='Create default configuration file and exit')
+    parser.add_argument('--show-config', action='store_true', help='Show current configuration and exit')
+    parser.add_argument('--host', help='OSC host address (overrides config)')
+    parser.add_argument('--port', type=int, help='OSC port (overrides config)')
+    parser.add_argument('--camera', type=int, help='Camera device ID (overrides config)')
+    parser.add_argument('--force-cpu', action='store_true', help='Force CPU delegate (skip GPU)')
+    parser.add_argument('--force-gpu', action='store_true', help='Force GPU delegate (WARNING: has memory leak on Apple Silicon)')
+    parser.add_argument('--force-legacy', action='store_true', help='Force Legacy MediaPipe (skip Tasks API)')
+    parser.add_argument('--ndi', action='store_true', help='Use NDI input instead of camera')
+    parser.add_argument('--ndi-source', type=str, help='NDI source name to connect to')
+    parser.add_argument('--list-ndi', action='store_true', help='List available NDI sources and exit')
+    parser.add_argument('--pose-model', choices=['lite', 'full', 'heavy'], default=None, help='Pose model type: lite (fastest), full (balanced), or heavy (most accurate). If not set, uses config value (config default: lite)')
+    parser.add_argument('--fps-cap', type=int, help='Cap frame rate for stability (e.g., 30). If not set, runs uncapped.')
+    parser.add_argument('--no-holistic', action='store_true', help='In all mode, use separate pose + hand landmarkers instead of the holistic landmarker')
+    parser.add_argument('mode', choices=['pose', 'hand', 'all'], help='Tracking mode: pose, hand, or all (both)')
+    return parser
+
+
+def parse_args(argv=None):
+    """
+    Parse command line arguments
+
+    Args:
+        argv: Argument list to parse (defaults to sys.argv[1:])
+
+    Returns:
+        argparse.Namespace of parsed arguments
+    """
+    return build_parser().parse_args(argv)
 
 
 # ============================================================================
 # CONFIGURATION LOADING AND OVERRIDES
 # ============================================================================
-config = get_config()
-if args.config != 'config.json':
-    config.config_file = args.config
-    config.config = config._load_config()
+def apply_config_overrides(args, config):
+    """
+    Apply command line argument overrides on top of the loaded configuration
 
-# Apply command line argument overrides
-if args.fps:
-    config.set('performance', 'show_fps', True)
-if args.host:
-    config.set('osc', 'host', args.host)
-if args.port:
-    config.set('osc', 'port', args.port)
-if args.camera:
-    config.set('camera', 'device_id', args.camera)
-if args.pose_model:
-    config.set('mediapipe', 'pose_model_type', args.pose_model)
-if args.fps_cap:
-    config.set('performance', 'target_fps', args.fps_cap)
+    Args:
+        args: Parsed command line arguments
+        config: Configuration object to mutate
+    """
+    if args.config:
+        config.config_file = args.config
+        config.config = config._load_config()
+
+    # Apply command line argument overrides
+    if args.fps:
+        config.set('performance', 'show_fps', True)
+    if args.host:
+        config.set('osc', 'host', args.host)
+    if args.port is not None:
+        config.set('osc', 'port', args.port)
+    if args.camera is not None:
+        config.set('camera', 'device_id', args.camera)
+    if args.pose_model:
+        config.set('mediapipe', 'pose_model_type', args.pose_model)
+    if args.fps_cap is not None:
+        config.set('performance', 'target_fps', args.fps_cap)
 
 
 # ============================================================================
 # HANDLE UTILITY COMMANDS (exit after execution)
 # ============================================================================
-if args.create_config:
-    config.create_default_config_file()
-    exit(0)
+def handle_utility_commands(args, config):
+    """
+    Run one-shot utility commands that exit instead of starting tracking
 
-if args.show_config:
-    config.print_config()
-    exit(0)
+    Args:
+        args: Parsed command line arguments
+        config: Configuration object
 
-if args.list_ndi:
-    if NDI_AVAILABLE:
-        sources = list_ndi_sources()
-        if sources:
-            print(f"Found {len(sources)} NDI source(s):")
-            for name in sources:
-                print(f"  - {name}")
+    Returns:
+        True if a utility command ran and the application should exit
+    """
+    if args.create_config:
+        config.create_default_config_file()
+        return True
+
+    if args.show_config:
+        config.print_config()
+        return True
+
+    if args.list_ndi:
+        if NDI_AVAILABLE:
+            sources = list_ndi_sources()
+            if sources:
+                print(f"Found {len(sources)} NDI source(s):")
+                for name in sources:
+                    print(f"  - {name}")
+            else:
+                print("No NDI sources found on network")
         else:
-            print("No NDI sources found on network")
-    else:
-        print("NDI library not available. Install with: uv add ndi-python")
-    exit(0)
+            print("NDI library not available. Install with: uv add ndi-python")
+        return True
+
+    return False
 
 
 # ============================================================================
 # PLATFORM AND GPU INFORMATION
 # ============================================================================
-print(f"🖥️  Platform: {platform.system()} {platform.machine()}")
-if IS_APPLE_SILICON:
-    print("🍎 Apple Silicon detected - using SRGBA format for GPU compatibility")
-
-# Check for TensorFlow GPU support (optional, for informational purposes)
-try:
-    import tensorflow as tf
-    gpu_available = len(tf.config.experimental.list_physical_devices('GPU')) > 0
-    print(f"TensorFlow GPU available: {gpu_available}")
-except ImportError:
-    print("TensorFlow not available - MediaPipe will use its own GPU/CPU detection")
+def print_platform_info():
+    """Print platform detection details"""
+    print(f"🖥️  Platform: {platform.system()} {platform.machine()}")
+    if IS_APPLE_SILICON:
+        print("🍎 Apple Silicon detected - using SRGBA format for GPU compatibility")
 
 
 # ============================================================================
@@ -257,10 +294,17 @@ def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
 # ============================================================================
 # MAIN APPLICATION FUNCTION
 # ============================================================================
-def main():
+def run(args, config):
     """
     Main application loop
     Initializes OSC, camera, and pose processor, then runs processing loop
+
+    Args:
+        args: Parsed command line arguments
+        config: Configuration object
+
+    Returns:
+        Process exit code (0 on success)
     """
     # ------------------------------------------------------------------------
     # Get configuration sections
@@ -317,9 +361,46 @@ def main():
     window_title = "MediaPipe OSC Detection"
     
     # ------------------------------------------------------------------------
+    # Setup Holistic Processor (preferred for 'all' mode - pose + hands in
+    # a single model pass instead of two landmarkers per frame)
+    # ------------------------------------------------------------------------
+    holistic_active = False
+    if tracking_mode == 'all' and use_tasks and not args.no_holistic:
+        num_poses = config.get('mediapipe', 'num_poses', 1)
+        if num_poses > 1:
+            print("⚠️  Holistic landmarker is single-person (num_poses > 1 configured)")
+            print("   Falling back to separate pose + hand landmarkers")
+        else:
+            print("🧍 Initializing holistic tracking (pose + hands, one model)...")
+            try:
+                holistic_processor = TasksHolisticProcessor(
+                    threaded_osc,
+                    show_fps=show_fps,
+                    config=config,
+                    force_cpu=force_cpu,
+                    force_gpu=force_gpu,
+                    is_apple_silicon=IS_APPLE_SILICON
+                )
+                holistic_landmarker, holistic_backend, _, success = holistic_processor.setup_processor()
+                if success:
+                    # Holistic drives the same loop slot as the pose processor;
+                    # it publishes both pose and hand OSC channels itself
+                    pose_processor = holistic_processor
+                    pose_landmarker = holistic_landmarker
+                    pose_is_tasks = True
+                    holistic_active = True
+                    backend_names.append(holistic_backend)
+                    print("✅ Using MediaPipe Tasks (Holistic)")
+                else:
+                    print("⚠️  Holistic setup failed, falling back to separate pose + hand landmarkers")
+            except Exception as e:
+                print(f"⚠️  Holistic processor failed: {e}")
+                print("   Falling back to separate pose + hand landmarkers")
+
+    # ------------------------------------------------------------------------
     # Setup Pose Processor (if mode is 'pose' or 'all')
     # ------------------------------------------------------------------------
-    if tracking_mode in ['pose', 'all']:
+    if tracking_mode in ['pose', 'all'] and not holistic_active:
         print("🏃 Initializing pose tracking...")
         if use_tasks:
             try:
@@ -357,12 +438,12 @@ def main():
                 print(f"❌ Legacy pose processor setup failed: {e}")
                 if tracking_mode == 'pose':
                     print("🛑 Cannot initialize pose processing backend")
-                    return
+                    return 1
     
     # ------------------------------------------------------------------------
     # Setup Hand Processor (if mode is 'hand' or 'all')
     # ------------------------------------------------------------------------
-    if tracking_mode in ['hand', 'all']:
+    if tracking_mode in ['hand', 'all'] and not holistic_active:
         print("✋ Initializing hand tracking...")
         # Only enable FPS on hand if pose is not running (to avoid duplicate output)
         hand_show_fps = show_fps if tracking_mode == 'hand' else False
@@ -402,12 +483,12 @@ def main():
                 print(f"❌ Legacy hand processor setup failed: {e}")
                 if tracking_mode == 'hand':
                     print("🛑 Cannot initialize hand processing backend")
-                    return
+                    return 1
     
     # Verify at least one processor initialized for 'all' mode
     if tracking_mode == 'all' and pose_processor is None and hand_processor is None:
         print("🛑 Cannot initialize any processing backend")
-        return
+        return 1
     
     # Set window title based on mode
     if tracking_mode == 'pose':
@@ -434,8 +515,18 @@ def main():
     try:
         # NDI may have gaps between frames - allow more failures
         consecutive_failures = 0
-        is_ndi = hasattr(cap, 'getBackendName') and cap.getBackendName() == "NDI"
+        try:
+            # OpenCV raises if the capture never opened, so treat that as non-NDI
+            is_ndi = cap.getBackendName() == "NDI"
+        except Exception:
+            is_ndi = False
         max_consecutive_failures = 100 if is_ndi else 30  # NDI: ~5s, Camera: ~1s
+
+        if not cap.isOpened():
+            print("❌ Video capture is not open - nothing to process")
+            print("   Check the camera device ID or NDI source name")
+            print("   On macOS, confirm camera access in System Settings > Privacy & Security > Camera")
+            return 1
         
         # Determine if we're using Tasks API (all processors must use same mode for simplicity)
         # For 'all' mode, we process both sequentially on same frame
@@ -520,6 +611,13 @@ def main():
     # CLEANUP
     # ========================================================================
     finally:
+        # Release MediaPipe landmarkers (Tasks API holds native graph resources)
+        for landmarker in (pose_landmarker, hand_landmarker):
+            try:
+                if landmarker is not None and hasattr(landmarker, 'close'):
+                    landmarker.close()
+            except:
+                pass
         try:
             threaded_osc.stop()
         except:
@@ -535,9 +633,34 @@ def main():
             pass
         print("✅ Cleanup completed")
 
+    return 0
+
 
 # ============================================================================
-# ENTRY POINT
+# APPLICATION ENTRY POINT
 # ============================================================================
+def main(argv=None):
+    """
+    Parse arguments, load configuration, and start tracking
+
+    Args:
+        argv: Argument list to parse (defaults to sys.argv[1:])
+
+    Returns:
+        Process exit code (0 on success)
+    """
+    args = parse_args(argv)
+
+    config = get_config()
+    apply_config_overrides(args, config)
+
+    if handle_utility_commands(args, config):
+        return 0
+
+    print_platform_info()
+
+    return run(args, config)
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

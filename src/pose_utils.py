@@ -3,6 +3,21 @@
 Pose Landmark Utility Functions
 Helper functions for processing and formatting landmark data
 """
+import json
+
+
+# ============================================================================
+# JSON SERIALIZATION
+# ============================================================================
+def compact_json(data):
+    """
+    Create compact JSON string to minimize memory usage
+    Creates new string each time to avoid interning issues
+    """
+    # Use separators to minimize whitespace
+    json_str = json.dumps(data, separators=(',', ':'))
+    # Return as bytes to avoid string interning in Python
+    return json_str
 
 
 # ============================================================================

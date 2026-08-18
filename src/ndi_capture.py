@@ -161,20 +161,24 @@ class NDICapture:
             frame_type, video, audio, metadata = ndi.recv_capture_v2(self.receiver, 50)
             
             if frame_type == ndi.FRAME_TYPE_VIDEO:
-                # Convert to numpy array
-                frame = np.copy(video.data)
-                
                 # Update resolution if changed
                 self._frame_width = video.xres
                 self._frame_height = video.yres
-                
+
+                # NDI gives us BGRX (4 channels), convert to BGR (3 channels) for OpenCV.
+                # cv2.cvtColor allocates a fresh output array, so we can convert
+                # directly from the NDI buffer (valid until freed) and skip the
+                # redundant full-frame np.copy.
+                if video.data.ndim == 3 and video.data.shape[2] == 4:
+                    frame = cv2.cvtColor(video.data, cv2.COLOR_BGRA2BGR)
+                else:
+                    # Defensive: unexpected layout - copy so we never return a
+                    # view into freed NDI memory
+                    frame = np.copy(video.data)
+
                 # Free the NDI frame - CRITICAL to prevent memory leak
                 ndi.recv_free_video_v2(self.receiver, video)
-                
-                # NDI gives us BGRX (4 channels), convert to BGR (3 channels) for OpenCV
-                if frame.shape[2] == 4:
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-                
+
                 return True, frame
             
             elif frame_type == ndi.FRAME_TYPE_AUDIO:
@@ -270,11 +274,22 @@ def list_ndi_sources():
         ndi.destroy()
         return []
     
-    print("Searching for NDI sources (5 seconds)...")
+    print("Searching for NDI sources (up to 5 seconds)...")
     sources = []
-    for _ in range(50):
+    stable_count = 0
+    last_count = 0
+    for _ in range(50):  # Up to 5 seconds maximum
         ndi.find_wait_for_sources(finder, 100)
         sources = ndi.find_get_current_sources(finder)
+        # Early exit: once sources are non-empty and stable for ~1 second
+        # (same count for 10 consecutive iterations), stop searching
+        if sources and len(sources) == last_count:
+            stable_count += 1
+            if stable_count >= 10:
+                break
+        else:
+            stable_count = 0
+            last_count = len(sources)
     
     source_names = [s.ndi_name for s in sources]
     

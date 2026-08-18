@@ -10,7 +10,20 @@ Cross-platform compatible configuration system
 # ============================================================================
 import json
 import os
+import sys
 from typing import Dict, Any
+
+
+# ============================================================================
+# PATH RESOLUTION
+# ============================================================================
+def default_config_path() -> str:
+    """Resolve the config file path (writable location when frozen)."""
+    if getattr(sys, 'frozen', False):
+        d = os.path.join(os.path.expanduser('~/Library/Application Support'), 'mp-osc')
+        os.makedirs(d, exist_ok=True)
+        return os.path.join(d, 'config.json')
+    return 'config.json'
 
 
 # ============================================================================
@@ -80,9 +93,9 @@ class Config:
         }
     }
     
-    def __init__(self, config_file: str = "config.json"):
+    def __init__(self, config_file: str = None):
         """Initialize configuration manager"""
-        self.config_file = config_file
+        self.config_file = config_file or default_config_path()
         self.config = self._load_config()
         self._apply_platform_defaults()
     

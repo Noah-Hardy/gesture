@@ -179,3 +179,9 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# macOS app bundle build artifacts
+#   build/ and dist/ are already ignored under "Distribution / packaging" above.
+#   PyInstaller spec files are ignored by the generic *.spec rule above, but
+#   mp-osc.spec is hand-written source and must stay tracked.
+!mp-osc.spec

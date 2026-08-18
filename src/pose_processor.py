@@ -10,34 +10,26 @@ Supports GPU acceleration and multi-pose tracking
 # ============================================================================
 import os
 import time
-import json
 import platform
 import gc
 import sys
+import threading
 import cv2
 import numpy as np
 import mediapipe as mp
 from mediapipe.framework.formats import landmark_pb2
 
-from .pose_utils import get_pose_bounds_with_values, process_landmarks_to_dict
+from .pose_utils import get_pose_bounds_with_values, process_landmarks_to_dict, compact_json
 from .model_downloader import download_pose_model
+
+# Optional psutil import for memory monitoring
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 # Platform detection for GPU compatibility
 IS_APPLE_SILICON = platform.system() == "Darwin" and platform.machine() == "arm64"
-
-
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
-def compact_json(data):
-    """
-    Create compact JSON string to minimize memory usage
-    Creates new string each time to avoid interning issues
-    """
-    # Use separators to minimize whitespace
-    json_str = json.dumps(data, separators=(',', ':'))
-    # Return as bytes to avoid string interning in Python
-    return json_str
 
 
 # ============================================================================
@@ -67,10 +59,42 @@ class PoseProcessor:
         self.skipped_frames = 0  # Count of frames skipped due to backpressure
         self._last_detection_state = False  # Track if we had detection last time (for transition to empty)
         self._has_fresh_results = False  # Track if callback delivered new results
-        
+        self._display_results = None  # Main-thread-only copy of last taken results for stale drawing
+
+        # Lock protecting results/pending_frames shared with MediaPipe's worker thread
+        self._results_lock = threading.Lock()
+
         # Pre-allocated buffer for resizing to prevent memory fragmentation
         self._resize_buffer = None
         self._rgb_buffer = None
+
+        # Cache per-frame config lookups (config is not mutated after construction)
+        camera_config = config.get('camera') if config else {}
+        self._proc_width = camera_config.get('processing_width', 640)
+        self._proc_height = camera_config.get('processing_height', 480)
+
+        if config:
+            performance_config = config.get('performance')
+            self._gc_enabled = performance_config.get('gc_enabled', True)
+            self._gc_interval = performance_config.get('gc_interval', 60)
+        else:
+            self._gc_enabled = False
+            self._gc_interval = 60
+
+        # Pre-build DrawingSpec objects for landmark rendering
+        display_config = config.get('display') if config else {}
+        landmark_color = tuple(display_config.get('landmark_color', [245, 117, 66]))
+        connection_color = tuple(display_config.get('connection_color', [245, 66, 230]))
+        self._landmark_spec = mp.solutions.drawing_utils.DrawingSpec(
+            color=landmark_color,
+            thickness=display_config.get('landmark_thickness', 1),
+            circle_radius=display_config.get('landmark_radius', 2)
+        )
+        self._connection_spec = mp.solutions.drawing_utils.DrawingSpec(
+            color=connection_color,
+            thickness=display_config.get('connection_thickness', 1),
+            circle_radius=display_config.get('connection_radius', 1)
+        )
     
     # ------------------------------------------------------------------------
     # OSC data transmission methods
@@ -182,27 +206,21 @@ class PoseProcessor:
                 fps_end_time = time.time()
                 actual_fps = 30 / (fps_end_time - self.fps_start_time)
                 # Get memory usage if psutil available
-                try:
-                    import psutil
+                if psutil is not None:
                     process = psutil.Process()
                     mem_mb = process.memory_info().rss / 1024 / 1024
                     osc_stats = self.osc_sender.get_stats()
                     print(f"{backend_name} FPS: {actual_fps:.2f} | Memory: {mem_mb:.1f}MB | "
                           f"OSC Sent: {osc_stats['sent']} Dropped: {osc_stats['dropped']} Queued: {osc_stats['queued']} | "
                           f"MP Pending: {self.pending_frames} Skipped: {self.skipped_frames}")
-                except ImportError:
+                else:
                     print(f"{backend_name} FPS: {actual_fps:.2f} | Skipped: {self.skipped_frames}")
                 self.fps_start_time = fps_end_time
-        
+
         # Force garbage collection at configurable interval (higher = smoother but more memory)
         # Can be disabled entirely via gc_enabled config option
-        if self.config:
-            performance_config = self.config.get('performance')
-            gc_enabled = performance_config.get('gc_enabled', True)
-            if gc_enabled:
-                gc_interval = performance_config.get('gc_interval', 60)
-                if self.frame_counter % gc_interval == 0:
-                    gc.collect()
+        if self._gc_enabled and self.frame_counter % self._gc_interval == 0:
+            gc.collect()
 
 
 # ============================================================================
@@ -352,12 +370,14 @@ class TasksPoseProcessor(PoseProcessor):
         """
         Callback for async pose detection results from MediaPipe Tasks
         Called automatically when processing completes
+        Runs on MediaPipe's worker thread - state updates guarded by lock
         Note: We only store the result, not the output_image to avoid memory leaks
         """
-        self.results = result
-        self._has_fresh_results = True  # Mark that we have new results to process
-        # Decrement pending frame counter
-        self.pending_frames = max(0, self.pending_frames - 1)
+        with self._results_lock:
+            self.results = result
+            self._has_fresh_results = True  # Mark that we have new results to process
+            # Decrement pending frame counter
+            self.pending_frames = max(0, self.pending_frames - 1)
         # Explicitly don't store output_image - it's not needed and causes memory leaks
         del output_image
     
@@ -380,10 +400,9 @@ class TasksPoseProcessor(PoseProcessor):
                 return frame
             
             # Always resize frame for consistent display, regardless of processing
-            camera_config = self.config.get('camera') if self.config else {}
-            proc_width = camera_config.get('processing_width', 640)
-            proc_height = camera_config.get('processing_height', 480)
-            
+            proc_width = self._proc_width
+            proc_height = self._proc_height
+
             h, w = frame.shape[:2]
             if w != proc_width or h != proc_height:
                 # Use pre-allocated buffer if available and correct size
@@ -427,8 +446,9 @@ class TasksPoseProcessor(PoseProcessor):
             
             # Process with MediaPipe Tasks (async)
             landmarker.detect_async(mp_image, timestamp_counter)
-            self.pending_frames += 1
-            
+            with self._results_lock:
+                self.pending_frames += 1
+
             # Explicitly clear reference to mp_image - data was already copied
             del mp_image
             
@@ -441,48 +461,58 @@ class TasksPoseProcessor(PoseProcessor):
             else:
                 image = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
             
+            # Atomically check-and-take fresh results from the callback thread
+            # (hold the lock only for the swap - never during serialization/sends/drawing)
+            fresh_results = None
+            with self._results_lock:
+                if self._has_fresh_results and self.results is not None:
+                    fresh_results = self.results
+                    self.results = None
+                    self._has_fresh_results = False  # Reset flag
+
             # Only process and send OSC when we have fresh results from the callback
             # This ensures OSC messages are synchronized with actual detection rate
-            if self._has_fresh_results and self.results is not None:
-                self._has_fresh_results = False  # Reset flag
-                pose_detected = bool(self.results.pose_landmarks)
-                
-                if pose_detected and len(self.results.pose_landmarks) > 0:
+            if fresh_results is not None:
+                # Keep for stale drawing on frames before the next callback lands (main thread only)
+                self._display_results = fresh_results
+                pose_detected = bool(fresh_results.pose_landmarks)
+
+                if pose_detected and len(fresh_results.pose_landmarks) > 0:
                     self._last_detection_state = True
                     # Process all detected poses
                     all_pose_landmarks = []
                     all_pose_world_landmarks = []
-                    
+
                     # Process each detected pose
-                    for i, pose_landmark in enumerate(self.results.pose_landmarks):
+                    for i, pose_landmark in enumerate(fresh_results.pose_landmarks):
                         pose_landmarks = process_landmarks_to_dict(pose_landmark, f"pose_{i}")
                         all_pose_landmarks.append(pose_landmarks)
-                    
+
                     # Process world landmarks if available
-                    if (hasattr(self.results, 'pose_world_landmarks') and 
-                        self.results.pose_world_landmarks):
-                        for i, pose_world_landmark in enumerate(self.results.pose_world_landmarks):
+                    if (hasattr(fresh_results, 'pose_world_landmarks') and
+                        fresh_results.pose_world_landmarks):
+                        for i, pose_world_landmark in enumerate(fresh_results.pose_world_landmarks):
                             pose_world_landmarks = process_landmarks_to_dict(pose_world_landmark, f"pose_world_{i}")
                             all_pose_world_landmarks.append(pose_world_landmarks)
-                    
+
                     # Send data for each pose individually
                     for i in range(len(all_pose_landmarks)):
                         pose_landmarks = all_pose_landmarks[i]
                         pose_world_landmarks = all_pose_world_landmarks[i] if i < len(all_pose_world_landmarks) else None
                         self.send_pose_data(pose_landmarks, pose_world_landmarks, timestamp)
-                        
+
                         # Send bounds for this pose
                         self.send_bounds_data(
-                            self.results.pose_landmarks[i],
-                            self.results.pose_world_landmarks[i] if pose_world_landmarks else None
+                            fresh_results.pose_landmarks[i],
+                            fresh_results.pose_world_landmarks[i] if pose_world_landmarks else None
                         )
-                    
-                    self.osc_sender.send_message("/mp/status", compact_json({"status": len(self.results.pose_landmarks)}))
-                    
+
+                    self.osc_sender.send_message("/mp/status", compact_json({"status": len(fresh_results.pose_landmarks)}))
+
                     # Draw all pose landmarks
-                    for pose_landmark in self.results.pose_landmarks:
+                    for pose_landmark in fresh_results.pose_landmarks:
                         self._draw_landmarks(image, pose_landmark)
-                    
+
                     # Clear temporary lists to free memory
                     del all_pose_landmarks
                     del all_pose_world_landmarks
@@ -493,16 +523,13 @@ class TasksPoseProcessor(PoseProcessor):
                     if self._last_detection_state:
                         self.send_empty_data(timestamp)
                         self._last_detection_state = False
-                
-                # Clear results after processing to prevent accumulation
-                self.results = None
-            elif self.results is not None:
+            elif self._display_results is not None:
                 # We have results but they're stale (already processed), just draw landmarks
-                if self.results.pose_landmarks:
-                    for pose_landmark in self.results.pose_landmarks:
+                if self._display_results.pose_landmarks:
+                    for pose_landmark in self._display_results.pose_landmarks:
                         self._draw_landmarks(image, pose_landmark)
-                # Send status based on stale results (still shows program is running)
-                self.osc_sender.send_message("/mp/status", compact_json({"status": len(self.results.pose_landmarks) if self.results.pose_landmarks else 0}))
+                # No fresh detection this frame - status 0 signals no actively tracked person
+                self.osc_sender.send_message("/mp/status", compact_json({"status": 0}))
             else:
                 # No results yet - still send status so receivers know program is running
                 self.osc_sender.send_message("/mp/status", compact_json({"status": 0}))
@@ -517,50 +544,35 @@ class TasksPoseProcessor(PoseProcessor):
             
         except Exception as e:
             print(f"⚠️  Tasks frame processing error: {e}")
-            # Clear results on error to prevent memory leak
-            self.results = None
-            self._has_fresh_results = False
+            # Clear results on error to prevent memory leak (under lock - shared with callback thread)
+            with self._results_lock:
+                self.results = None
+                self._has_fresh_results = False
+            self._display_results = None
             return frame
-    
+
     def _draw_landmarks(self, image, landmarks):
         """
         Draw pose landmarks on image
-        Uses configuration for colors and styling
-        
+        Uses pre-built DrawingSpec objects cached in __init__
+
         Args:
             image: Image to draw on
             landmarks: Landmark list to draw
         """
-        # Get display configuration
-        display_config = self.config.get('display') if self.config else {}
-        landmark_color = tuple(display_config.get('landmark_color', [245, 117, 66]))
-        connection_color = tuple(display_config.get('connection_color', [245, 66, 230]))
-        landmark_thickness = display_config.get('landmark_thickness', 1)
-        landmark_radius = display_config.get('landmark_radius', 2)
-        connection_thickness = display_config.get('connection_thickness', 1)
-        connection_radius = display_config.get('connection_radius', 1)
-        
         # Convert landmarks for drawing
         pose_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
         pose_landmarks_proto.landmark.extend([
-            landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z) 
+            landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z)
             for landmark in landmarks
         ])
-        
+
         mp.solutions.drawing_utils.draw_landmarks(
             image,
             pose_landmarks_proto,
             mp.solutions.pose.POSE_CONNECTIONS,
-            mp.solutions.drawing_utils.DrawingSpec(
-                color=landmark_color, 
-                thickness=landmark_thickness, 
-                circle_radius=landmark_radius
-            ),
-            mp.solutions.drawing_utils.DrawingSpec(
-                color=connection_color, 
-                thickness=connection_thickness, 
-                circle_radius=connection_radius
-            )
+            self._landmark_spec,
+            self._connection_spec
         )
 
 
@@ -620,10 +632,9 @@ class LegacyPoseProcessor(PoseProcessor):
         """
         try:
             # Resize frame for processing if needed
-            camera_config = self.config.get('camera') if self.config else {}
-            proc_width = camera_config.get('processing_width', 640)
-            proc_height = camera_config.get('processing_height', 480)
-            
+            proc_width = self._proc_width
+            proc_height = self._proc_height
+
             h, w = frame.shape[:2]
             if w != proc_width or h != proc_height:
                 # Use pre-allocated buffer if available and correct size
@@ -705,35 +716,18 @@ class LegacyPoseProcessor(PoseProcessor):
     def _draw_landmarks(self, image, pose_landmarks):
         """
         Draw pose landmarks on image
-        Uses configuration for colors and styling
-        
+        Uses pre-built DrawingSpec objects cached in __init__
+
         Args:
             image: Image to draw on
             pose_landmarks: MediaPipe pose landmarks object
         """
-        # Get display configuration
-        display_config = self.config.get('display') if self.config else {}
-        landmark_color = tuple(display_config.get('landmark_color', [245, 117, 66]))
-        connection_color = tuple(display_config.get('connection_color', [245, 66, 230]))
-        landmark_thickness = display_config.get('landmark_thickness', 1)
-        landmark_radius = display_config.get('landmark_radius', 2)
-        connection_thickness = display_config.get('connection_thickness', 1)
-        connection_radius = display_config.get('connection_radius', 1)
-        
         mp.solutions.drawing_utils.draw_landmarks(
             image,
             pose_landmarks,
             mp.solutions.pose.POSE_CONNECTIONS,
-            mp.solutions.drawing_utils.DrawingSpec(
-                color=landmark_color, 
-                thickness=landmark_thickness, 
-                circle_radius=landmark_radius
-            ),
-            mp.solutions.drawing_utils.DrawingSpec(
-                color=connection_color, 
-                thickness=connection_thickness, 
-                circle_radius=connection_radius
-            )
+            self._landmark_spec,
+            self._connection_spec
         )
 
 
