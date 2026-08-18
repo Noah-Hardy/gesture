@@ -3,8 +3,8 @@ name: Build macOS release
 # Manual only. Start it from the Actions tab, pick the branch to run from, and
 # optionally point "ref" at a different branch to build.
 #
-# The runner must be Apple Silicon: ndi-python publishes only
-# macosx_11_0_arm64 wheels, for CPython 3.9 and 3.10. macos-15 is arm64.
+# The runner must be Apple Silicon: ndi-python publishes only arm64 wheels for
+# macOS (macosx_13_0_arm64 as of 6.x). macos-15 is arm64.
 #
 # Signing is optional and driven entirely by repository secrets:
 #   no secrets set          -> ad-hoc signed, Gatekeeper rejects it elsewhere
@@ -81,15 +81,15 @@ jobs:
           grep -m1 '^version' pyproject.toml
 
       # ----------------------------------------------------------------------
-      # Toolchain. Homebrew's python@3.10 plus python-tk@3.10 is required, not
+      # Toolchain. Homebrew's python@3.11 plus python-tk@3.11 is required, not
       # a convenience: macOS system Pythons link the deprecated /System Tcl/Tk
       # 8.5, which PyInstaller will not bundle, and the launcher needs Tk.
       # ----------------------------------------------------------------------
-      - name: Install Python 3.10 and Tk
+      - name: Install Python 3.11 and Tk
         run: |
           set -euo pipefail
-          brew install python@3.10 python-tk@3.10
-          /opt/homebrew/opt/python@3.10/bin/python3.10 --version
+          brew install python@3.11 python-tk@3.11
+          /opt/homebrew/opt/python@3.11/bin/python3.11 --version
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -99,7 +99,7 @@ jobs:
       - name: Create the virtual environment
         run: |
           set -euo pipefail
-          uv venv --clear --python /opt/homebrew/opt/python@3.10/bin/python3.10
+          uv venv --clear --python /opt/homebrew/opt/python@3.11/bin/python3.11
           uv sync --group dev
           uv run python -c "import tkinter; print('tkinter OK, Tk', tkinter.TkVersion)"
 
@@ -260,7 +260,7 @@ jobs:
 
           NOTES="$RUNNER_TEMP/notes.md"
           {
-            echo "Apple Silicon Mac, macOS 11 or later. Intel Macs are not supported:"
+            echo "Apple Silicon Mac, macOS 13 or later. Intel Macs are not supported:"
             echo "ndi-python publishes no x86_64 wheels."
             echo
             echo "Built from \`$(git rev-parse HEAD)\`."

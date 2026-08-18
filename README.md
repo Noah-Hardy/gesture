@@ -19,7 +19,7 @@ It also calculates pose/hand "bounds" — the landmarks with the minimum and max
 
 ## Prerequisites
 
-- **Python 3.9+** (the project's virtual environment is built on Homebrew Python 3.10 — see [macOS Application](#macos-application))
+- **Python 3.11+** (the project's virtual environment is built on Homebrew Python 3.11 — see [macOS Application](#macos-application))
 - **A working webcam** or an NDI source on the network
 - **Network access** to the OSC target (if not running locally)
 - **[uv](https://github.com/astral-sh/uv) package manager** (recommended)
@@ -53,16 +53,16 @@ The script downloads all five landmarker models so they ship inside the bundle, 
 
 Build requirements:
 
-- **Apple Silicon Mac, macOS 11+** — `ndi-python` publishes only `macosx_11_0_arm64` wheels, for CPython 3.9 and 3.10 only.
-- **Homebrew Python 3.10 with Tk 8.6**, which is what the project's virtual environment is built on:
+- **Apple Silicon Mac, macOS 13+** — `ndi-python` 6.x publishes only `macosx_13_0_arm64` wheels. That wheel tag, not the Python version, is what sets the app's minimum macOS.
+- **Homebrew Python 3.11 with Tk 8.6**, which is what the project's virtual environment is built on:
 
   ```sh
-  brew install python@3.10 python-tk@3.10
-  uv venv --clear --python /opt/homebrew/opt/python@3.10/bin/python3.10
+  brew install python@3.11 python-tk@3.11
+  uv venv --clear --python /opt/homebrew/opt/python@3.11/bin/python3.11
   uv sync --group dev
   ```
 
-  Tkinter is a separate Homebrew formula (`python-tk@3.10`); without it the launcher window cannot start. This combination matters for packaging: Homebrew's Tcl/Tk 8.6 lives under `/opt/homebrew` and gets bundled into the app, whereas macOS system Pythons link against the deprecated `/System/Library` Tcl/Tk 8.5, which PyInstaller will not bundle.
+  Tkinter is a separate Homebrew formula (`python-tk@3.11`); without it the launcher window cannot start. This combination matters for packaging: Homebrew's Tcl/Tk 8.6 lives under `/opt/homebrew` and gets bundled into the app, whereas macOS system Pythons link against the deprecated `/System/Library` Tcl/Tk 8.5, which PyInstaller will not bundle.
 - **Xcode Command Line Tools** (`xcode-select --install`) for `codesign`.
 - **PyInstaller**, installed with the dev dependency group above.
 - **Internet access on the first build**, to fetch the landmarker models into `src/tasks/`. Later builds reuse whatever is already there.
@@ -115,8 +115,8 @@ Every run uploads the zip and its checksum as a build artifact (kept 30 days),
 so `publish` is only needed when the build should become a Release.
 
 The runner is `macos-15`, which is arm64. This is not optional: `ndi-python`
-publishes only `macosx_11_0_arm64` wheels. The workflow installs Homebrew
-`python@3.10` and `python-tk@3.10` for the same reason the local build needs
+publishes only arm64 macOS wheels. The workflow installs Homebrew
+`python@3.11` and `python-tk@3.11` for the same reason the local build needs
 them — macOS system Pythons link the deprecated `/System/Library` Tcl/Tk 8.5,
 which PyInstaller will not bundle.
 
@@ -167,7 +167,7 @@ The hardened runtime entitlements this requires are in `scripts/entitlements.pli
 
 ### What recipients need
 
-Nothing — no Python, no uv, no Homebrew, no NDI SDK. The bundle carries its own interpreter, MediaPipe, OpenCV, Tcl/Tk, `libndi.dylib` and all five landmarker models. The only requirements are an **Apple Silicon Mac on macOS 11 or later**. Intel Macs cannot run it, because `ndi-python` publishes no x86_64 wheels.
+Nothing — no Python, no uv, no Homebrew, no NDI SDK. The bundle carries its own interpreter, MediaPipe, OpenCV, Tcl/Tk, `libndi.dylib` and all five landmarker models. The only requirements are an **Apple Silicon Mac on macOS 13 or later**. Intel Macs cannot run it, because `ndi-python` publishes no x86_64 macOS wheels.
 
 ## Command Line Options
 

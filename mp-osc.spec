@@ -20,8 +20,8 @@ from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 def _project_version():
     """Read the version from pyproject.toml.
 
-    Parsed by hand rather than with tomllib: the build runs on Python 3.10,
-    which predates it. scripts/release.sh reads the same line the same way, so
+    Parsed by hand rather than with tomllib: keeps working if the build is
+    ever pinned back to a Python older than 3.11. scripts/release.sh reads the same line the same way, so
     the archive name and CFBundleShortVersionString cannot drift apart.
     """
     with open('pyproject.toml') as handle:
@@ -148,7 +148,8 @@ app = BUNDLE(
         'NSLocalNetworkUsageDescription':
             'MP-OSC discovers NDI video sources and sends OSC data on the local network.',
         'NSBonjourServices': ['_ndi._tcp.'],
-        'LSMinimumSystemVersion': '11.0',
+        # ndi-python 6.x ships macosx_13_0_arm64 wheels, so 13.0 is the real floor.
+        'LSMinimumSystemVersion': '13.0',
         'NSHighResolutionCapable': True,
         'CFBundleShortVersionString': VERSION,
         'CFBundleVersion': VERSION,
