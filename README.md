@@ -98,6 +98,51 @@ gh release create v0.1.0 dist/MP-OSC-0.1.0-macos-arm64.zip dist/MP-OSC-0.1.0-mac
 
 `gh` is the GitHub CLI (`brew install gh`, then `gh auth login`). The GitHub web release form works just as well — attach the same two files.
 
+### Building a release on GitHub Actions
+
+`.github/workflows/release.yml` runs the same two scripts on a GitHub-hosted
+Apple Silicon runner. It is **manual only** — there is no push or tag trigger.
+Start it from **Actions → Build macOS release → Run workflow**:
+
+| Input | Default | Effect |
+|---|---|---|
+| `ref` | the branch the run was started from | Branch, tag or SHA to build |
+| `version` | version in `pyproject.toml` | Overrides the version for this build |
+| `publish` | off | Create a GitHub Release, not just a build artifact |
+| `draft` | on | When publishing, create the release as a draft |
+
+Every run uploads the zip and its checksum as a build artifact (kept 30 days),
+so `publish` is only needed when the build should become a Release.
+
+The runner is `macos-15`, which is arm64. This is not optional: `ndi-python`
+publishes only `macosx_11_0_arm64` wheels. The workflow installs Homebrew
+`python@3.10` and `python-tk@3.10` for the same reason the local build needs
+them — macOS system Pythons link the deprecated `/System/Library` Tcl/Tk 8.5,
+which PyInstaller will not bundle.
+
+The `.task` models are cached between runs, keyed on `src/model_downloader.py`,
+so only the first run after a model change pays for the ~64 MB download.
+
+#### Signing secrets
+
+With no secrets configured the workflow produces an **ad-hoc signed** build,
+exactly like a local `./scripts/release.sh --build`. Add these repository
+secrets (Settings → Secrets and variables → Actions) to sign and notarize:
+
+| Secret | Required for | Value |
+|---|---|---|
+| `MACOS_CERTIFICATE_P12` | Developer ID signing | Base64 of the exported `.p12`: `base64 -i cert.p12 \| pbcopy` |
+| `MACOS_CERTIFICATE_PASSWORD` | Developer ID signing | Password set when exporting the `.p12` |
+| `MACOS_SIGNING_IDENTITY` | optional | e.g. `Developer ID Application: Your Name (TEAMID)`. Auto-detected from the certificate when unset |
+| `APPLE_NOTARY_APPLE_ID` | notarization | Apple ID email |
+| `APPLE_NOTARY_PASSWORD` | notarization | App-specific password, not the account password |
+| `APPLE_NOTARY_TEAM_ID` | notarization | 10-character Team ID |
+
+Signing and notarization are independent: the certificate secrets alone give a
+Developer ID signed build with the hardened runtime, and adding the three
+`APPLE_NOTARY_*` secrets also notarizes and staples it. The certificate is
+imported into a temporary keychain that exists only for that job.
+
 ### Signing for distribution
 
 An ad-hoc signed build runs on the machine that produced it, but **Gatekeeper rejects it everywhere else**. Recipients see "Apple could not verify this app is free of malware" and have to clear the quarantine flag manually:

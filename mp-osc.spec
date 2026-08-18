@@ -16,6 +16,23 @@ import os
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
+
+def _project_version():
+    """Read the version from pyproject.toml.
+
+    Parsed by hand rather than with tomllib: the build runs on Python 3.10,
+    which predates it. scripts/release.sh reads the same line the same way, so
+    the archive name and CFBundleShortVersionString cannot drift apart.
+    """
+    with open('pyproject.toml') as handle:
+        for line in handle:
+            if line.startswith('version'):
+                return line.split('"')[1]
+    raise SystemExit('could not read version from pyproject.toml')
+
+
+VERSION = _project_version()
+
 # Signing identity for a distributable build. Unset means an ad-hoc signature,
 # which runs on this machine but is rejected by Gatekeeper anywhere else.
 # scripts/release.sh sets both of these when a Developer ID is available.
@@ -133,6 +150,7 @@ app = BUNDLE(
         'NSBonjourServices': ['_ndi._tcp.'],
         'LSMinimumSystemVersion': '11.0',
         'NSHighResolutionCapable': True,
-        'CFBundleShortVersionString': '0.1.0',
+        'CFBundleShortVersionString': VERSION,
+        'CFBundleVersion': VERSION,
     },
 )

@@ -1,0 +1,287 @@
+name: Build macOS release
+
+# Manual only. Start it from the Actions tab, pick the branch to run from, and
+# optionally point "ref" at a different branch to build.
+#
+# The runner must be Apple Silicon: ndi-python publishes only
+# macosx_11_0_arm64 wheels, for CPython 3.9 and 3.10. macos-15 is arm64.
+#
+# Signing is optional and driven entirely by repository secrets:
+#   no secrets set          -> ad-hoc signed, Gatekeeper rejects it elsewhere
+#   MACOS_CERTIFICATE_P12   -> Developer ID signed with the hardened runtime
+#   + APPLE_NOTARY_*        -> also notarized and stapled
+# See "Signing secrets" in the README section this workflow mirrors.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag or SHA to build (blank = the branch this run was started from)'
+        required: false
+        default: ''
+      version:
+        description: 'Version override, e.g. 0.2.0 (blank = version from pyproject.toml)'
+        required: false
+        default: ''
+      publish:
+        description: 'Create a GitHub Release from the build'
+        type: boolean
+        default: false
+      draft:
+        description: 'When publishing, create the release as a draft'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build, sign and package
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out the ref to build
+        uses: actions/checkout@v4
+        with:
+          # Empty input falls back to the ref the run was started from.
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      # ----------------------------------------------------------------------
+      # Fail early and clearly when the ref predates the packaging work, rather
+      # than 20 minutes later inside PyInstaller.
+      # ----------------------------------------------------------------------
+      - name: Verify the ref contains the packaging files
+        run: |
+          missing=()
+          for path in app.py mp-osc.spec scripts/build_app.sh scripts/release.sh src/gui.py; do
+            [[ -e "$path" ]] || missing+=("$path")
+          done
+          if (( ${#missing[@]} )); then
+            {
+              echo "This ref cannot be packaged - it is missing:"
+              printf '  %s\n' "${missing[@]}"
+              echo
+              echo "Ref built: ${{ inputs.ref || github.ref }}"
+              echo "Point the 'ref' input at a branch that contains the app bundle work."
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "All packaging files present."
+
+      - name: Apply the version override
+        if: inputs.version != ''
+        run: |
+          set -euo pipefail
+          # release.sh and mp-osc.spec both read this one line, so patching it
+          # renames the archive and sets CFBundleShortVersionString together.
+          /usr/bin/sed -i '' -E 's/^version = ".*"/version = "${{ inputs.version }}"/' pyproject.toml
+          grep -m1 '^version' pyproject.toml
+
+      # ----------------------------------------------------------------------
+      # Toolchain. Homebrew's python@3.10 plus python-tk@3.10 is required, not
+      # a convenience: macOS system Pythons link the deprecated /System Tcl/Tk
+      # 8.5, which PyInstaller will not bundle, and the launcher needs Tk.
+      # ----------------------------------------------------------------------
+      - name: Install Python 3.10 and Tk
+        run: |
+          set -euo pipefail
+          brew install python@3.10 python-tk@3.10
+          /opt/homebrew/opt/python@3.10/bin/python3.10 --version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Create the virtual environment
+        run: |
+          set -euo pipefail
+          uv venv --clear --python /opt/homebrew/opt/python@3.10/bin/python3.10
+          uv sync --group dev
+          uv run python -c "import tkinter; print('tkinter OK, Tk', tkinter.TkVersion)"
+
+      # ----------------------------------------------------------------------
+      # The .task models are gitignored downloads (~64MB). Cache them so only
+      # the first run on a given model set pays for the download.
+      # ----------------------------------------------------------------------
+      - name: Restore cached landmarker models
+        uses: actions/cache@v4
+        with:
+          path: src/tasks/*.task
+          key: landmarker-models-${{ hashFiles('src/model_downloader.py') }}
+
+      # ----------------------------------------------------------------------
+      # Signing. Every step below no-ops when its secrets are absent, which is
+      # what makes an unsigned ad-hoc build the default.
+      # ----------------------------------------------------------------------
+      - name: Import the Developer ID certificate
+        id: signing
+        env:
+          CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$CERTIFICATE_P12" ]]; then
+            echo "No MACOS_CERTIFICATE_P12 secret - building ad-hoc signed."
+            echo "identity=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A dedicated keychain, unlocked for this job only. The runner is
+          # ephemeral, but a random password keeps the cert out of the login
+          # keychain and out of any other job on the machine.
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+          echo "$CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" \
+            -k "$KEYCHAIN" -P "$CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/certificate.p12"
+
+          # Without this, codesign blocks on a GUI prompt for keychain access.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+
+          # Put it in the search list so codesign resolves the identity by name.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          security default-keychain -s "$KEYCHAIN"
+
+          if [[ -n "$SIGNING_IDENTITY" ]]; then
+            IDENTITY="$SIGNING_IDENTITY"
+          else
+            # Fall back to the one Developer ID Application identity imported.
+            IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" \
+              | grep 'Developer ID Application' | head -1 | sed 's/.*"\(.*\)".*/\1/')"
+          fi
+          if [[ -z "$IDENTITY" ]]; then
+            echo "Certificate imported but no Developer ID Application identity found." >&2
+            exit 1
+          fi
+          echo "Signing as: $IDENTITY"
+          echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
+
+      - name: Store notarization credentials
+        id: notary
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$NOTARY_APPLE_ID" || -z "$NOTARY_PASSWORD" || -z "$NOTARY_TEAM_ID" ]]; then
+            echo "Notarization secrets incomplete - skipping notarization."
+            echo "profile=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # release.sh drives notarytool through a stored keychain profile.
+          xcrun notarytool store-credentials mp-osc-notary \
+            --apple-id "$NOTARY_APPLE_ID" \
+            --password "$NOTARY_PASSWORD" \
+            --team-id "$NOTARY_TEAM_ID"
+          echo "profile=mp-osc-notary" >> "$GITHUB_OUTPUT"
+
+      # ----------------------------------------------------------------------
+      # The actual build. release.sh --build downloads the models, runs
+      # PyInstaller, signs, archives with ditto, notarizes and staples.
+      # ----------------------------------------------------------------------
+      - name: Build and package
+        env:
+          MPOSC_CODESIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
+          MPOSC_NOTARY_PROFILE: ${{ steps.notary.outputs.profile }}
+        run: ./scripts/release.sh --build
+
+      - name: Collect build facts
+        id: facts
+        run: |
+          set -euo pipefail
+          VERSION="$(grep -m1 '^version' pyproject.toml | sed 's/.*"\(.*\)".*/\1/')"
+          ARCHIVE="dist/MP-OSC-${VERSION}-macos-arm64.zip"
+          [[ -f "$ARCHIVE" ]] || { echo "expected $ARCHIVE, not found" >&2; ls -la dist >&2; exit 1; }
+
+          if spctl -a -t exec dist/MP-OSC.app >/dev/null 2>&1; then
+            GATEKEEPER='accepted - runs on other machines with no extra steps'
+          else
+            GATEKEEPER='REJECTED - ad-hoc signed, users must strip the quarantine attribute'
+          fi
+
+          {
+            echo "version=$VERSION"
+            echo "archive=$ARCHIVE"
+            echo "checksum=$(cut -d' ' -f1 < "${ARCHIVE}.sha256")"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### MP-OSC $VERSION"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Ref built | \`${{ inputs.ref || github.ref }}\` |"
+            echo "| Commit | \`$(git rev-parse --short HEAD)\` |"
+            echo "| Archive | \`$(basename "$ARCHIVE")\` ($(du -h "$ARCHIVE" | cut -f1)) |"
+            echo "| SHA-256 | \`$(cut -d' ' -f1 < "${ARCHIVE}.sha256")\` |"
+            echo "| Gatekeeper | $GATEKEEPER |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Always uploaded, so a run with publish=false is still useful.
+      - name: Upload the build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MP-OSC-${{ steps.facts.outputs.version }}-macos-arm64
+          path: |
+            ${{ steps.facts.outputs.archive }}
+            ${{ steps.facts.outputs.archive }}.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create the GitHub Release
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.facts.outputs.version }}
+          ARCHIVE: ${{ steps.facts.outputs.archive }}
+          CHECKSUM: ${{ steps.facts.outputs.checksum }}
+        run: |
+          set -euo pipefail
+          TAG="v$VERSION"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists. Bump the version in pyproject.toml" >&2
+            echo "or use the 'version' input to build a different one." >&2
+            exit 1
+          fi
+
+          NOTES="$RUNNER_TEMP/notes.md"
+          {
+            echo "Apple Silicon Mac, macOS 11 or later. Intel Macs are not supported:"
+            echo "ndi-python publishes no x86_64 wheels."
+            echo
+            echo "Built from \`$(git rev-parse HEAD)\`."
+            echo
+            echo "\`\`\`"
+            echo "SHA-256  $CHECKSUM"
+            echo "\`\`\`"
+            if ! spctl -a -t exec dist/MP-OSC.app >/dev/null 2>&1; then
+              echo
+              echo "> This build is ad-hoc signed, so Gatekeeper will block it on first"
+              echo "> launch. After moving it to /Applications, run:"
+              echo '> ```'
+              echo '> xattr -dr com.apple.quarantine /Applications/MP-OSC.app'
+              echo '> ```'
+            fi
+          } > "$NOTES"
+
+          gh release create "$TAG" "$ARCHIVE" "${ARCHIVE}.sha256" \
+            --title "MP-OSC $VERSION" \
+            --notes-file "$NOTES" \
+            --target "$(git rev-parse HEAD)" \
+            ${{ inputs.draft && '--draft' || '' }}
+
+          echo "Release $TAG created." >> "$GITHUB_STEP_SUMMARY"
