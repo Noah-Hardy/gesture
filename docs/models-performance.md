@@ -1,0 +1,46 @@
+# Models & Performance
+
+## Pose model
+
+The **Pose model** dropdown trades accuracy for speed:
+
+| Model | Character |
+|---|---|
+| `lite` | Fastest, least accurate |
+| `full` | Balanced — a reasonable default |
+| `heavy` | Slowest, most accurate |
+
+This only affects **body pose** detection. Hand tracking always uses MediaPipe's single hand-landmarker model, and in `all` mode's default holistic path, one combined model handles both pose and hands regardless of this setting.
+
+## FPS cap
+
+Leave **FPS cap** blank or `0` to run uncapped (as fast as the camera and models allow). Setting a number (e.g. `30`) throttles how often frames are pulled from the camera/NDI source, which can produce steadier, more predictable timing for downstream animation — at the cost of a hard ceiling on responsiveness. This caps capture rate, not model inference time directly; a slow model can still fall behind an uncapped or generously capped rate (see **Dropped frames**, below).
+
+## Show FPS
+
+**Show FPS** prints a stats line to the log pane roughly every 30 frames:
+
+```
+CPU (MediaPipe Tasks) FPS: 28.41 | Memory: 412.3MB | OSC Sent: 8420 Dropped: 0 Queued: 2 | MP Pending: 0 Skipped: 3
+```
+
+- **FPS** — frames actually processed per second.
+- **Memory** — the tracking process's resident memory.
+- **OSC Sent / Dropped / Queued** — how many OSC messages have gone out, how many were dropped because the send queue was full (see **OSC Output**), and how many are queued right now.
+- **MP Pending / Skipped** — see **Dropped frames**, below.
+
+## Dropped frames
+
+MediaPipe's detector runs asynchronously from frame capture, and only one frame is ever allowed to be "in flight" being processed at a time. If a new frame arrives before the previous one has finished, that new frame is **skipped entirely** — not queued, not sent — and the `Skipped` counter in the FPS line increments. Critically, **no OSC message of any kind is sent for a skipped frame** (not even a status message), so a `Skipped` count that's climbing relative to your total frame count means the model is the bottleneck, not the network or the OSC queue. Choosing a lighter pose model, or forcing CPU vs. GPU (see below), is the usual fix.
+
+## Force CPU / Force GPU delegate
+
+By default, MP-OSC picks a delegate automatically: **Apple Silicon Macs always use CPU**, because MediaPipe's GPU delegate has a known memory leak on Apple Silicon. **Force CPU** and **Force Legacy** are launch-only toggles in the launcher (not saved to `config.json`) for troubleshooting or deliberately trading GPU acceleration for stability. Forcing GPU is only exposed via the command line (see the **Appendix**) precisely because of that memory-leak risk — it isn't offered as a launcher checkbox.
+
+## Force Legacy
+
+**Force Legacy** switches from MediaPipe's modern "Tasks" API to its older synchronous API. This disables GPU acceleration entirely, limits pose detection to a single person, and disables the combined holistic model in `all` mode (falling back to two separate legacy models). It exists as a compatibility fallback — MP-OSC already falls back to it automatically if the modern API fails to initialize — and normally shouldn't need to be checked by hand.
+
+## Garbage collection and memory
+
+`config.json`'s `performance.gc_enabled` and `performance.gc_interval` (not exposed in the launcher) control periodic Python garbage collection during tracking. Disabling it can produce smoother, more consistent frame timing at the cost of higher memory use over a long-running session. See the **Appendix** for these config keys.

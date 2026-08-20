@@ -21,10 +21,13 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk
+import webbrowser
+from tkinter import messagebox, ttk
 from typing import Any, List, Optional
 
+from src import docs
 from src.config import get_config
+from src.help_window import HelpWindow
 
 # NDI discovery is optional - the library may not be installed
 try:
@@ -75,6 +78,7 @@ class LauncherGui:
         self.killed = False
         self._queue = queue.Queue()           # type: queue.Queue
         self._form_widgets = []               # type: List[Any]
+        self.help_window = None               # type: Optional[HelpWindow]
 
         root.title("MediaPipe OSC Launcher")
         root.minsize(560, 620)
@@ -83,6 +87,7 @@ class LauncherGui:
 
         self._init_variables()
         self._build_layout()
+        self._build_menubar()
         self._poll()
 
         root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -119,6 +124,9 @@ class LauncherGui:
         self.var_pose_model = tk.StringVar(value=model)
         self.var_fps_cap = tk.StringVar(value=str(cfg.get('performance', 'target_fps', 0)))
         self.var_show_fps = tk.BooleanVar(value=bool(cfg.get('performance', 'show_fps', False)))
+
+        # Preview
+        self.var_mirror = tk.BooleanVar(value=bool(cfg.get('display', 'mirror_preview', False)))
 
         # GUI-local toggles (no config keys)
         self.var_force_cpu = tk.BooleanVar(value=False)
@@ -189,6 +197,15 @@ class LauncherGui:
                                       command=self._refresh_ndi_sources)
         self.btn_refresh.grid(row=3, column=2, sticky='w', pady=2)
         self._register(self.btn_refresh, 'normal')
+
+        ttk.Separator(frame, orient='horizontal').grid(row=4, column=0, columnspan=3,
+                                                       sticky='ew', pady=6)
+
+        chk_mirror = ttk.Checkbutton(
+            frame, text="🪞 Mirror preview window (display only - OSC data is unchanged)",
+            variable=self.var_mirror)
+        chk_mirror.grid(row=5, column=0, columnspan=3, sticky='w', pady=2)
+        self._register(chk_mirror, 'normal')
 
         if not NDI_AVAILABLE:
             self.var_source.set('camera')
@@ -286,6 +303,179 @@ class LauncherGui:
         label.grid(row=row, column=0, sticky='ew', pady=(6, 0))
 
     # ------------------------------------------------------------------------
+    # Menu bar
+    # ------------------------------------------------------------------------
+    def _build_menubar(self) -> None:
+        """Build the macOS menu bar: App, File, Engine, Help
+
+        root.config(menu=...) does not consume a grid row, so this needs no
+        layout change. The App menu (name='apple') and Help menu (name='help')
+        are macOS's special menu names - see _wire_app_menu for why the
+        About/Settings items are never added here directly.
+        """
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+
+        self._wire_app_menu(menubar)
+
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="Save Config", accelerator="Command-S",
+                              command=self._save_config)
+        file_menu.add_command(label="Open config.json", command=self._open_config_file)
+        file_menu.add_command(label="Reveal Config in Finder", accelerator="Shift-Command-R",
+                              command=self._reveal_config)
+        menubar.add_cascade(label="File", menu=file_menu)
+
+        engine_menu = tk.Menu(menubar, tearoff=0)
+        engine_menu.add_command(label="Start", accelerator="Command-R", command=self._menu_start)
+        self.MENU_START = engine_menu.index('end')
+        engine_menu.add_command(label="Stop", accelerator="Command-.", command=self._menu_stop)
+        self.MENU_STOP = engine_menu.index('end')
+        engine_menu.add_separator()
+        engine_menu.add_command(label="Clear Log", accelerator="Command-K", command=self._clear_log)
+        menubar.add_cascade(label="Engine", menu=engine_menu)
+        self.menu_engine = engine_menu
+
+        help_menu = tk.Menu(menubar, name='help')
+        menubar.add_cascade(label="Help", menu=help_menu)
+        last_group = None
+        for topic in docs.TOPICS:
+            if topic.group != last_group:
+                help_menu.add_separator()
+                last_group = topic.group
+            help_menu.add_command(label=topic.label, command=lambda s=topic.slug: self._show_help(s))
+        help_menu.add_separator()
+        help_menu.add_command(label="Open Full Documentation in Browser",
+                              command=self._open_full_docs)
+        help_menu.add_command(label="Project on GitHub", command=self._open_github)
+
+        self._bind_menu_accelerators()
+        self._sync_menu_state()
+
+    def _wire_app_menu(self, menubar: tk.Menu) -> None:
+        """Attach the special name='apple' menu, with no custom items on it
+
+        macOS builds the App menu's content itself. Defining these Tcl
+        commands makes macOS ADD the corresponding items in the correct
+        position (About, Settings, Quit) - adding custom items directly to
+        this menu would duplicate what macOS already puts there. The cascade
+        still has to be created and attached, though: once root.config(menu=)
+        replaces the default menu, nothing shows here without it.
+        """
+        app_menu = tk.Menu(menubar, name='apple')
+        menubar.add_cascade(menu=app_menu)
+
+        self.root.createcommand('tkAboutDialog', self._show_about)
+        self.root.createcommand('tk::mac::ShowPreferences', self._show_preferences)
+        self.root.createcommand('tk::mac::ShowHelp', lambda: self._show_help())
+        self.root.createcommand('tk::mac::Quit', self._on_close)
+
+    def _bind_menu_accelerators(self) -> None:
+        """tkinter does not auto-bind accelerator= labels - wire each by hand"""
+        bindings = (
+            ('<Command-s>', lambda e=None: self._save_config()),
+            ('<Command-r>', lambda e=None: self._menu_start()),
+            ('<Command-period>', lambda e=None: self._menu_stop()),
+            ('<Command-k>', lambda e=None: self._clear_log()),
+            ('<Command-Shift-R>', lambda e=None: self._reveal_config()),
+        )
+        for keysym, handler in bindings:
+            self.root.bind_all(keysym, handler)
+
+    def _sync_menu_state(self) -> None:
+        """Match the Engine menu to the engine's state
+
+        Menu items aren't tracked by _register/_set_form_enabled (that
+        machinery only understands widgets), so this is the parallel path -
+        called from the same handful of places _set_form_enabled already is.
+        """
+        running = self.is_running()
+        stopping = self.stop_requested_at is not None
+        try:
+            self.menu_engine.entryconfigure(
+                self.MENU_START, state='disabled' if (running or stopping) else 'normal')
+            self.menu_engine.entryconfigure(
+                self.MENU_STOP, state='normal' if (running and not stopping) else 'disabled')
+        except tk.TclError:
+            pass
+
+    def _menu_start(self) -> None:
+        """Engine > Start / the Command-R accelerator"""
+        if not self.is_running():
+            self._start_engine()
+
+    def _menu_stop(self) -> None:
+        """Engine > Stop / the Command-. accelerator"""
+        if self.is_running():
+            self._stop_engine()
+
+    def _open_config_file(self) -> None:
+        """Open config.json in the default text editor"""
+        path = os.path.abspath(self.config.config_file)
+        try:
+            subprocess.Popen(['/usr/bin/open', '-t', path])
+        except Exception as e:
+            self._append_log("⚠️  Failed to open config.json: {}".format(e))
+
+    def _reveal_config(self) -> None:
+        """Reveal config.json in Finder, or its containing folder if unsaved"""
+        path = os.path.abspath(self.config.config_file)
+        target = path if os.path.exists(path) else os.path.dirname(path)
+        if target != path:
+            self._set_status("⚠️  Config not saved yet - showing the folder")
+        try:
+            subprocess.Popen(['/usr/bin/open', '-R', target])
+        except Exception as e:
+            self._append_log("⚠️  Failed to reveal config: {}".format(e))
+
+    def _show_about(self) -> None:
+        """App > About MP-OSC"""
+        version = docs.app_version()
+        title = "MP-OSC {}".format(version).strip() if version else "MP-OSC"
+        messagebox.showinfo(
+            parent=self.root,
+            title="About MP-OSC",
+            message=title,
+            detail="MediaPipe pose and hand tracking, streamed over OSC.\n\n"
+                   "https://github.com/Noah-Hardy/mp-osc",
+        )
+
+    def _show_preferences(self) -> None:
+        """App > Settings… - the main window IS the settings form"""
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    def _show_help(self, slug: str = None) -> None:
+        """Open the docs viewer, or bring the existing one forward"""
+        if self.help_window is not None and self.help_window.exists():
+            self.help_window.show(slug)
+            return
+        self.help_window = HelpWindow(self.root, on_close=self._forget_help)
+        if slug is not None:
+            self.help_window.show(slug)
+
+    def _forget_help(self) -> None:
+        """Drop the reference once the viewer closes"""
+        self.help_window = None
+
+    def _open_full_docs(self) -> None:
+        """Help > Open Full Documentation in Browser"""
+        try:
+            path = docs.open_site()
+            self._set_status("📖 Opened documentation in browser")
+            self._append_log("📖 Documentation written to {}".format(path))
+        except Exception as e:
+            self._append_log("⚠️  Failed to open documentation: {}".format(e))
+
+    def _open_github(self) -> None:
+        """Help > Project on GitHub"""
+        try:
+            webbrowser.open('https://github.com/Noah-Hardy/mp-osc')
+        except Exception as e:
+            self._append_log("⚠️  Failed to open GitHub: {}".format(e))
+
+    # ------------------------------------------------------------------------
     # Widget enable/disable helpers
     # ------------------------------------------------------------------------
     def _register(self, widget: Any, enabled_state: str) -> None:
@@ -301,6 +491,7 @@ class LauncherGui:
                 pass
         if enabled:
             self._update_source_state()
+        self._sync_menu_state()
 
     def _update_source_state(self) -> None:
         """Grey out the input widgets that do not apply to the chosen source"""
@@ -413,6 +604,9 @@ class LauncherGui:
         if self.var_show_fps.get():
             cmd.append('--fps')
 
+        # Always explicit: the checkbox, not the saved config, decides
+        cmd.append('--mirror' if self.var_mirror.get() else '--no-mirror')
+
         # Backend toggles
         if self.var_force_cpu.get():
             cmd.append('--force-cpu')
@@ -439,6 +633,12 @@ class LauncherGui:
 
     def _start_engine(self) -> None:
         """Spawn the engine subprocess and begin streaming its output"""
+        if self.is_running():
+            # Unreachable via btn_start (it toggles), but the menu/⌘R
+            # accelerator can invoke this directly - guard against a double
+            # invocation orphaning the first child process.
+            return
+
         cmd = self._build_command()
 
         env = os.environ.copy()
@@ -501,6 +701,7 @@ class LauncherGui:
         self.stop_requested_at = time.monotonic()
         self.btn_start.configure(text="⏹ Stopping…", state='disabled')
         self._set_status("🛑 Stopping engine…")
+        self._sync_menu_state()
 
     def _escalate_stop(self) -> None:
         """Escalate SIGINT to SIGTERM then SIGKILL if the child hangs"""
@@ -649,6 +850,7 @@ class LauncherGui:
             self.config.set('mediapipe', 'pose_model_type', self.var_pose_model.get())
             self.config.set('performance', 'target_fps', fps_cap)
             self.config.set('performance', 'show_fps', bool(self.var_show_fps.get()))
+            self.config.set('display', 'mirror_preview', bool(self.var_mirror.get()))
 
             self.config.save()
         except Exception as e:

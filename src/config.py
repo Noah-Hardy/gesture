@@ -84,6 +84,7 @@ class Config:
         "display": {
             "show_window": True,
             "window_title": "MediaPipe OSC Pose Detection",
+            "mirror_preview": False,  # Flip the preview horizontally (display only - OSC data is unaffected)
             "landmark_color": [245, 117, 66],
             "connection_color": [245, 66, 230],
             "landmark_thickness": 1,
@@ -165,6 +166,7 @@ class Config:
             "MP_CAMERA_WIDTH": ("camera", "width"),
             "MP_CAMERA_HEIGHT": ("camera", "height"),
             "MP_SHOW_FPS": ("performance", "show_fps"),
+            "MP_MIRROR_PREVIEW": ("display", "mirror_preview"),
             "MP_PREFER_GPU": ("performance", "prefer_gpu"),
             "MP_MIN_DETECTION_CONFIDENCE": ("mediapipe", "min_detection_confidence"),
             "MP_MIN_TRACKING_CONFIDENCE": ("mediapipe", "min_tracking_confidence")

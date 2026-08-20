@@ -38,7 +38,7 @@ The OSC target defaults to the values in `config.json` (`osc.host` / `osc.port`)
 
 ## macOS Application
 
-`MP-OSC.app` wraps the same engine in a double-clickable bundle. Launching it opens a settings window where the tracking mode, input source, OSC destination, model and performance options are set, then **Start** runs the tracking engine and the preview appears in the usual OpenCV window.
+`MP-OSC.app` wraps the same engine in a double-clickable bundle. Launching it opens a settings window where the tracking mode, input source, OSC destination, model and performance options are set, then **Start** runs the tracking engine and the preview appears in the usual OpenCV window. **Mirror preview window** flips that preview horizontally so a webcam feed reads like a mirror; it changes the display only, never the landmark coordinates or the OSC output.
 
 The launcher does not run MediaPipe in-process. It builds a command line from the form and launches the engine as a subprocess of the same executable, so the app and the command line always exercise identical code. **Stop** sends `SIGINT`, which triggers the engine's normal cleanup path.
 
@@ -210,6 +210,11 @@ python main.py pose --pose-model full
 # Show FPS / memory / OSC stats counter
 python main.py pose --fps
 
+# Mirror the preview window (webcam mirror view)
+# Display only - landmark coordinates and OSC payloads are unaffected
+python main.py pose --mirror
+python main.py pose --no-mirror    # override display.mirror_preview = true in config
+
 # Use specific camera device
 python main.py hand --camera 1
 
@@ -238,7 +243,7 @@ Press `q` in the video window to quit.
 
 ### Environment Variable Overrides
 
-`MP_OSC_HOST`, `MP_OSC_PORT`, `MP_CAMERA_ID`, `MP_CAMERA_WIDTH`, `MP_CAMERA_HEIGHT`, `MP_SHOW_FPS`, `MP_PREFER_GPU`, `MP_MIN_DETECTION_CONFIDENCE`, `MP_MIN_TRACKING_CONFIDENCE`
+`MP_OSC_HOST`, `MP_OSC_PORT`, `MP_CAMERA_ID`, `MP_CAMERA_WIDTH`, `MP_CAMERA_HEIGHT`, `MP_SHOW_FPS`, `MP_MIRROR_PREVIEW`, `MP_PREFER_GPU`, `MP_MIN_DETECTION_CONFIDENCE`, `MP_MIN_TRACKING_CONFIDENCE`
 
 ## OSC Message Structure
 
@@ -316,7 +321,7 @@ See `config.json`. Key sections:
 - `mediapipe` — pose model type (`lite`/`full`/`heavy`), confidences, `num_poses`
 - `hand` — hand count, confidences, left/right display colors
 - `performance` — FPS cap (`target_fps`, 0 = uncapped), FPS display, garbage-collection tuning
-- `display` — window visibility/title, landmark drawing style
+- `display` — window visibility/title, preview mirroring (`mirror_preview`), landmark drawing style
 
 ## Troubleshooting
 
