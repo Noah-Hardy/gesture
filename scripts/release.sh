@@ -47,12 +47,81 @@ fi
 
 # ----------------------------------------------------------------------------
 # Sign for distribution, when an identity is available
+#
+# Signed inside-out, one binary at a time, rather than with `codesign --deep`.
+# Apple documents --deep as unsuitable for distribution signing: it applies the
+# top-level entitlements to nested code and quietly skips files it does not
+# recognise as code. The notary service, meanwhile, checks *every* nested
+# Mach-O for the hardened runtime and a secure timestamp, and rejects the
+# submission if any one of them is missing either.
+#
+# That matters here more than it would for a normal app. A PyInstaller bundle
+# of this project carries ~176 Mach-O files - CPython extension modules and
+# dylibs shipped inside third-party wheels - none of which are build products
+# this script produced. Each is signed on its own, then any framework bundles,
+# then the .app last so the outer seal covers the finished contents.
+#
+# Entitlements are applied only to the outer bundle. They govern the process
+# that actually runs (Contents/MacOS/mp-osc); a dylib does not get its own
+# JIT permission, it inherits the hosting process's. The main executable's
+# disable-library-validation is what lets these third-party dylibs load.
 # ----------------------------------------------------------------------------
+sign_inside_out() {
+    local identity="$1"
+    local app="$2"
+    local -a flags=(--force --timestamp --options runtime --sign "$identity")
+
+    echo "==> Finding nested Mach-O binaries in $app"
+    local -a binaries=()
+    local path
+    while IFS= read -r -d '' path; do
+        # Signatures live in _CodeSignature; never treat them as code.
+        case "$(file -b "$path" 2>/dev/null)" in
+            Mach-O*) binaries+=("$path") ;;
+        esac
+    done < <(find "$app" -type f ! -path '*/_CodeSignature/*' -print0)
+
+    local total=${#binaries[@]}
+    echo "    $total to sign"
+
+    # Each --timestamp is a round trip to Apple's timestamp authority, so this
+    # is network-bound and takes a few minutes. It cannot be skipped: without a
+    # secure timestamp the signature stops validating the day the certificate
+    # expires, and notarization refuses it outright.
+    local i=0
+    for path in "${binaries[@]}"; do
+        i=$((i + 1))
+        # Overwrite one line when a human is watching; in CI, where \r just
+        # produces one unreadable mega-line, log a milestone instead.
+        if [[ -t 1 ]]; then
+            printf '\r    signing %d/%d' "$i" "$total"
+        elif (( i % 50 == 0 || i == total )); then
+            printf '    signing %d/%d\n' "$i" "$total"
+        fi
+        if ! codesign "${flags[@]}" "$path" 2>/dev/null; then
+            [[ -t 1 ]] && printf '\n'
+            echo "error: failed to sign $path" >&2
+            return 1
+        fi
+    done
+    [[ -t 1 ]] && printf '\n'
+
+    # Framework bundles are sealed after their contents. -depth walks deepest
+    # first, so a nested framework is always signed before its parent.
+    local fw
+    while IFS= read -r -d '' fw; do
+        echo "    sealing framework $(basename "$fw")"
+        codesign "${flags[@]}" "$fw"
+    done < <(find "$app" -depth -type d -name '*.framework' -print0)
+
+    # The app bundle last, and the only place entitlements are applied.
+    echo "    sealing $(basename "$app") with entitlements"
+    codesign "${flags[@]}" --entitlements scripts/entitlements.plist "$app"
+}
+
 if [[ -n "${MPOSC_CODESIGN_IDENTITY:-}" ]]; then
-    echo "==> Re-signing the bundle with the hardened runtime"
-    codesign --force --deep --timestamp --options runtime \
-        --entitlements scripts/entitlements.plist \
-        -s "$MPOSC_CODESIGN_IDENTITY" "$APP"
+    echo "==> Signing with the hardened runtime (inside-out)"
+    sign_inside_out "$MPOSC_CODESIGN_IDENTITY" "$APP"
 fi
 
 echo "==> Verifying the signature"

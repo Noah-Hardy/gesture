@@ -171,11 +171,27 @@ jobs:
       - name: Store notarization credentials
         id: notary
         env:
+          SIGNING_IDENTITY: ${{ steps.signing.outputs.identity }}
           NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
           NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
           NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
         run: |
           set -euo pipefail
+
+          # Notarization depends on signing, so these are not independent
+          # switches. Apple rejects any submission that is not Developer ID
+          # signed, and it reports that as a problem with the signature rather
+          # than as a missing credential - which sends you looking in the wrong
+          # place. Refuse to submit an ad-hoc build instead.
+          if [[ -z "$SIGNING_IDENTITY" ]]; then
+            if [[ -n "$NOTARY_APPLE_ID$NOTARY_PASSWORD$NOTARY_TEAM_ID" ]]; then
+              echo "::warning title=Notarization skipped::APPLE_NOTARY_* secrets are set but no Developer ID certificate was imported, so this build is ad-hoc signed. Apple only notarizes Developer ID signed builds. Add MACOS_CERTIFICATE_P12 and MACOS_CERTIFICATE_PASSWORD to enable notarization."
+            fi
+            echo "No signing identity - skipping notarization."
+            echo "profile=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if [[ -z "$NOTARY_APPLE_ID" || -z "$NOTARY_PASSWORD" || -z "$NOTARY_TEAM_ID" ]]; then
             echo "Notarization secrets incomplete - skipping notarization."
             echo "profile=" >> "$GITHUB_OUTPUT"
