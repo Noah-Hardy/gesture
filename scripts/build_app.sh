@@ -39,8 +39,17 @@ PY
 echo "==> Running PyInstaller"
 uv run pyinstaller --noconfirm --clean mp-osc.spec
 
-echo "==> Ad-hoc signing the bundle"
-codesign --force --deep -s - dist/MP-OSC.app
+# An ad-hoc signature is the floor, not a preference: arm64 macOS refuses to
+# execute unsigned code, so the bundle needs one to launch at all. Skip it when
+# a real identity is set, because --deep ad-hoc would overwrite the Developer ID
+# signature the spec just applied to the executable, and scripts/release.sh is
+# about to sign everything properly inside-out anyway.
+if [[ -n "${MPOSC_CODESIGN_IDENTITY:-}" ]]; then
+    echo "==> Leaving the bundle unsealed for release.sh to sign as ${MPOSC_CODESIGN_IDENTITY}"
+else
+    echo "==> Ad-hoc signing the bundle"
+    codesign --force --deep -s - dist/MP-OSC.app
+fi
 
 echo
 echo "Built: $(pwd)/dist/MP-OSC.app"

@@ -165,6 +165,14 @@ export MPOSC_NOTARY_PROFILE="mp-osc-notary"
 
 The hardened runtime entitlements this requires are in `scripts/entitlements.plist`: JIT and unsigned executable memory for TensorFlow Lite, disabled library validation for PyInstaller's bundled dylibs, and camera access.
 
+#### How the bundle is signed
+
+`release.sh` signs **inside-out**, one binary at a time, rather than using `codesign --deep`. Apple documents `--deep` as unsuitable for distribution signing — it applies the top-level entitlements to nested code and quietly skips files it does not recognise as code — while the notary service checks *every* nested Mach-O for the hardened runtime and a secure timestamp and rejects the submission if one is missing either.
+
+That distinction matters here because the bundle contains **178 Mach-O files**: CPython extension modules and dylibs shipped inside third-party wheels, none of them build products this project produced. The script signs each one, then any framework bundles, then the `.app` last. Entitlements are applied only to the outer bundle, since they govern the process that runs rather than the libraries it loads.
+
+Each signature carries `--timestamp`, which is a network round trip to Apple's timestamp authority, so this stage takes a few minutes and needs to be online. It is not optional: without a secure timestamp, signatures stop validating when the certificate expires, and notarization refuses them.
+
 ### What recipients need
 
 Nothing — no Python, no uv, no Homebrew, no NDI SDK. The bundle carries its own interpreter, MediaPipe, OpenCV, Tcl/Tk, `libndi.dylib` and all five landmarker models. The only requirements are an **Apple Silicon Mac on macOS 13 or later**. Intel Macs cannot run it, because `ndi-python` publishes no x86_64 macOS wheels.
