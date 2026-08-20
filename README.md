@@ -138,10 +138,16 @@ secrets (Settings → Secrets and variables → Actions) to sign and notarize:
 | `APPLE_NOTARY_PASSWORD` | notarization | App-specific password, not the account password |
 | `APPLE_NOTARY_TEAM_ID` | notarization | 10-character Team ID |
 
-Signing and notarization are independent: the certificate secrets alone give a
-Developer ID signed build with the hardened runtime, and adding the three
-`APPLE_NOTARY_*` secrets also notarizes and staples it. The certificate is
-imported into a temporary keychain that exists only for that job.
+Notarization builds on signing rather than being independent of it. The
+certificate secrets alone give a Developer ID signed build with the hardened
+runtime; adding the three `APPLE_NOTARY_*` secrets on top also notarizes and
+staples it. The reverse does not work — Apple only notarizes Developer ID
+signed builds — so setting the `APPLE_NOTARY_*` secrets *without* a certificate
+skips notarization and logs a warning on the run, rather than submitting an
+ad-hoc build that Apple would reject with a confusing signature error.
+
+The certificate is imported into a temporary keychain that exists only for that
+job.
 
 ### Signing for distribution
 
