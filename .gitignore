@@ -186,6 +186,9 @@ cython_debug/
 #   mp-osc.spec is hand-written source and must stay tracked.
 !mp-osc.spec
 
+# Icon generator scratch (scripts/make_icon.py --keep-iconset)
+assets/*.iconset/
+
 # macOS Finder metadata
 .DS_Store
 

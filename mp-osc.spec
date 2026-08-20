@@ -62,6 +62,20 @@ if _missing:
 
 datas += [('src/tasks', 'src/tasks')]
 
+# Operator documentation, resolved at runtime via sys._MEIPASS/docs (see
+# src.docs.docs_dir). Markdown is the shipped form; the browser HTML is
+# rendered on demand into ~/Library/Application Support/mp-osc/docs, because
+# nothing may be written inside the signed bundle.
+_ICON = 'assets/MP-OSC.icns'
+if not os.path.exists(_ICON):
+    raise SystemExit(
+        f'Missing app icon: {_ICON}\nGenerate it with: uv run python scripts/make_icon.py'
+    )
+if not os.path.isdir('docs') or not os.listdir('docs'):
+    raise SystemExit('Missing docs/ directory - operator documentation must ship with the app')
+
+datas += [('docs', 'docs')]
+
 # ndi-python keeps libndi.dylib inside the NDIlib package next to the extension
 # module. collect_dynamic_libs finds it there; the fallback below guards against
 # a future wheel layout change silently producing an NDI-less bundle.
@@ -140,7 +154,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='MP-OSC.app',
-    icon=None,
+    icon=_ICON,
     bundle_identifier='net.hardymail.mp-osc',
     info_plist={
         'NSCameraUsageDescription':

@@ -34,6 +34,7 @@
   "display": {
     "show_window": true,
     "window_title": "MediaPipe OSC Pose Detection",
+    "mirror_preview": false,
     "landmark_color": [245, 117, 66],
     "connection_color": [245, 66, 230],
     "landmark_thickness": 1,

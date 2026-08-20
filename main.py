@@ -54,6 +54,11 @@ def build_parser():
     parser.add_argument('--pose-model', choices=['lite', 'full', 'heavy'], default=None, help='Pose model type: lite (fastest), full (balanced), or heavy (most accurate). If not set, uses config value (config default: lite)')
     parser.add_argument('--fps-cap', type=int, help='Cap frame rate for stability (e.g., 30). If not set, runs uncapped.')
     parser.add_argument('--no-holistic', action='store_true', help='In all mode, use separate pose + hand landmarkers instead of the holistic landmarker')
+    mirror_group = parser.add_mutually_exclusive_group()
+    mirror_group.add_argument('--mirror', dest='mirror_preview', action='store_true', default=None,
+                              help='Mirror the preview window horizontally (display only - OSC coordinates are unchanged)')
+    mirror_group.add_argument('--no-mirror', dest='mirror_preview', action='store_false',
+                              help='Do not mirror the preview window (overrides the config value)')
     parser.add_argument('mode', choices=['pose', 'hand', 'all'], help='Tracking mode: pose, hand, or all (both)')
     return parser
 
@@ -99,6 +104,8 @@ def apply_config_overrides(args, config):
         config.set('mediapipe', 'pose_model_type', args.pose_model)
     if args.fps_cap is not None:
         config.set('performance', 'target_fps', args.fps_cap)
+    if args.mirror_preview is not None:
+        config.set('display', 'mirror_preview', args.mirror_preview)
 
 
 # ============================================================================
@@ -234,6 +241,26 @@ def setup_camera(config, use_ndi=False, ndi_source=None):
 
 
 # ============================================================================
+# PREVIEW WINDOW
+# ============================================================================
+def show_preview(image, window_title, mirror):
+    """
+    Draw the annotated frame in the preview window
+
+    The flip happens after processing, so it only affects what is displayed -
+    landmark coordinates and every OSC message stay in source space.
+
+    Args:
+        image: Annotated frame to display
+        window_title: Preview window name
+        mirror: Boolean to flip the preview horizontally (webcam mirror view)
+    """
+    if mirror:
+        image = cv2.flip(image, 1)
+    cv2.imshow(window_title, image)
+
+
+# ============================================================================
 # LEGACY PROCESSING LOOP HELPER
 # ============================================================================
 def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx, 
@@ -248,6 +275,7 @@ def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
     """
     consecutive_failures = 0
     last_frame_time = time.time()
+    mirror_preview = display_config.get('mirror_preview', False)
     
     while cap.isOpened():
         # Frame rate limiting
@@ -281,7 +309,7 @@ def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
                 image = hand_processor.process_frame(image, hand_ctx, "Hand")
             
             if display_config['show_window']:
-                cv2.imshow(window_title, image)
+                show_preview(image, window_title, mirror_preview)
             
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
@@ -508,6 +536,8 @@ def run(args, config):
     print(f"🚀 Mode: {tracking_mode.upper()}")
     print(f"🚀 Backend(s): {backend_str}")
     print(f"🖼️  Window: {window_title}")
+    if display_config.get('mirror_preview', False):
+        print("🪞 Preview mirrored (display only - OSC coordinates are unchanged)")
     
     # ========================================================================
     # MAIN PROCESSING LOOP
@@ -535,6 +565,7 @@ def run(args, config):
         if use_tasks_loop:
             # Tasks processing with async callback
             last_frame_time = time.time()
+            mirror_preview = display_config.get('mirror_preview', False)
             
             while cap.isOpened():
                 # Frame rate limiting - sleep to maintain target fps
@@ -570,7 +601,7 @@ def run(args, config):
                         image = hand_processor.process_frame(image, hand_landmarker, "Hand", timestamp_counter)
                     
                     if display_config['show_window']:
-                        cv2.imshow(window_title, image)
+                        show_preview(image, window_title, mirror_preview)
                     
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         break

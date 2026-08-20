@@ -222,6 +222,34 @@ class PoseProcessor:
         if self._gc_enabled and self.frame_counter % self._gc_interval == 0:
             gc.collect()
 
+    # ------------------------------------------------------------------------
+    # Drawing
+    # ------------------------------------------------------------------------
+
+    def _draw_landmarks(self, image, landmarks):
+        """
+        Draw pose landmarks on image
+        Uses pre-built DrawingSpec objects cached in __init__
+
+        Args:
+            image: Image to draw on
+            landmarks: Landmark list to draw
+        """
+        # Convert landmarks for drawing
+        pose_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
+        pose_landmarks_proto.landmark.extend([
+            landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z)
+            for landmark in landmarks
+        ])
+
+        mp.solutions.drawing_utils.draw_landmarks(
+            image,
+            pose_landmarks_proto,
+            mp.solutions.pose.POSE_CONNECTIONS,
+            self._landmark_spec,
+            self._connection_spec
+        )
+
 
 # ============================================================================
 # MEDIAPIPE TASKS PROCESSOR (Modern API with GPU support)
@@ -551,30 +579,6 @@ class TasksPoseProcessor(PoseProcessor):
             self._display_results = None
             return frame
 
-    def _draw_landmarks(self, image, landmarks):
-        """
-        Draw pose landmarks on image
-        Uses pre-built DrawingSpec objects cached in __init__
-
-        Args:
-            image: Image to draw on
-            landmarks: Landmark list to draw
-        """
-        # Convert landmarks for drawing
-        pose_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
-        pose_landmarks_proto.landmark.extend([
-            landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z)
-            for landmark in landmarks
-        ])
-
-        mp.solutions.drawing_utils.draw_landmarks(
-            image,
-            pose_landmarks_proto,
-            mp.solutions.pose.POSE_CONNECTIONS,
-            self._landmark_spec,
-            self._connection_spec
-        )
-
 
 # ============================================================================
 # LEGACY MEDIAPIPE PROCESSOR (Older API, CPU only, single pose)
@@ -716,7 +720,8 @@ class LegacyPoseProcessor(PoseProcessor):
     def _draw_landmarks(self, image, pose_landmarks):
         """
         Draw pose landmarks on image
-        Uses pre-built DrawingSpec objects cached in __init__
+        Overrides the base version: the legacy API already hands back a
+        NormalizedLandmarkList proto, so no conversion is needed
 
         Args:
             image: Image to draw on

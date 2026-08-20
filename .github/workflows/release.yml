@@ -56,7 +56,8 @@ jobs:
       - name: Verify the ref contains the packaging files
         run: |
           missing=()
-          for path in app.py mp-osc.spec scripts/build_app.sh scripts/release.sh src/gui.py; do
+          for path in app.py mp-osc.spec scripts/build_app.sh scripts/release.sh src/gui.py \
+                      assets/MP-OSC.icns docs/welcome.md; do
             [[ -e "$path" ]] || missing+=("$path")
           done
           if (( ${#missing[@]} )); then
