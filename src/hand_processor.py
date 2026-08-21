@@ -18,7 +18,7 @@ import numpy as np
 import mediapipe as mp
 from mediapipe.framework.formats import landmark_pb2
 
-from .pose_utils import get_pose_bounds_with_values, process_landmarks_to_dict, compact_json
+from .pose_utils import get_pose_bounds_with_values, process_landmarks_to_dict, compact_json, letterbox_frame, LetterboxTransform
 from .model_downloader import download_hand_model
 
 # Optional psutil import for memory monitoring
@@ -64,6 +64,8 @@ class HandProcessor:
         self.max_pending_frames = 1
         self.skipped_frames = 0
         self._last_detection_state = False  # Track if we had detection last time
+        self._last_left_hand_state = False  # Per-hand detection state for transition-to-empty clearing
+        self._last_right_hand_state = False
         self._has_fresh_results = False  # Track if callback delivered new results
         self._display_results = None  # Main-thread-only copy of last taken results for stale drawing
 
@@ -78,6 +80,12 @@ class HandProcessor:
         camera_config = config.get('camera') if config else {}
         self._proc_width = camera_config.get('processing_width', 640)
         self._proc_height = camera_config.get('processing_height', 480)
+
+        # Maps normalized coords from the (possibly letterboxed) processing
+        # frame back to the source frame; identity until the first resize
+        self._letterbox_transform = LetterboxTransform(
+            1.0, 0, 0, self._proc_width, self._proc_height, self._proc_width, self._proc_height
+        )
 
         if config:
             performance_config = config.get('performance')
@@ -141,19 +149,33 @@ class HandProcessor:
             }
             self.osc_sender.send_message(f"/{hand_prefix}/world", compact_json(world_payload))
     
-    def send_hand_bounds_data(self, landmarks, world_landmarks, handedness):
+    def send_hand_bounds_data(self, landmarks, world_landmarks, handedness, transform=None):
         """Send bounding box data via OSC (single hand)"""
         # Use left_hand or right_hand prefix based on handedness
         hand_prefix = "left_hand" if handedness.lower() == "left" else "right_hand"
-        
+
         if landmarks:
-            bounds = get_pose_bounds_with_values(landmarks)
+            bounds = get_pose_bounds_with_values(landmarks, transform)
             self.osc_sender.send_message(f"/{hand_prefix}/bounds", compact_json(bounds))
-        
+
         if world_landmarks:
+            # World landmarks are already in real-world metres - no transform
             world_bounds = get_pose_bounds_with_values(world_landmarks)
             self.osc_sender.send_message(f"/{hand_prefix}/world_bounds", compact_json(world_bounds))
     
+    def send_empty_single_hand_data(self, handedness, timestamp):
+        """Send empty data for one hand to clear stale data on receiving machine"""
+        hand_prefix = "left_hand" if handedness.lower() == "left" else "right_hand"
+        empty_payload = {
+            "timestamp": timestamp,
+            "handedness": handedness,
+            "landmarks": []
+        }
+        self.osc_sender.send_message(f"/{hand_prefix}/raw", compact_json(empty_payload))
+        self.osc_sender.send_message(f"/{hand_prefix}/world", compact_json(empty_payload))
+        self.osc_sender.send_message(f"/{hand_prefix}/bounds", compact_json({}))
+        self.osc_sender.send_message(f"/{hand_prefix}/world_bounds", compact_json({}))
+
     def send_empty_hand_data(self, timestamp):
         """Send empty data to clear stale data on receiving machine"""
         empty_payload = {
@@ -179,12 +201,12 @@ class HandProcessor:
             }
             self.osc_sender.send_message("/hand/multi_raw", compact_json(multi_hand_payload))
     
-    def send_multiple_hand_bounds_data(self, all_landmarks):
+    def send_multiple_hand_bounds_data(self, all_landmarks, transform=None):
         """Send bounds data for multiple hands via OSC"""
         if all_landmarks:
             all_bounds = []
             for landmarks in all_landmarks:
-                bounds = get_pose_bounds_with_values(landmarks)
+                bounds = get_pose_bounds_with_values(landmarks, transform)
                 all_bounds.append(bounds)
             
             multi_bounds_payload = {
@@ -365,45 +387,74 @@ class TasksHandProcessor(HandProcessor):
             self.pending_frames = max(0, self.pending_frames - 1)
         del output_image
     
-    def process_frame(self, frame, landmarker, backend_name, timestamp_counter):
+    def process_frame(self, frame, landmarker, backend_name, timestamp_counter, draw_target=None):
         """
         Process a single frame with MediaPipe Tasks hand landmarker
-        
+
         Args:
             frame: Input frame from camera/NDI
             landmarker: MediaPipe HandLandmarker instance
             backend_name: Backend name for FPS display
             timestamp_counter: Frame counter for async processing
-            
+            draw_target: Optional shared display array to draw landmarks into
+                instead of the inference frame. Lets a caller composite this
+                processor's overlays onto another processor's output (e.g.
+                pose + hand in one preview) without feeding annotated pixels
+                back into either model. Model input is always the clean
+                letterboxed frame, never draw_target. Defaults to None,
+                which falls back to today's single-processor behavior:
+                draw into (a copy of, if shared) the letterboxed frame.
+
         Returns:
-            Annotated frame with landmarks drawn
+            Annotated frame with landmarks drawn (draw_target, if provided)
         """
         try:
             if frame is None or frame.size == 0:
                 return frame
-            
+
             # Always resize frame for consistent display
             proc_width = self._proc_width
             proc_height = self._proc_height
 
             h, w = frame.shape[:2]
             if w != proc_width or h != proc_height:
-                if (self._resize_buffer is None or 
-                    self._resize_buffer.shape[0] != proc_height or 
-                    self._resize_buffer.shape[1] != proc_width):
-                    self._resize_buffer = np.empty((proc_height, proc_width, 3), dtype=np.uint8)
-                
-                cv2.resize(frame, (proc_width, proc_height), dst=self._resize_buffer, interpolation=cv2.INTER_LINEAR)
-                image = self._resize_buffer
+                # Letterbox instead of stretching: preserves the source aspect
+                # ratio (padding with black bars) so normalized coordinates
+                # sent over OSC stay correct relative to the true source frame
+                image, letterbox_transform = letterbox_frame(frame, proc_width, proc_height, self._resize_buffer)
+                if letterbox_transform.pad_x == 0 and letterbox_transform.pad_y == 0:
+                    # No padding needed - image is the reusable resize buffer
+                    self._resize_buffer = image
+                self._letterbox_transform = letterbox_transform
             else:
                 image = frame
-            
+                self._letterbox_transform = LetterboxTransform(1.0, 0, 0, proc_width, proc_height, proc_width, proc_height)
+
+            # `image` is the inference input ONLY - always the clean,
+            # letterboxed frame, never annotated. `target` is what gets
+            # drawn into and returned; a caller-supplied draw_target lets
+            # multiple processors composite their overlays onto one shared
+            # array in a single loop iteration without leaking one
+            # processor's drawings into another's model input.
+            target = draw_target if draw_target is not None else (image.copy() if image is self._resize_buffer else image)
+
             # Check if MediaPipe's async queue is backing up
             if self.pending_frames >= self.max_pending_frames:
+                # Skip MediaPipe processing, but keep the preview skeleton
+                # alive by redrawing the last known results - otherwise it
+                # blinks on/off every time the model is the bottleneck
                 self.skipped_frames += 1
                 self.update_fps(backend_name)
-                return image.copy() if image is self._resize_buffer else image
-            
+                if self._display_results is not None and self._display_results.hand_landmarks:
+                    for i, hand_landmark in enumerate(self._display_results.hand_landmarks):
+                        handedness = "Unknown"
+                        if self._display_results.handedness and i < len(self._display_results.handedness):
+                            handedness = self._display_results.handedness[i][0].category_name
+                        self._draw_landmarks(target, hand_landmark, handedness)
+                # No OSC here - a skipped frame means "no new information",
+                # not "nothing detected"; sending status would misrepresent one or the other
+                return target
+
             # Convert to RGB for MediaPipe
             if (self._rgb_buffer is None or 
                 self._rgb_buffer.shape[0] != image.shape[0] or 
@@ -428,14 +479,7 @@ class TasksHandProcessor(HandProcessor):
             del mp_image
             
             timestamp = time.time()
-            
-            # Convert RGB back to BGR for OpenCV display
-            if self._resize_buffer is not None and self._resize_buffer.shape == rgb_frame.shape:
-                cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR, dst=self._resize_buffer)
-                image = self._resize_buffer
-            else:
-                image = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
-            
+
             # Atomically check-and-take fresh results from the callback thread
             # (hold the lock only for the swap - never during serialization/sends/drawing)
             fresh_results = None
@@ -452,15 +496,22 @@ class TasksHandProcessor(HandProcessor):
                 self._display_results = fresh_results
                 hands_detected = bool(fresh_results.hand_landmarks)
 
+                # Track which hand prefixes (left_hand/right_hand) are actually sent this
+                # frame, resolved via the same rule send_hand_data uses, so an "Unknown"
+                # handedness label can't desync the flags from what was actually sent.
+                seen_prefixes = set()
+                hand_count = 0
+
                 if hands_detected and len(fresh_results.hand_landmarks) > 0:
-                    self._last_detection_state = True
                     all_hand_landmarks = []
                     all_hand_world_landmarks = []
                     all_handedness = []
+                    # Snapshot for this call - stable for the duration of process_frame
+                    transform = self._letterbox_transform
 
                     # Process each detected hand
                     for i, hand_landmark in enumerate(fresh_results.hand_landmarks):
-                        hand_landmarks = process_landmarks_to_dict(hand_landmark, f"hand_{i}")
+                        hand_landmarks = process_landmarks_to_dict(hand_landmark, f"hand_{i}", transform)
                         all_hand_landmarks.append(hand_landmarks)
 
                         # Get handedness (left/right)
@@ -470,7 +521,7 @@ class TasksHandProcessor(HandProcessor):
                             handedness = "Unknown"
                         all_handedness.append(handedness)
 
-                    # Process world landmarks if available
+                    # Process world landmarks if available (already real-world metres - no transform)
                     if (hasattr(fresh_results, 'hand_world_landmarks') and
                         fresh_results.hand_world_landmarks):
                         for i, hand_world_landmark in enumerate(fresh_results.hand_world_landmarks):
@@ -482,30 +533,41 @@ class TasksHandProcessor(HandProcessor):
                         hand_landmarks = all_hand_landmarks[i]
                         hand_world_landmarks = all_hand_world_landmarks[i] if i < len(all_hand_world_landmarks) else None
                         handedness = all_handedness[i]
+                        seen_prefixes.add("left_hand" if handedness.lower() == "left" else "right_hand")
+                        hand_count += 1
                         self.send_hand_data(hand_landmarks, hand_world_landmarks, handedness, timestamp)
                         self.send_hand_bounds_data(
                             fresh_results.hand_landmarks[i],
                             fresh_results.hand_world_landmarks[i] if hand_world_landmarks else None,
-                            handedness
+                            handedness,
+                            transform
                         )
-
-                    self.osc_sender.send_message("/hand/status", compact_json({"status": len(fresh_results.hand_landmarks)}))
 
                     # Draw all hand landmarks
                     for i, hand_landmark in enumerate(fresh_results.hand_landmarks):
                         handedness = all_handedness[i] if i < len(all_handedness) else "Unknown"
-                        self._draw_landmarks(image, hand_landmark, handedness)
+                        self._draw_landmarks(target, hand_landmark, handedness)
 
                     del all_hand_landmarks
                     del all_hand_world_landmarks
                     del all_handedness
-                else:
-                    # Always send status message so receivers know program is running
-                    self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
-                    # Only send empty data once when transitioning from detected to not detected
-                    if self._last_detection_state:
-                        self.send_empty_hand_data(timestamp)
-                        self._last_detection_state = False
+
+                # Always send status message so receivers know program is running
+                self.osc_sender.send_message("/hand/status", compact_json({"status": hand_count}))
+
+                # Per-hand transition-to-empty clearing: any hand not seen this frame
+                # that was tracked last frame gets cleared exactly once. Running this
+                # against an empty seen_prefixes set in the no-hands case subsumes the
+                # old all-hands-at-once clear, so the two paths can't double-send.
+                for hand_prefix, handedness_label, last_state_attr in (
+                    ("left_hand", "Left", '_last_left_hand_state'),
+                    ("right_hand", "Right", '_last_right_hand_state'),
+                ):
+                    if hand_prefix in seen_prefixes:
+                        setattr(self, last_state_attr, True)
+                    elif getattr(self, last_state_attr):
+                        self.send_empty_single_hand_data(handedness_label, timestamp)
+                        setattr(self, last_state_attr, False)
             elif self._display_results is not None:
                 # We have results but they're stale, just draw landmarks
                 if self._display_results.hand_landmarks:
@@ -513,20 +575,20 @@ class TasksHandProcessor(HandProcessor):
                         handedness = "Unknown"
                         if self._display_results.handedness and i < len(self._display_results.handedness):
                             handedness = self._display_results.handedness[i][0].category_name
-                        self._draw_landmarks(image, hand_landmark, handedness)
+                        self._draw_landmarks(target, hand_landmark, handedness)
                 # No fresh detection this frame - status 0 signals no actively tracked hand
                 self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
             else:
                 # No results yet - still send status so receivers know program is running
                 self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
-            
+
             del rgb_frame
             if 'rgba_frame' in locals():
                 del rgba_frame
-            
+
             self.update_fps(backend_name)
-            return image
-            
+            return target
+
         except Exception as e:
             print(f"⚠️  Hand frame processing error: {e}")
             # Clear results on error to prevent memory leak (under lock - shared with callback thread)
@@ -534,7 +596,7 @@ class TasksHandProcessor(HandProcessor):
                 self.results = None
                 self._has_fresh_results = False
             self._display_results = None
-            return frame
+            return draw_target if draw_target is not None else frame
 
     def _draw_landmarks(self, image, landmarks, handedness="Unknown"):
         """
@@ -604,17 +666,22 @@ class LegacyHandProcessor(HandProcessor):
         
         return hand_context, backend_name, window_title
     
-    def process_frame(self, frame, hand_context, backend_name):
+    def process_frame(self, frame, hand_context, backend_name, draw_target=None):
         """
         Process a single frame with Legacy MediaPipe hands
-        
+
         Args:
             frame: Input frame from camera/NDI
             hand_context: MediaPipe Hands context manager
             backend_name: Backend name for FPS display
-            
+            draw_target: Optional shared display array to draw landmarks
+                into instead of the inference frame - see
+                TasksHandProcessor.process_frame for the full rationale.
+                Defaults to None, which falls back to today's
+                single-processor behavior.
+
         Returns:
-            Annotated frame with landmarks drawn
+            Annotated frame with landmarks drawn (draw_target, if provided)
         """
         try:
             # Resize frame for processing if needed
@@ -623,61 +690,65 @@ class LegacyHandProcessor(HandProcessor):
 
             h, w = frame.shape[:2]
             if w != proc_width or h != proc_height:
-                if (self._resize_buffer is None or 
-                    self._resize_buffer.shape[0] != proc_height or 
-                    self._resize_buffer.shape[1] != proc_width):
-                    self._resize_buffer = np.empty((proc_height, proc_width, 3), dtype=np.uint8)
-                
-                cv2.resize(frame, (proc_width, proc_height), dst=self._resize_buffer, interpolation=cv2.INTER_LINEAR)
-                image = self._resize_buffer
+                # Letterbox instead of stretching: preserves the source aspect
+                # ratio (padding with black bars) so normalized coordinates
+                # sent over OSC stay correct relative to the true source frame
+                image, letterbox_transform = letterbox_frame(frame, proc_width, proc_height, self._resize_buffer)
+                if letterbox_transform.pad_x == 0 and letterbox_transform.pad_y == 0:
+                    # No padding needed - image is the reusable resize buffer
+                    self._resize_buffer = image
+                self._letterbox_transform = letterbox_transform
             else:
                 image = frame
-            
+                self._letterbox_transform = LetterboxTransform(1.0, 0, 0, proc_width, proc_height, proc_width, proc_height)
+
+            # `image` is the inference input ONLY - always the clean,
+            # letterboxed frame, never annotated. `target` is what gets
+            # drawn into and returned - see TasksHandProcessor.process_frame
+            # for the full rationale.
+            target = draw_target if draw_target is not None else (image.copy() if image is self._resize_buffer else image)
+
             # Convert to RGB for MediaPipe
-            if (self._rgb_buffer is None or 
-                self._rgb_buffer.shape[0] != image.shape[0] or 
+            if (self._rgb_buffer is None or
+                self._rgb_buffer.shape[0] != image.shape[0] or
                 self._rgb_buffer.shape[1] != image.shape[1]):
                 self._rgb_buffer = np.empty((image.shape[0], image.shape[1], 3), dtype=np.uint8)
-            
+
             cv2.cvtColor(image, cv2.COLOR_BGR2RGB, dst=self._rgb_buffer)
             rgb_image = self._rgb_buffer
-            
+
             # Process with MediaPipe Hands
             results = hand_context.process(rgb_image)
-            
-            # Convert back to BGR for display
-            if self._resize_buffer is not None and self._resize_buffer.shape == rgb_image.shape:
-                cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR, dst=self._resize_buffer)
-                image = self._resize_buffer
-            else:
-                image = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR)
+
             timestamp = time.time()
             
             hands_detected = bool(results.multi_hand_landmarks)
             
             if hands_detected:
+                self._last_detection_state = True
                 all_hand_landmarks = []
                 all_hand_world_landmarks = []
                 all_handedness = []
-                
+
                 for i, hand_landmark in enumerate(results.multi_hand_landmarks):
-                    hand_landmarks = process_landmarks_to_dict(hand_landmark.landmark, f"hand_{i}")
+                    hand_landmarks = process_landmarks_to_dict(hand_landmark.landmark, f"hand_{i}", self._letterbox_transform)
                     all_hand_landmarks.append(hand_landmarks)
-                    
+
                     # Get handedness
                     if results.multi_handedness and i < len(results.multi_handedness):
                         handedness = results.multi_handedness[i].classification[0].label
                     else:
                         handedness = "Unknown"
                     all_handedness.append(handedness)
-                
+
                 # Process world landmarks if available (legacy may not have this)
-                if (hasattr(results, 'multi_hand_world_landmarks') and 
+                # World landmarks are already real-world metres - no transform
+                if (hasattr(results, 'multi_hand_world_landmarks') and
                     results.multi_hand_world_landmarks):
                     for i, hand_world_landmark in enumerate(results.multi_hand_world_landmarks):
                         hand_world_landmarks = process_landmarks_to_dict(hand_world_landmark.landmark, f"hand_world_{i}")
                         all_hand_world_landmarks.append(hand_world_landmarks)
-                
+
                 # Send individual hand data for each hand
                 for i in range(len(all_hand_landmarks)):
                     hand_landmarks = all_hand_landmarks[i]
@@ -687,7 +758,8 @@ class LegacyHandProcessor(HandProcessor):
                     self.send_hand_bounds_data(
                         results.multi_hand_landmarks[i].landmark,
                         results.multi_hand_world_landmarks[i].landmark if hand_world_landmarks else None,
-                        handedness
+                        handedness,
+                        self._letterbox_transform
                     )
                 
                 self.osc_sender.send_message("/hand/status", compact_json({"status": len(results.multi_hand_landmarks)}))
@@ -695,23 +767,27 @@ class LegacyHandProcessor(HandProcessor):
                 # Draw hand landmarks
                 for i, hand_landmark in enumerate(results.multi_hand_landmarks):
                     handedness = all_handedness[i] if i < len(all_handedness) else "Unknown"
-                    self._draw_landmarks_legacy(image, hand_landmark, handedness)
-                
+                    self._draw_landmarks_legacy(target, hand_landmark, handedness)
+
                 del all_hand_landmarks
                 del all_hand_world_landmarks
                 del all_handedness
             else:
                 # Always send status message so receivers know program is running
                 self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
-            
+                # Only send empty data once when transitioning from detected to not detected
+                if self._last_detection_state:
+                    self.send_empty_hand_data(timestamp)
+                    self._last_detection_state = False
+
             self.update_fps(backend_name)
-            return image
-            
+            return target
+
         except Exception as e:
             print(f"⚠️  Legacy hand frame processing error: {e}")
             if 'image' in locals() and image is not frame:
                 del image
-            return frame
+            return draw_target if draw_target is not None else frame
     
     def _draw_landmarks_legacy(self, image, hand_landmarks, handedness="Unknown"):
         """

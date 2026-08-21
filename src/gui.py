@@ -68,6 +68,14 @@ SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 SPINNER_INTERVAL_MS = 90
 ENGINE_READY_PREFIX = "🟢 Engine ready"
 
+# Engine exit codes (see EXIT_* in main.py) mapped to a clear status/log
+# message, so _on_engine_exit can say *why* instead of a bare "code N" for
+# every nonzero return.
+ENGINE_EXIT_MESSAGES = {
+    2: "⚠️  Engine stopped: camera/NDI source was lost",
+    3: "❌ Engine crashed - see the log above for details",
+}
+
 
 # ============================================================================
 # LAUNCHER GUI
@@ -887,6 +895,21 @@ class LauncherGui:
             # invocation orphaning the first child process.
             return
 
+        # Catch the obviously malformed cases before wasting a subprocess
+        # spawn. A genuinely bad hostname still reaches the engine, which
+        # now reports socket.gaierror cleanly instead of a raw traceback
+        # (see main.py's OSC client construction).
+        if not self.var_host.get().strip():
+            self._set_status("❌ OSC host is required")
+            self._append_log("❌ OSC host is required - engine not started")
+            return
+
+        port = self._int_or_none(self.var_port.get())
+        if port is None or not valid_port(port):
+            self._set_status("❌ Invalid OSC port (must be 0-65535)")
+            self._append_log("❌ Invalid OSC port - engine not started")
+            return
+
         cmd = self._build_command()
 
         env = os.environ.copy()
@@ -963,7 +986,7 @@ class LauncherGui:
     def _engine_became_ready(self) -> None:
         self._stop_spinner()
         if self.is_running():
-            self._set_status("🎥 Engine running (PID {})".format(self.proc.pid))
+            self._set_status("🎥 Engine launched (PID {})".format(self.proc.pid))
 
     def _read_output(self, proc: subprocess.Popen) -> None:
         """Worker thread: pump child stdout into the queue (no tk access here)"""
@@ -1015,9 +1038,24 @@ class LauncherGui:
         if returncode == 0:
             self._append_log("✅ Engine exited (code 0)")
             self._set_status("✅ Engine stopped")
+        elif returncode < 0:
+            # Popen.poll() reports a negative code when the child was killed
+            # by a signal (SIGTERM -> -15, SIGKILL -> -9). If we're the ones
+            # who escalated the Stop request to that signal, say so instead
+            # of surfacing a bare negative number - self.terminated/killed
+            # are still set here, cleared just below.
+            if self.terminated or self.killed:
+                message = "⚠️  Engine had to be force-stopped"
+            else:
+                message = "⚠️  Engine terminated unexpectedly (signal {})".format(-returncode)
+            self._append_log(message)
+            self._set_status(message)
         else:
-            self._append_log("⚠️  Engine exited with code {}".format(returncode))
-            self._set_status("⚠️  Engine exited with code {}".format(returncode))
+            message = ENGINE_EXIT_MESSAGES.get(returncode)
+            if message is None:
+                message = "⚠️  Engine exited with code {}".format(returncode)
+            self._append_log(message)
+            self._set_status(message)
 
         self.proc = None
         self.reader = None

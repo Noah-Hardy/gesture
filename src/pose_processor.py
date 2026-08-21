@@ -19,7 +19,7 @@ import numpy as np
 import mediapipe as mp
 from mediapipe.framework.formats import landmark_pb2
 
-from .pose_utils import get_pose_bounds_with_values, process_landmarks_to_dict, compact_json
+from .pose_utils import get_pose_bounds_with_values, process_landmarks_to_dict, compact_json, letterbox_frame, LetterboxTransform
 from .model_downloader import download_pose_model
 
 # Optional psutil import for memory monitoring
@@ -73,6 +73,12 @@ class PoseProcessor:
         self._proc_width = camera_config.get('processing_width', 640)
         self._proc_height = camera_config.get('processing_height', 480)
 
+        # Maps normalized coords from the (possibly letterboxed) processing
+        # frame back to the source frame; identity until the first resize
+        self._letterbox_transform = LetterboxTransform(
+            1.0, 0, 0, self._proc_width, self._proc_height, self._proc_width, self._proc_height
+        )
+
         if config:
             performance_config = config.get('performance')
             self._gc_enabled = performance_config.get('gc_enabled', True)
@@ -116,13 +122,14 @@ class PoseProcessor:
             }
             self.osc_sender.send_message("/pose/world", compact_json(world_payload))
     
-    def send_bounds_data(self, landmarks, world_landmarks):
+    def send_bounds_data(self, landmarks, world_landmarks, transform=None):
         """Send bounding box data via OSC (single pose)"""
         if landmarks:
-            bounds = get_pose_bounds_with_values(landmarks)
+            bounds = get_pose_bounds_with_values(landmarks, transform)
             self.osc_sender.send_message("/pose/raw_bounds", compact_json(bounds))
-        
+
         if world_landmarks:
+            # World landmarks are already in real-world metres - no transform
             world_bounds = get_pose_bounds_with_values(world_landmarks)
             self.osc_sender.send_message("/pose/world_bounds", compact_json(world_bounds))
     
@@ -158,12 +165,12 @@ class PoseProcessor:
             self.osc_sender.send_message("/pose/multi_world", compact_json(multi_world_payload))
             # Individual messages removed to prevent memory leak
     
-    def send_multiple_bounds_data(self, all_landmarks, all_world_landmarks):
+    def send_multiple_bounds_data(self, all_landmarks, all_world_landmarks, transform=None):
         """Send bounds data for multiple poses via OSC"""
         if all_landmarks:
             all_bounds = []
             for landmarks in all_landmarks:
-                bounds = get_pose_bounds_with_values(landmarks)
+                bounds = get_pose_bounds_with_values(landmarks, transform)
                 all_bounds.append(bounds)
             # Individual messages removed to prevent memory leak
             
@@ -409,50 +416,72 @@ class TasksPoseProcessor(PoseProcessor):
         # Explicitly don't store output_image - it's not needed and causes memory leaks
         del output_image
     
-    def process_frame(self, frame, landmarker, backend_name, timestamp_counter):
+    def process_frame(self, frame, landmarker, backend_name, timestamp_counter, draw_target=None):
         """
         Process a single frame with MediaPipe Tasks
         Handles frame resizing, color conversion, and Apple Silicon compatibility
-        
+
         Args:
             frame: Input frame from camera/NDI
             landmarker: MediaPipe PoseLandmarker instance
             backend_name: Backend name for FPS display
             timestamp_counter: Frame counter for async processing
-            
+            draw_target: Optional shared display array to draw landmarks into
+                instead of the inference frame. Lets a caller composite this
+                processor's overlays onto another processor's output (e.g.
+                pose + hand in one preview) without feeding annotated pixels
+                back into either model. Model input is always the clean
+                letterboxed frame, never draw_target. Defaults to None,
+                which falls back to today's single-processor behavior:
+                draw into (a copy of, if shared) the letterboxed frame.
+
         Returns:
-            Annotated frame with landmarks drawn
+            Annotated frame with landmarks drawn (draw_target, if provided)
         """
         try:
             if frame is None or frame.size == 0:
                 return frame
-            
+
             # Always resize frame for consistent display, regardless of processing
             proc_width = self._proc_width
             proc_height = self._proc_height
 
             h, w = frame.shape[:2]
             if w != proc_width or h != proc_height:
-                # Use pre-allocated buffer if available and correct size
-                if (self._resize_buffer is None or 
-                    self._resize_buffer.shape[0] != proc_height or 
-                    self._resize_buffer.shape[1] != proc_width):
-                    self._resize_buffer = np.empty((proc_height, proc_width, 3), dtype=np.uint8)
-                
-                # Resize into pre-allocated buffer
-                cv2.resize(frame, (proc_width, proc_height), dst=self._resize_buffer, interpolation=cv2.INTER_LINEAR)
-                image = self._resize_buffer
+                # Letterbox instead of stretching: preserves the source aspect
+                # ratio (padding with black bars) so normalized coordinates
+                # sent over OSC stay correct relative to the true source frame
+                image, letterbox_transform = letterbox_frame(frame, proc_width, proc_height, self._resize_buffer)
+                if letterbox_transform.pad_x == 0 and letterbox_transform.pad_y == 0:
+                    # No padding needed - image is the reusable resize buffer
+                    self._resize_buffer = image
+                self._letterbox_transform = letterbox_transform
             else:
                 image = frame
-            
+                self._letterbox_transform = LetterboxTransform(1.0, 0, 0, proc_width, proc_height, proc_width, proc_height)
+
+            # `image` is the inference input ONLY - always the clean,
+            # letterboxed frame, never annotated. `target` is what gets
+            # drawn into and returned; a caller-supplied draw_target lets
+            # multiple processors composite their overlays onto one shared
+            # array in a single loop iteration without leaking one
+            # processor's drawings into another's model input.
+            target = draw_target if draw_target is not None else (image.copy() if image is self._resize_buffer else image)
+
             # Check if MediaPipe's async queue is backing up - skip frame if too many pending
             if self.pending_frames >= self.max_pending_frames:
-                # Skip MediaPipe processing but return properly resized frame for display
+                # Skip MediaPipe processing, but keep the preview skeleton
+                # alive by redrawing the last known results - otherwise it
+                # blinks on/off every time the model is the bottleneck
                 self.skipped_frames += 1
                 self.update_fps(backend_name)
-                # Return a copy for display since we reuse the buffer
-                return image.copy() if image is self._resize_buffer else image
-            
+                if self._display_results is not None and self._display_results.pose_landmarks:
+                    for pose_landmark in self._display_results.pose_landmarks:
+                        self._draw_landmarks(target, pose_landmark)
+                # No OSC here - a skipped frame means "no new information",
+                # not "nothing detected"; sending status would misrepresent one or the other
+                return target
+
             # Convert to RGB for MediaPipe using pre-allocated buffer
             if (self._rgb_buffer is None or 
                 self._rgb_buffer.shape[0] != image.shape[0] or 
@@ -481,14 +510,7 @@ class TasksPoseProcessor(PoseProcessor):
             del mp_image
             
             timestamp = time.time()
-            
-            # Convert RGB back to BGR for OpenCV display - reuse resize buffer if available
-            if self._resize_buffer is not None and self._resize_buffer.shape == rgb_frame.shape:
-                cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR, dst=self._resize_buffer)
-                image = self._resize_buffer
-            else:
-                image = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
-            
+
             # Atomically check-and-take fresh results from the callback thread
             # (hold the lock only for the swap - never during serialization/sends/drawing)
             fresh_results = None
@@ -504,6 +526,8 @@ class TasksPoseProcessor(PoseProcessor):
                 # Keep for stale drawing on frames before the next callback lands (main thread only)
                 self._display_results = fresh_results
                 pose_detected = bool(fresh_results.pose_landmarks)
+                # Snapshot for this call - stable for the duration of process_frame
+                transform = self._letterbox_transform
 
                 if pose_detected and len(fresh_results.pose_landmarks) > 0:
                     self._last_detection_state = True
@@ -513,10 +537,10 @@ class TasksPoseProcessor(PoseProcessor):
 
                     # Process each detected pose
                     for i, pose_landmark in enumerate(fresh_results.pose_landmarks):
-                        pose_landmarks = process_landmarks_to_dict(pose_landmark, f"pose_{i}")
+                        pose_landmarks = process_landmarks_to_dict(pose_landmark, f"pose_{i}", transform)
                         all_pose_landmarks.append(pose_landmarks)
 
-                    # Process world landmarks if available
+                    # Process world landmarks if available (already real-world metres - no transform)
                     if (hasattr(fresh_results, 'pose_world_landmarks') and
                         fresh_results.pose_world_landmarks):
                         for i, pose_world_landmark in enumerate(fresh_results.pose_world_landmarks):
@@ -532,14 +556,15 @@ class TasksPoseProcessor(PoseProcessor):
                         # Send bounds for this pose
                         self.send_bounds_data(
                             fresh_results.pose_landmarks[i],
-                            fresh_results.pose_world_landmarks[i] if pose_world_landmarks else None
+                            fresh_results.pose_world_landmarks[i] if pose_world_landmarks else None,
+                            transform
                         )
 
                     self.osc_sender.send_message("/mp/status", compact_json({"status": len(fresh_results.pose_landmarks)}))
 
                     # Draw all pose landmarks
                     for pose_landmark in fresh_results.pose_landmarks:
-                        self._draw_landmarks(image, pose_landmark)
+                        self._draw_landmarks(target, pose_landmark)
 
                     # Clear temporary lists to free memory
                     del all_pose_landmarks
@@ -555,21 +580,21 @@ class TasksPoseProcessor(PoseProcessor):
                 # We have results but they're stale (already processed), just draw landmarks
                 if self._display_results.pose_landmarks:
                     for pose_landmark in self._display_results.pose_landmarks:
-                        self._draw_landmarks(image, pose_landmark)
+                        self._draw_landmarks(target, pose_landmark)
                 # No fresh detection this frame - status 0 signals no actively tracked person
                 self.osc_sender.send_message("/mp/status", compact_json({"status": 0}))
             else:
                 # No results yet - still send status so receivers know program is running
                 self.osc_sender.send_message("/mp/status", compact_json({"status": 0}))
-            
+
             # Clear intermediate frames to free memory
             del rgb_frame
             if 'rgba_frame' in locals():
                 del rgba_frame
-            
+
             self.update_fps(backend_name)
-            return image
-            
+            return target
+
         except Exception as e:
             print(f"⚠️  Tasks frame processing error: {e}")
             # Clear results on error to prevent memory leak (under lock - shared with callback thread)
@@ -577,7 +602,7 @@ class TasksPoseProcessor(PoseProcessor):
                 self.results = None
                 self._has_fresh_results = False
             self._display_results = None
-            return frame
+            return draw_target if draw_target is not None else frame
 
 
 # ============================================================================
@@ -621,18 +646,23 @@ class LegacyPoseProcessor(PoseProcessor):
         
         return pose_context, backend_name, window_title
     
-    def process_frame(self, frame, pose_context, backend_name):
+    def process_frame(self, frame, pose_context, backend_name, draw_target=None):
         """
         Process a single frame with Legacy MediaPipe
         Simpler processing for single pose only
-        
+
         Args:
             frame: Input frame from camera/NDI
             pose_context: MediaPipe Pose context manager
             backend_name: Backend name for FPS display
-            
+            draw_target: Optional shared display array to draw landmarks
+                into instead of the inference frame - see
+                TasksPoseProcessor.process_frame for the full rationale.
+                Defaults to None, which falls back to today's
+                single-processor behavior.
+
         Returns:
-            Annotated frame with landmarks drawn
+            Annotated frame with landmarks drawn (draw_target, if provided)
         """
         try:
             # Resize frame for processing if needed
@@ -641,81 +671,89 @@ class LegacyPoseProcessor(PoseProcessor):
 
             h, w = frame.shape[:2]
             if w != proc_width or h != proc_height:
-                # Use pre-allocated buffer if available and correct size
-                if (self._resize_buffer is None or 
-                    self._resize_buffer.shape[0] != proc_height or 
-                    self._resize_buffer.shape[1] != proc_width):
-                    self._resize_buffer = np.empty((proc_height, proc_width, 3), dtype=np.uint8)
-                
-                cv2.resize(frame, (proc_width, proc_height), dst=self._resize_buffer, interpolation=cv2.INTER_LINEAR)
-                image = self._resize_buffer
+                # Letterbox instead of stretching: preserves the source aspect
+                # ratio (padding with black bars) so normalized coordinates
+                # sent over OSC stay correct relative to the true source frame
+                image, letterbox_transform = letterbox_frame(frame, proc_width, proc_height, self._resize_buffer)
+                if letterbox_transform.pad_x == 0 and letterbox_transform.pad_y == 0:
+                    # No padding needed - image is the reusable resize buffer
+                    self._resize_buffer = image
+                self._letterbox_transform = letterbox_transform
             else:
                 # Use frame directly, avoid copy
                 image = frame
-            
+                self._letterbox_transform = LetterboxTransform(1.0, 0, 0, proc_width, proc_height, proc_width, proc_height)
+
+            # `image` is the inference input ONLY - always the clean,
+            # letterboxed frame, never annotated. `target` is what gets
+            # drawn into and returned - see TasksPoseProcessor.process_frame
+            # for the full rationale.
+            target = draw_target if draw_target is not None else (image.copy() if image is self._resize_buffer else image)
+
             # Convert to RGB for MediaPipe using pre-allocated buffer
-            if (self._rgb_buffer is None or 
-                self._rgb_buffer.shape[0] != image.shape[0] or 
+            if (self._rgb_buffer is None or
+                self._rgb_buffer.shape[0] != image.shape[0] or
                 self._rgb_buffer.shape[1] != image.shape[1]):
                 self._rgb_buffer = np.empty((image.shape[0], image.shape[1], 3), dtype=np.uint8)
-            
+
             cv2.cvtColor(image, cv2.COLOR_BGR2RGB, dst=self._rgb_buffer)
             rgb_image = self._rgb_buffer
-            
+
             # Process with MediaPipe Pose
             results = pose_context.process(rgb_image)
-            
-            # Convert back to BGR for display - reuse resize buffer
-            if self._resize_buffer is not None and self._resize_buffer.shape == rgb_image.shape:
-                cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR, dst=self._resize_buffer)
-                image = self._resize_buffer
-            else:
-                image = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR)
+
             timestamp = time.time()
             
             pose_detected = bool(results.pose_landmarks)
             
             if pose_detected:
+                self._last_detection_state = True
                 # Process landmarks
                 pose_landmarks = process_landmarks_to_dict(
-                    results.pose_landmarks.landmark, "pose"
+                    results.pose_landmarks.landmark, "pose", self._letterbox_transform
                 )
-                
+
+                # World landmarks are already real-world metres - no transform
                 pose_world_landmarks = []
                 if results.pose_world_landmarks:
                     pose_world_landmarks = process_landmarks_to_dict(
                         results.pose_world_landmarks.landmark, "pose_world"
                     )
-                
+
                 # Send data
                 self.send_pose_data(pose_landmarks, pose_world_landmarks, timestamp)
                 self.send_bounds_data(
                     results.pose_landmarks.landmark,
-                    results.pose_world_landmarks.landmark if pose_world_landmarks else None
+                    results.pose_world_landmarks.landmark if pose_world_landmarks else None,
+                    self._letterbox_transform
                 )
                 
                 self.osc_sender.send_message("/mp/status", compact_json({"status": 1}))
                 
                 # Draw pose landmarks
                 if results.pose_landmarks:
-                    self._draw_landmarks(image, results.pose_landmarks)
-                
+                    self._draw_landmarks(target, results.pose_landmarks)
+
                 # Clear temporary lists to free memory
                 del pose_landmarks
                 del pose_world_landmarks
             else:
                 # Always send status message so receivers know program is running
                 self.osc_sender.send_message("/mp/status", compact_json({"status": 0}))
-            
+                # Only send empty data once when transitioning from detected to not detected
+                if self._last_detection_state:
+                    self.send_empty_data(timestamp)
+                    self._last_detection_state = False
+
             self.update_fps(backend_name)
-            return image
-            
+            return target
+
         except Exception as e:
             print(f"⚠️  Legacy frame processing error: {e}")
             # Ensure we don't hold references on error
             if 'image' in locals() and image is not frame:
                 del image
-            return frame
+            return draw_target if draw_target is not None else frame
     
     def _draw_landmarks(self, image, pose_landmarks):
         """
