@@ -36,7 +36,7 @@ Everything set in the **Settings** window is saved there directly, as soon as yo
 
 ## Settings
 
-**mp-osc → Settings…** (⌘,) opens a separate window with four tabs — General, Tracking, Preview, and Advanced — covering update behavior, detection thresholds, preview styling, camera/performance tuning, and the launch-time backend toggles (Force CPU, Force GPU, Force Legacy, No Holistic) that used to live as checkboxes in this window. See the **Settings** guide for a tour of each tab.
+**mp-osc → Settings…** (⌘,) opens a separate window with four tabs — General, Tracking, Preview, and Advanced — covering update behavior, detection thresholds, preview styling, camera/performance tuning, and the launch-time backend toggles (Force CPU, Force GPU, Force Legacy (deprecated), No Holistic) that used to live as checkboxes in this window. See the **Settings** guide for a tour of each tab.
 
 ## Updates
 
