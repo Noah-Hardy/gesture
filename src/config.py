@@ -109,7 +109,8 @@ class Config:
         "ui": {
             "input_section_open": True,
             "osc_section_open": True,
-            "model_section_open": False
+            "model_section_open": False,
+            "log_section_open": True
         }
     }
     
@@ -145,9 +146,21 @@ class Config:
         else:
             print(f"📄 Config file {self.config_file} not found, using defaults")
         
+        config = self._sanitize(config)
+
         # Override with environment variables
         config = self._apply_env_overrides(config)
-        
+
+        return config
+
+    def _sanitize(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Repair values that older builds allowed to be saved out of range"""
+        # cv2.CAP_PROP_BUFFERSIZE needs at least 1 frame of buffering
+        try:
+            buffer_size = int(config['camera'].get('buffer_size', 1))
+        except (TypeError, ValueError):
+            buffer_size = 1
+        config['camera']['buffer_size'] = max(1, buffer_size)
         return config
     
     def _deep_merge(self, base: Dict, override: Dict) -> Dict:

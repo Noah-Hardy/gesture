@@ -46,12 +46,14 @@ class SettingsWindow:
                 on_open_config: Callable[[], None],
                 on_reveal_config: Callable[[], None],
                 on_check_now: Callable[[], None],
-                on_close: Optional[Callable[[], None]] = None) -> None:
+                on_close: Optional[Callable[[], None]] = None,
+                on_saved: Optional[Callable[[], None]] = None) -> None:
         self.config = config
         self._on_open_config = on_open_config
         self._on_reveal_config = on_reveal_config
         self._on_check_now = on_check_now
         self._on_close = on_close
+        self._on_saved = on_saved
 
         # Shared with LauncherGui - these feed straight into the argv the
         # launcher builds (src.gui._build_command), so Settings binds the
@@ -64,16 +66,31 @@ class SettingsWindow:
 
         self.top = tk.Toplevel(parent)
         self.top.title("MP-OSC Settings")
-        self.top.minsize(520, 460)
-        self.top.geometry("560x520")
         self.top.configure(bg=theme.PALETTE['bg'])
         self.top.protocol("WM_DELETE_WINDOW", self.destroy)
         self.top.bind('<Escape>', lambda e: self.destroy())
         self.top.bind('<Command-w>', lambda e: self.destroy())
 
         self._fields = []  # list of (section, key, var, kind) for save/restore
+        self._int_minimums = {}  # (section, key) -> lowest int _save accepts
         self._build_layout()
         self._load_from_config()
+        self._size_to_content()
+
+    def _size_to_content(self) -> None:
+        """Open at the notebook's requested size so no tab is ever clipped
+
+        The Notebook requests the size of its largest tab, so the natural
+        size already fits Advanced (the tallest one). Only the height is
+        clamped, for very small screens; the window stays user-resizable.
+        """
+        self.top.update_idletasks()
+        req_w = self.top.winfo_reqwidth()
+        req_h = self.top.winfo_reqheight()
+        max_h = int(self.top.winfo_screenheight() * 0.85)
+        self.top.minsize(min(req_w, 640), min(req_h, 460))
+        if req_h > max_h:
+            self.top.geometry(f"{req_w}x{max_h}")
 
     # ------------------------------------------------------------------------
     # Lifecycle
@@ -157,10 +174,12 @@ class SettingsWindow:
         self._bind(section, key, var, 'str')
         return row + 1
 
-    def _row_int(self, parent, row, label, section, key, width=8, note=None) -> int:
+    def _row_int(self, parent, row, label, section, key, width=8, note=None, minimum=0) -> int:
         var = tk.StringVar()
+        if minimum > 0:
+            self._int_minimums[(section, key)] = minimum
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky='w', pady=2)
-        ttk.Spinbox(parent, textvariable=var, from_=0, to=999999, width=width).grid(
+        ttk.Spinbox(parent, textvariable=var, from_=minimum, to=999999, width=width).grid(
             row=row, column=1, sticky='w', padx=(6, 0), pady=2)
         if note:
             ttk.Label(parent, text=note, style='Dim.TLabel').grid(
@@ -309,7 +328,8 @@ class SettingsWindow:
         row = self._row_int(frame, row, "Capture width:", 'camera', 'width', width=8)
         row = self._row_int(frame, row, "Capture height:", 'camera', 'height', width=8)
         row = self._row_int(frame, row, "Capture FPS:", 'camera', 'fps', width=8)
-        row = self._row_int(frame, row, "Buffer size:", 'camera', 'buffer_size', width=8)
+        row = self._row_int(frame, row, "Buffer size:", 'camera', 'buffer_size', width=8,
+                            minimum=1)
 
         row += 1
         ttk.Separator(frame, orient='horizontal').grid(
@@ -334,7 +354,7 @@ class SettingsWindow:
         ttk.Label(frame, text="OSC", style='Dim.TLabel').grid(
             row=row, column=0, sticky='w', pady=(0, 2)); row += 1
         row = self._row_int(frame, row, "Send queue size:", 'osc', 'queue_size', width=8,
-                            note="Older queued messages are dropped once full.")
+                            note="Older queued messages are dropped once full.", minimum=1)
 
         row += 1
         ttk.Separator(frame, orient='horizontal').grid(
@@ -404,8 +424,8 @@ class SettingsWindow:
                     value = bool(raw)
                 elif kind == 'int':
                     value = int(str(raw).strip())
-                    if key == 'queue_size' and value < 1:
-                        raise ValueError('must be at least 1')
+                    if value < self._int_minimums.get((section, key), 0):
+                        raise ValueError('below minimum')
                 elif kind == 'float':
                     value = float(str(raw).strip())
                     if not valid_unit_float(value):
@@ -435,5 +455,6 @@ class SettingsWindow:
         self.config.set('performance', 'show_fps', bool(self.var_show_fps.get()))
 
         self.config.save()
-        messagebox.showinfo("Settings Saved",
-                            f"Saved to {self.config.config_file}", parent=self.top)
+        if self._on_saved is not None:
+            self._on_saved()
+        self.destroy()

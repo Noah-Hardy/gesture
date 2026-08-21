@@ -174,25 +174,44 @@ class CollapsibleSection(ttk.Frame):
     A titled section with a disclosure header (▾/▸) that shows or hides its
     body frame. Options that don't need to be visible all the time - like
     Model & Performance - default to collapsed, keeping the window short.
+    Clicking the header animates the body open/closed; set_open snaps.
 
     Usage:
         section = CollapsibleSection(parent, title="Model & Performance",
                                      open=False, on_toggle=save_state)
         section.grid(row=row, column=0, sticky='ew')
         body = section.body  # a ttk.Frame - build the section's widgets in it
+
+    fill=True makes the open body stretch to absorb extra height (for the
+    log pane); the caller still owns the parent row's weight.
     """
 
-    def __init__(self, parent, title: str, open: bool = True, on_toggle=None):
+    ANIM_MS = 140   # total expand/collapse duration
+    TICK_MS = 15    # per-frame interval (~9 frames)
+
+    def __init__(self, parent, title: str, open: bool = True, on_toggle=None,
+                 fill: bool = False):
         super().__init__(parent)
         self._open = open
         self._on_toggle = on_toggle
+        self._fill = fill
+        self._anim_job = None
+        self._anim_height = 0  # last height set by a running animation
         self.columnconfigure(0, weight=1)
 
         self._header = ttk.Button(self, style='Section.TButton',
                                   command=self._toggle, cursor='pointinghand')
         self._header.grid(row=0, column=0, sticky='ew')
 
-        self.body = ttk.Frame(self, padding=(8, 8, 8, 8))
+        # The body sits inside a clip frame whose height is tweened during
+        # animation (grid_propagate off); settled, the clip sizes naturally.
+        self._clip = ttk.Frame(self)
+        self._clip.columnconfigure(0, weight=1)
+        if fill:
+            self._clip.rowconfigure(0, weight=1)
+        self.body = ttk.Frame(self._clip, padding=(8, 8, 8, 8))
+        self.body.grid(row=0, column=0, sticky='nsew' if fill else 'ew')
+
         self._update_header_text(title)
         self._sync_body()
 
@@ -201,18 +220,85 @@ class CollapsibleSection(ttk.Frame):
         self._header.configure(text=f"{arrow}  {title}")
         self._title = title
 
+    def _grid_clip(self) -> None:
+        self._clip.grid(row=1, column=0, sticky='nsew' if self._fill else 'ew',
+                        pady=(2, 0))
+
     def _sync_body(self) -> None:
+        """Snap to the settled open/closed state without animating"""
+        self._cancel_anim()
+        self._clip.grid_propagate(True)
+        if self._fill:
+            self.rowconfigure(1, weight=1)
         if self._open:
-            self.body.grid(row=1, column=0, sticky='ew', pady=(2, 0))
+            self._grid_clip()
         else:
-            self.body.grid_remove()
+            self._clip.grid_remove()
 
     def _toggle(self) -> None:
         self._open = not self._open
         self._update_header_text(self._title)
-        self._sync_body()
+        self._animate(self._open)
         if self._on_toggle is not None:
             self._on_toggle(self._open)
+
+    # ------------------------------------------------------------------
+    # Animation
+    # ------------------------------------------------------------------
+    def _cancel_anim(self) -> None:
+        if self._anim_job is not None:
+            try:
+                self.after_cancel(self._anim_job)
+            except tk.TclError:
+                pass
+            self._anim_job = None
+
+    def _animate(self, opening: bool) -> None:
+        was_animating = self._anim_job is not None
+        self._cancel_anim()
+        try:
+            self.update_idletasks()
+            target = self.body.winfo_reqheight() if opening else 0
+            # Reversing mid-animation starts from wherever the tween got to
+            start = self._anim_height if was_animating else (
+                self.body.winfo_reqheight() if not opening else 0)
+        except tk.TclError:
+            return
+
+        # While tweening, the section's own body row must not stretch the
+        # clip past its explicit height (only matters when fill=True).
+        if self._fill:
+            self.rowconfigure(1, weight=0)
+        self._grid_clip()
+        self._clip.grid_propagate(False)
+
+        steps = max(1, self.ANIM_MS // self.TICK_MS)
+        delta = target - start
+
+        def tick(i: int = 1) -> None:
+            self._anim_job = None
+            try:
+                if not self.winfo_exists():
+                    return
+                eased = 1 - (1 - i / steps) ** 2
+                self._anim_height = max(1, int(start + delta * eased))
+                self._clip.configure(height=self._anim_height)
+                if i < steps:
+                    self._anim_job = self.after(self.TICK_MS, lambda: tick(i + 1))
+                else:
+                    self._finish_anim(opening)
+            except tk.TclError:
+                pass
+
+        tick()
+
+    def _finish_anim(self, opening: bool) -> None:
+        self._anim_job = None
+        if not opening:
+            self._clip.grid_remove()
+        self._clip.grid_propagate(True)
+        if self._fill:
+            self.rowconfigure(1, weight=1)
 
     @property
     def is_open(self) -> bool:

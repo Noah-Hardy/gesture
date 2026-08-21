@@ -151,7 +151,7 @@ class HelpWindow:
         buttons.grid(row=1, column=0, columnspan=2, sticky='ew', pady=(8, 0))
         buttons.columnconfigure(1, weight=1)
 
-        open_btn = ttk.Button(buttons, text="\U0001F310 Open Full Documentation",
+        open_btn = ttk.Button(buttons, text="Open Full Documentation",
                               command=self._open_full_docs)
         open_btn.grid(row=0, column=0, sticky='w')
 

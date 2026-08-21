@@ -38,17 +38,17 @@ class Topic:
 
 
 TOPICS: Tuple[Topic, ...] = (
-    Topic('welcome', '\U0001F44B Welcome', 'Guide', 'welcome.md'),
-    Topic('quick-start', '\U0001F680 Quick Start', 'Guide', 'quick-start.md'),
-    Topic('settings', '\U0001F6E0️ Settings', 'Guide', 'settings.md'),
-    Topic('updates', '\U0001F504 Updates', 'Guide', 'updates.md'),
-    Topic('input-sources', '\U0001F4F7 Camera & NDI', 'Guide', 'input-sources.md'),
-    Topic('osc-output', '\U0001F4E1 OSC Output', 'Guide', 'osc-output.md'),
-    Topic('receivers', '\U0001F39B TouchDesigner, Max, Unity', 'Guide', 'receivers.md'),
-    Topic('models-performance', '⚙️ Models & Performance', 'Guide', 'models-performance.md'),
-    Topic('troubleshooting', '\U0001FA7A Troubleshooting', 'Guide', 'troubleshooting.md'),
-    Topic('osc-reference', '\U0001F5C2 OSC Address Reference', 'Reference', 'osc-reference.md'),
-    Topic('appendix-advanced', '\U0001F9F0 Appendix: CLI & config.json', 'Reference', 'appendix-advanced.md'),
+    Topic('welcome', 'Welcome', 'Guide', 'welcome.md'),
+    Topic('quick-start', 'Quick Start', 'Guide', 'quick-start.md'),
+    Topic('settings', 'Settings', 'Guide', 'settings.md'),
+    Topic('updates', 'Updates', 'Guide', 'updates.md'),
+    Topic('input-sources', 'Camera & NDI', 'Guide', 'input-sources.md'),
+    Topic('osc-output', 'OSC Output', 'Guide', 'osc-output.md'),
+    Topic('receivers', 'TouchDesigner, Max, Unity', 'Guide', 'receivers.md'),
+    Topic('models-performance', 'Models & Performance', 'Guide', 'models-performance.md'),
+    Topic('troubleshooting', 'Troubleshooting', 'Guide', 'troubleshooting.md'),
+    Topic('osc-reference', 'OSC Address Reference', 'Reference', 'osc-reference.md'),
+    Topic('appendix-advanced', 'Appendix: CLI & config.json', 'Reference', 'appendix-advanced.md'),
 )
 
 
