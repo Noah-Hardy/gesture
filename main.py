@@ -527,6 +527,20 @@ def run(args, config):
     if tracking_mode == 'all' and pose_processor is None and hand_processor is None:
         print("🛑 Cannot initialize any processing backend")
         return 1
+
+    # Guard against mixed-backend mode: the main loop below picks a single
+    # loop style (Tasks vs. Legacy) for both processors, so if one processor
+    # landed on Tasks and the other fell back to Legacy, whichever one isn't
+    # on the chosen loop's backend never gets its process_frame() called -
+    # its OSC output silently goes dark even though startup printed success
+    # for it. Fail loudly instead of shipping a half-working session.
+    if pose_processor is not None and hand_processor is not None and pose_is_tasks != hand_is_tasks:
+        fallback_tracker = "hand" if pose_is_tasks else "pose"
+        print(f"❌ Pose and hand landed on different backends (pose_is_tasks={pose_is_tasks}, hand_is_tasks={hand_is_tasks})")
+        print(f"   The {fallback_tracker} tracker fell back to the Legacy MediaPipe API while the other stayed on Tasks")
+        print("   These two backends can't currently run together in one processing loop")
+        print("   Pass --force-legacy to force both trackers onto the same (Legacy) backend")
+        return 1
     
     # Set window title based on mode
     if tracking_mode == 'pose':
