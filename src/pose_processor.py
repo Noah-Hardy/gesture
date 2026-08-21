@@ -19,7 +19,7 @@ import numpy as np
 import mediapipe as mp
 from mediapipe.framework.formats import landmark_pb2
 
-from .pose_utils import get_pose_bounds_with_values, process_landmarks_to_dict, compact_json
+from .pose_utils import get_pose_bounds_with_values, process_landmarks_to_dict, compact_json, letterbox_frame, LetterboxTransform
 from .model_downloader import download_pose_model
 
 # Optional psutil import for memory monitoring
@@ -73,6 +73,12 @@ class PoseProcessor:
         self._proc_width = camera_config.get('processing_width', 640)
         self._proc_height = camera_config.get('processing_height', 480)
 
+        # Maps normalized coords from the (possibly letterboxed) processing
+        # frame back to the source frame; identity until the first resize
+        self._letterbox_transform = LetterboxTransform(
+            1.0, 0, 0, self._proc_width, self._proc_height, self._proc_width, self._proc_height
+        )
+
         if config:
             performance_config = config.get('performance')
             self._gc_enabled = performance_config.get('gc_enabled', True)
@@ -116,13 +122,14 @@ class PoseProcessor:
             }
             self.osc_sender.send_message("/pose/world", compact_json(world_payload))
     
-    def send_bounds_data(self, landmarks, world_landmarks):
+    def send_bounds_data(self, landmarks, world_landmarks, transform=None):
         """Send bounding box data via OSC (single pose)"""
         if landmarks:
-            bounds = get_pose_bounds_with_values(landmarks)
+            bounds = get_pose_bounds_with_values(landmarks, transform)
             self.osc_sender.send_message("/pose/raw_bounds", compact_json(bounds))
-        
+
         if world_landmarks:
+            # World landmarks are already in real-world metres - no transform
             world_bounds = get_pose_bounds_with_values(world_landmarks)
             self.osc_sender.send_message("/pose/world_bounds", compact_json(world_bounds))
     
@@ -158,12 +165,12 @@ class PoseProcessor:
             self.osc_sender.send_message("/pose/multi_world", compact_json(multi_world_payload))
             # Individual messages removed to prevent memory leak
     
-    def send_multiple_bounds_data(self, all_landmarks, all_world_landmarks):
+    def send_multiple_bounds_data(self, all_landmarks, all_world_landmarks, transform=None):
         """Send bounds data for multiple poses via OSC"""
         if all_landmarks:
             all_bounds = []
             for landmarks in all_landmarks:
-                bounds = get_pose_bounds_with_values(landmarks)
+                bounds = get_pose_bounds_with_values(landmarks, transform)
                 all_bounds.append(bounds)
             # Individual messages removed to prevent memory leak
             
@@ -433,18 +440,18 @@ class TasksPoseProcessor(PoseProcessor):
 
             h, w = frame.shape[:2]
             if w != proc_width or h != proc_height:
-                # Use pre-allocated buffer if available and correct size
-                if (self._resize_buffer is None or 
-                    self._resize_buffer.shape[0] != proc_height or 
-                    self._resize_buffer.shape[1] != proc_width):
-                    self._resize_buffer = np.empty((proc_height, proc_width, 3), dtype=np.uint8)
-                
-                # Resize into pre-allocated buffer
-                cv2.resize(frame, (proc_width, proc_height), dst=self._resize_buffer, interpolation=cv2.INTER_LINEAR)
-                image = self._resize_buffer
+                # Letterbox instead of stretching: preserves the source aspect
+                # ratio (padding with black bars) so normalized coordinates
+                # sent over OSC stay correct relative to the true source frame
+                image, letterbox_transform = letterbox_frame(frame, proc_width, proc_height, self._resize_buffer)
+                if letterbox_transform.pad_x == 0 and letterbox_transform.pad_y == 0:
+                    # No padding needed - image is the reusable resize buffer
+                    self._resize_buffer = image
+                self._letterbox_transform = letterbox_transform
             else:
                 image = frame
-            
+                self._letterbox_transform = LetterboxTransform(1.0, 0, 0, proc_width, proc_height, proc_width, proc_height)
+
             # Check if MediaPipe's async queue is backing up - skip frame if too many pending
             if self.pending_frames >= self.max_pending_frames:
                 # Skip MediaPipe processing but return properly resized frame for display
@@ -504,6 +511,8 @@ class TasksPoseProcessor(PoseProcessor):
                 # Keep for stale drawing on frames before the next callback lands (main thread only)
                 self._display_results = fresh_results
                 pose_detected = bool(fresh_results.pose_landmarks)
+                # Snapshot for this call - stable for the duration of process_frame
+                transform = self._letterbox_transform
 
                 if pose_detected and len(fresh_results.pose_landmarks) > 0:
                     self._last_detection_state = True
@@ -513,10 +522,10 @@ class TasksPoseProcessor(PoseProcessor):
 
                     # Process each detected pose
                     for i, pose_landmark in enumerate(fresh_results.pose_landmarks):
-                        pose_landmarks = process_landmarks_to_dict(pose_landmark, f"pose_{i}")
+                        pose_landmarks = process_landmarks_to_dict(pose_landmark, f"pose_{i}", transform)
                         all_pose_landmarks.append(pose_landmarks)
 
-                    # Process world landmarks if available
+                    # Process world landmarks if available (already real-world metres - no transform)
                     if (hasattr(fresh_results, 'pose_world_landmarks') and
                         fresh_results.pose_world_landmarks):
                         for i, pose_world_landmark in enumerate(fresh_results.pose_world_landmarks):
@@ -532,7 +541,8 @@ class TasksPoseProcessor(PoseProcessor):
                         # Send bounds for this pose
                         self.send_bounds_data(
                             fresh_results.pose_landmarks[i],
-                            fresh_results.pose_world_landmarks[i] if pose_world_landmarks else None
+                            fresh_results.pose_world_landmarks[i] if pose_world_landmarks else None,
+                            transform
                         )
 
                     self.osc_sender.send_message("/mp/status", compact_json({"status": len(fresh_results.pose_landmarks)}))
@@ -641,18 +651,19 @@ class LegacyPoseProcessor(PoseProcessor):
 
             h, w = frame.shape[:2]
             if w != proc_width or h != proc_height:
-                # Use pre-allocated buffer if available and correct size
-                if (self._resize_buffer is None or 
-                    self._resize_buffer.shape[0] != proc_height or 
-                    self._resize_buffer.shape[1] != proc_width):
-                    self._resize_buffer = np.empty((proc_height, proc_width, 3), dtype=np.uint8)
-                
-                cv2.resize(frame, (proc_width, proc_height), dst=self._resize_buffer, interpolation=cv2.INTER_LINEAR)
-                image = self._resize_buffer
+                # Letterbox instead of stretching: preserves the source aspect
+                # ratio (padding with black bars) so normalized coordinates
+                # sent over OSC stay correct relative to the true source frame
+                image, letterbox_transform = letterbox_frame(frame, proc_width, proc_height, self._resize_buffer)
+                if letterbox_transform.pad_x == 0 and letterbox_transform.pad_y == 0:
+                    # No padding needed - image is the reusable resize buffer
+                    self._resize_buffer = image
+                self._letterbox_transform = letterbox_transform
             else:
                 # Use frame directly, avoid copy
                 image = frame
-            
+                self._letterbox_transform = LetterboxTransform(1.0, 0, 0, proc_width, proc_height, proc_width, proc_height)
+
             # Convert to RGB for MediaPipe using pre-allocated buffer
             if (self._rgb_buffer is None or 
                 self._rgb_buffer.shape[0] != image.shape[0] or 
@@ -678,20 +689,22 @@ class LegacyPoseProcessor(PoseProcessor):
             if pose_detected:
                 # Process landmarks
                 pose_landmarks = process_landmarks_to_dict(
-                    results.pose_landmarks.landmark, "pose"
+                    results.pose_landmarks.landmark, "pose", self._letterbox_transform
                 )
-                
+
+                # World landmarks are already real-world metres - no transform
                 pose_world_landmarks = []
                 if results.pose_world_landmarks:
                     pose_world_landmarks = process_landmarks_to_dict(
                         results.pose_world_landmarks.landmark, "pose_world"
                     )
-                
+
                 # Send data
                 self.send_pose_data(pose_landmarks, pose_world_landmarks, timestamp)
                 self.send_bounds_data(
                     results.pose_landmarks.landmark,
-                    results.pose_world_landmarks.landmark if pose_world_landmarks else None
+                    results.pose_world_landmarks.landmark if pose_world_landmarks else None,
+                    self._letterbox_transform
                 )
                 
                 self.osc_sender.send_message("/mp/status", compact_json({"status": 1}))

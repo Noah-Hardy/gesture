@@ -18,7 +18,7 @@ import numpy as np
 import mediapipe as mp
 from mediapipe.framework.formats import landmark_pb2
 
-from .pose_utils import get_pose_bounds_with_values, process_landmarks_to_dict, compact_json
+from .pose_utils import get_pose_bounds_with_values, process_landmarks_to_dict, compact_json, letterbox_frame, LetterboxTransform
 from .model_downloader import download_hand_model
 
 # Optional psutil import for memory monitoring
@@ -78,6 +78,12 @@ class HandProcessor:
         camera_config = config.get('camera') if config else {}
         self._proc_width = camera_config.get('processing_width', 640)
         self._proc_height = camera_config.get('processing_height', 480)
+
+        # Maps normalized coords from the (possibly letterboxed) processing
+        # frame back to the source frame; identity until the first resize
+        self._letterbox_transform = LetterboxTransform(
+            1.0, 0, 0, self._proc_width, self._proc_height, self._proc_width, self._proc_height
+        )
 
         if config:
             performance_config = config.get('performance')
@@ -141,16 +147,17 @@ class HandProcessor:
             }
             self.osc_sender.send_message(f"/{hand_prefix}/world", compact_json(world_payload))
     
-    def send_hand_bounds_data(self, landmarks, world_landmarks, handedness):
+    def send_hand_bounds_data(self, landmarks, world_landmarks, handedness, transform=None):
         """Send bounding box data via OSC (single hand)"""
         # Use left_hand or right_hand prefix based on handedness
         hand_prefix = "left_hand" if handedness.lower() == "left" else "right_hand"
-        
+
         if landmarks:
-            bounds = get_pose_bounds_with_values(landmarks)
+            bounds = get_pose_bounds_with_values(landmarks, transform)
             self.osc_sender.send_message(f"/{hand_prefix}/bounds", compact_json(bounds))
-        
+
         if world_landmarks:
+            # World landmarks are already in real-world metres - no transform
             world_bounds = get_pose_bounds_with_values(world_landmarks)
             self.osc_sender.send_message(f"/{hand_prefix}/world_bounds", compact_json(world_bounds))
     
@@ -179,12 +186,12 @@ class HandProcessor:
             }
             self.osc_sender.send_message("/hand/multi_raw", compact_json(multi_hand_payload))
     
-    def send_multiple_hand_bounds_data(self, all_landmarks):
+    def send_multiple_hand_bounds_data(self, all_landmarks, transform=None):
         """Send bounds data for multiple hands via OSC"""
         if all_landmarks:
             all_bounds = []
             for landmarks in all_landmarks:
-                bounds = get_pose_bounds_with_values(landmarks)
+                bounds = get_pose_bounds_with_values(landmarks, transform)
                 all_bounds.append(bounds)
             
             multi_bounds_payload = {
@@ -388,16 +395,18 @@ class TasksHandProcessor(HandProcessor):
 
             h, w = frame.shape[:2]
             if w != proc_width or h != proc_height:
-                if (self._resize_buffer is None or 
-                    self._resize_buffer.shape[0] != proc_height or 
-                    self._resize_buffer.shape[1] != proc_width):
-                    self._resize_buffer = np.empty((proc_height, proc_width, 3), dtype=np.uint8)
-                
-                cv2.resize(frame, (proc_width, proc_height), dst=self._resize_buffer, interpolation=cv2.INTER_LINEAR)
-                image = self._resize_buffer
+                # Letterbox instead of stretching: preserves the source aspect
+                # ratio (padding with black bars) so normalized coordinates
+                # sent over OSC stay correct relative to the true source frame
+                image, letterbox_transform = letterbox_frame(frame, proc_width, proc_height, self._resize_buffer)
+                if letterbox_transform.pad_x == 0 and letterbox_transform.pad_y == 0:
+                    # No padding needed - image is the reusable resize buffer
+                    self._resize_buffer = image
+                self._letterbox_transform = letterbox_transform
             else:
                 image = frame
-            
+                self._letterbox_transform = LetterboxTransform(1.0, 0, 0, proc_width, proc_height, proc_width, proc_height)
+
             # Check if MediaPipe's async queue is backing up
             if self.pending_frames >= self.max_pending_frames:
                 self.skipped_frames += 1
@@ -457,10 +466,12 @@ class TasksHandProcessor(HandProcessor):
                     all_hand_landmarks = []
                     all_hand_world_landmarks = []
                     all_handedness = []
+                    # Snapshot for this call - stable for the duration of process_frame
+                    transform = self._letterbox_transform
 
                     # Process each detected hand
                     for i, hand_landmark in enumerate(fresh_results.hand_landmarks):
-                        hand_landmarks = process_landmarks_to_dict(hand_landmark, f"hand_{i}")
+                        hand_landmarks = process_landmarks_to_dict(hand_landmark, f"hand_{i}", transform)
                         all_hand_landmarks.append(hand_landmarks)
 
                         # Get handedness (left/right)
@@ -470,7 +481,7 @@ class TasksHandProcessor(HandProcessor):
                             handedness = "Unknown"
                         all_handedness.append(handedness)
 
-                    # Process world landmarks if available
+                    # Process world landmarks if available (already real-world metres - no transform)
                     if (hasattr(fresh_results, 'hand_world_landmarks') and
                         fresh_results.hand_world_landmarks):
                         for i, hand_world_landmark in enumerate(fresh_results.hand_world_landmarks):
@@ -486,7 +497,8 @@ class TasksHandProcessor(HandProcessor):
                         self.send_hand_bounds_data(
                             fresh_results.hand_landmarks[i],
                             fresh_results.hand_world_landmarks[i] if hand_world_landmarks else None,
-                            handedness
+                            handedness,
+                            transform
                         )
 
                     self.osc_sender.send_message("/hand/status", compact_json({"status": len(fresh_results.hand_landmarks)}))
@@ -623,25 +635,27 @@ class LegacyHandProcessor(HandProcessor):
 
             h, w = frame.shape[:2]
             if w != proc_width or h != proc_height:
-                if (self._resize_buffer is None or 
-                    self._resize_buffer.shape[0] != proc_height or 
-                    self._resize_buffer.shape[1] != proc_width):
-                    self._resize_buffer = np.empty((proc_height, proc_width, 3), dtype=np.uint8)
-                
-                cv2.resize(frame, (proc_width, proc_height), dst=self._resize_buffer, interpolation=cv2.INTER_LINEAR)
-                image = self._resize_buffer
+                # Letterbox instead of stretching: preserves the source aspect
+                # ratio (padding with black bars) so normalized coordinates
+                # sent over OSC stay correct relative to the true source frame
+                image, letterbox_transform = letterbox_frame(frame, proc_width, proc_height, self._resize_buffer)
+                if letterbox_transform.pad_x == 0 and letterbox_transform.pad_y == 0:
+                    # No padding needed - image is the reusable resize buffer
+                    self._resize_buffer = image
+                self._letterbox_transform = letterbox_transform
             else:
                 image = frame
-            
+                self._letterbox_transform = LetterboxTransform(1.0, 0, 0, proc_width, proc_height, proc_width, proc_height)
+
             # Convert to RGB for MediaPipe
-            if (self._rgb_buffer is None or 
-                self._rgb_buffer.shape[0] != image.shape[0] or 
+            if (self._rgb_buffer is None or
+                self._rgb_buffer.shape[0] != image.shape[0] or
                 self._rgb_buffer.shape[1] != image.shape[1]):
                 self._rgb_buffer = np.empty((image.shape[0], image.shape[1], 3), dtype=np.uint8)
-            
+
             cv2.cvtColor(image, cv2.COLOR_BGR2RGB, dst=self._rgb_buffer)
             rgb_image = self._rgb_buffer
-            
+
             # Process with MediaPipe Hands
             results = hand_context.process(rgb_image)
             
@@ -661,23 +675,24 @@ class LegacyHandProcessor(HandProcessor):
                 all_handedness = []
                 
                 for i, hand_landmark in enumerate(results.multi_hand_landmarks):
-                    hand_landmarks = process_landmarks_to_dict(hand_landmark.landmark, f"hand_{i}")
+                    hand_landmarks = process_landmarks_to_dict(hand_landmark.landmark, f"hand_{i}", self._letterbox_transform)
                     all_hand_landmarks.append(hand_landmarks)
-                    
+
                     # Get handedness
                     if results.multi_handedness and i < len(results.multi_handedness):
                         handedness = results.multi_handedness[i].classification[0].label
                     else:
                         handedness = "Unknown"
                     all_handedness.append(handedness)
-                
+
                 # Process world landmarks if available (legacy may not have this)
-                if (hasattr(results, 'multi_hand_world_landmarks') and 
+                # World landmarks are already real-world metres - no transform
+                if (hasattr(results, 'multi_hand_world_landmarks') and
                     results.multi_hand_world_landmarks):
                     for i, hand_world_landmark in enumerate(results.multi_hand_world_landmarks):
                         hand_world_landmarks = process_landmarks_to_dict(hand_world_landmark.landmark, f"hand_world_{i}")
                         all_hand_world_landmarks.append(hand_world_landmarks)
-                
+
                 # Send individual hand data for each hand
                 for i in range(len(all_hand_landmarks)):
                     hand_landmarks = all_hand_landmarks[i]
@@ -687,7 +702,8 @@ class LegacyHandProcessor(HandProcessor):
                     self.send_hand_bounds_data(
                         results.multi_hand_landmarks[i].landmark,
                         results.multi_hand_world_landmarks[i].landmark if hand_world_landmarks else None,
-                        handedness
+                        handedness,
+                        self._letterbox_transform
                     )
                 
                 self.osc_sender.send_message("/hand/status", compact_json({"status": len(results.multi_hand_landmarks)}))
