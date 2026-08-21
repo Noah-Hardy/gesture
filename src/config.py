@@ -99,10 +99,11 @@ class Config:
         "updates": {
             "check_on_launch": True,      # Silently check GitHub for a newer release on launch
             "include_prereleases": True,  # Whether pre-release tags count as an available update
-            "check_interval_hours": 24,   # Minimum time between automatic launch checks
             "last_check": 0,              # Epoch seconds of the last completed check
             "last_etag": "",              # HTTP ETag from the last check (for If-None-Match)
-            "last_seen_version": "",      # Cached newest-known tag, used when a check 304s
+            "last_seen_version": "",      # Newest version the last check saw; when it's newer
+                                          # than this build, checks skip the ETag so the full
+                                          # release details come back for the dialog
             "skipped_version": "",        # Tag the user chose "Skip This Version" on
             "rate_limited_until": 0       # Epoch seconds; checks are suppressed until this passes
         },

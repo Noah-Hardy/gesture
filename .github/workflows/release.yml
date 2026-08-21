@@ -89,6 +89,10 @@ jobs:
       - name: Install Python 3.11 and Tk
         run: |
           set -euo pipefail
+          # The runner image ships with aws/tap pre-tapped; Homebrew's tap
+          # trust feature warns about it on every brew call. We only install
+          # from homebrew-core, so drop the tap instead of trusting it.
+          brew untap aws/tap || true
           brew install python@3.11 python-tk@3.11
           /opt/homebrew/opt/python@3.11/bin/python3.11 --version
 

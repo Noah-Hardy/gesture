@@ -288,10 +288,10 @@ def check_for_update(config, manual: bool = False, timeout: int = 10) -> CheckRe
         rl_until = updates_cfg.get('rate_limited_until', 0) or 0
         if now < rl_until:
             return CheckResult('none')
-        interval_hours = updates_cfg.get('check_interval_hours', 24) or 24
-        last_check = updates_cfg.get('last_check', 0) or 0
-        if now - last_check < interval_hours * 3600:
-            return CheckResult('none')
+        # No time-based throttle: every launch checks. The ETag below makes
+        # the no-change case a 304, which GitHub does not count against the
+        # rate limit, so a release published right after the previous check
+        # still surfaces on the very next launch.
     else:
         rl_until = updates_cfg.get('rate_limited_until', 0) or 0
         if now < rl_until:
@@ -305,8 +305,13 @@ def check_for_update(config, manual: bool = False, timeout: int = 10) -> CheckRe
         'User-Agent': f'{USER_AGENT}/{current}',
     }
     # Manual checks always fetch fresh - a 304 has no body, so it cannot
-    # carry the asset URLs a manual "install this" click needs.
-    etag = '' if manual else (updates_cfg.get('last_etag', '') or '')
+    # carry the asset URLs a manual "install this" click needs. Launch
+    # checks also fetch fresh while the last check saw a version newer
+    # than this build: a 304 would silently swallow the update dialog the
+    # user postponed with "Later".
+    last_seen = updates_cfg.get('last_seen_version', '') or ''
+    seen_newer = (compare_versions(last_seen, current) or 0) > 0
+    etag = '' if (manual or seen_newer) else (updates_cfg.get('last_etag', '') or '')
     if etag:
         headers['If-None-Match'] = etag
 

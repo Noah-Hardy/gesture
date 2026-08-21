@@ -439,7 +439,11 @@ class LauncherGui:
         menubar.add_cascade(label="Help", menu=help_menu)
         # Check for Updates lives here rather than the App menu -
         # _wire_app_menu deliberately adds no items to name='apple'.
-        help_menu.add_command(label="Check for Updates…", command=self._check_for_updates)
+        # manual=True: a menu click must bypass the 24h throttle and always
+        # report a result (tk would otherwise call this with no args and get
+        # the silent launch-check behavior).
+        help_menu.add_command(label="Check for Updates…",
+                              command=lambda: self._check_for_updates(manual=True))
         help_menu.add_separator()
         help_menu.add_command(label="MP-OSC Help", command=lambda: self._show_help())
         help_menu.add_separator()
