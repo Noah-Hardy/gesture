@@ -8,11 +8,12 @@ Cross-platform compatible configuration system
 # ============================================================================
 # IMPORTS
 # ============================================================================
+import copy
 import json
 import os
 import sys
 import tempfile
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 
 # ============================================================================
@@ -132,8 +133,12 @@ class Config:
         Returns:
             Dict containing merged configuration (defaults + file + env)
         """
-        config = self.DEFAULT_CONFIG.copy()
-        
+        # Deep copy: _sanitize and _apply_env_overrides mutate nested dicts
+        # in place, and a shallow copy would leave those nested dicts shared
+        # with DEFAULT_CONFIG, so one instance's overrides would leak into
+        # every later Config() built in the same process.
+        config = copy.deepcopy(self.DEFAULT_CONFIG)
+
         # Load from file if it exists
         if os.path.exists(self.config_file):
             try:
@@ -295,7 +300,7 @@ class Config:
     def create_default_config_file(self) -> None:
         """Create a default configuration file"""
         if not os.path.exists(self.config_file):
-            self.config = self.DEFAULT_CONFIG.copy()
+            self.config = copy.deepcopy(self.DEFAULT_CONFIG)
             self.save()
             print(f"📝 Created default config file: {self.config_file}")
         else:
@@ -323,10 +328,15 @@ def valid_unit_float(value) -> bool:
 # ============================================================================
 # GLOBAL CONFIGURATION INSTANCE
 # ============================================================================
-# Singleton configuration instance for the application
-config = Config()
+# Lazily-constructed singleton: building a Config() reads config.json from
+# the current working directory, so importing this module must not have that
+# side effect - only the first call to get_config() should touch disk.
+_config: Optional[Config] = None
 
 
 def get_config() -> Config:
-    """Get the global configuration instance"""
-    return config
+    """Get the global configuration instance, constructing it on first use"""
+    global _config
+    if _config is None:
+        _config = Config()
+    return _config
