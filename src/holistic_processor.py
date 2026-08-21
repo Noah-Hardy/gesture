@@ -41,6 +41,13 @@ HAND_CONNECTIONS = mp.solutions.hands.HAND_CONNECTIONS
 #
 # The fix substitutes an empty proto of the correct type for any empty packet,
 # then defers to MediaPipe's own builder, so absent parts arrive as empty lists.
+#
+# This patch is the reason for the `mediapipe<=0.10.21` pin in pyproject.toml -
+# it reaches into 0.10.21's private _holistic module internals, so it is not
+# guaranteed to apply cleanly to other versions.
+#
+# TODO: link the upstream mediapipe issue once filed / remove this patch when
+# fixed upstream (and reconsider the mediapipe version pin at that point).
 _HOLISTIC_FIX_INSTALLED = False
 
 
@@ -49,10 +56,18 @@ def _install_holistic_empty_packet_fix():
     Make the holistic landmarker tolerate streams that produced no output
 
     Safe to call more than once; only the first call patches.
+
+    Returns:
+        bool: True if the patch is installed (either just now, or already
+            installed by a prior call), False if it could not be installed
+            (e.g. the internal mediapipe modules it patches are missing).
+            Callers MUST NOT construct a HolisticLandmarker when this
+            returns False - doing so re-arms the uncatchable abort() this
+            patch exists to prevent.
     """
     global _HOLISTIC_FIX_INSTALLED
     if _HOLISTIC_FIX_INSTALLED:
-        return
+        return True
 
     try:
         from mediapipe.python import packet_creator
@@ -60,7 +75,7 @@ def _install_holistic_empty_packet_fix():
         from mediapipe.tasks.python.vision import holistic_landmarker as _holistic
     except ImportError as e:
         print(f"⚠️  Could not install holistic empty-packet fix: {e}")
-        return
+        return False
 
     # Each output stream and the proto type MediaPipe merges it into
     empty_proto_types = {
@@ -87,6 +102,7 @@ def _install_holistic_empty_packet_fix():
 
     _holistic._build_landmarker_result = build_landmarker_result
     _HOLISTIC_FIX_INSTALLED = True
+    return True
 
 
 # ============================================================================
@@ -219,8 +235,14 @@ class TasksHolisticProcessor(PoseProcessor):
     def setup_processor(self):
         """Setup MediaPipe Tasks holistic processor with GPU/CPU fallback"""
         try:
-            # Must run before a landmarker exists (see the note above the helper)
-            _install_holistic_empty_packet_fix()
+            # Must run before a landmarker exists (see the note above the helper).
+            # If the patch can't be installed, building a HolisticLandmarker would
+            # re-arm the uncatchable C++ abort() it exists to prevent - bail out
+            # instead so the caller falls back to separate pose + hand landmarkers.
+            if not _install_holistic_empty_packet_fix():
+                print("❌ Holistic empty-packet fix could not be installed - skipping holistic tracking")
+                print("   Falling back to separate pose + hand landmarkers")
+                return None, None, None, False
 
             # Import MediaPipe Tasks API
             BaseOptions = mp.tasks.BaseOptions
