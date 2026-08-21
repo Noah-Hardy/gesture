@@ -23,7 +23,7 @@ from typing import Callable, Optional
 
 from src import docs
 from src import theme
-from src.updater import Release
+from src.updater import Release, current_version
 
 TABLE_WIDTH = 70
 
@@ -182,7 +182,11 @@ class UpdateDialog:
         for tag, href in plan.links.items():
             self.text.tag_bind(tag, '<Button-1>', lambda e, u=href: self._open_link(u))
 
-        self.status_var.set(f"You're running an older version. Tag: {release.tag}")
+        running = current_version()
+        if running:
+            self.status_var.set(f"You're running MP-OSC {running}.")
+        else:
+            self.status_var.set("You're running an older version.")
 
     def _open_link(self, href: str) -> None:
         if href.startswith(('http://', 'https://')):
