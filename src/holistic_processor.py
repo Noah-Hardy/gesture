@@ -16,7 +16,7 @@ import numpy as np
 import mediapipe as mp
 from mediapipe.framework.formats import landmark_pb2
 
-from .pose_utils import get_pose_bounds_with_values, process_landmarks_to_dict, compact_json
+from .pose_utils import get_pose_bounds_with_values, process_landmarks_to_dict, compact_json, letterbox_frame, LetterboxTransform
 from .model_downloader import download_holistic_model
 from .pose_processor import PoseProcessor
 
@@ -170,15 +170,16 @@ class TasksHolisticProcessor(PoseProcessor):
             }
             self.osc_sender.send_message(f"/{hand_prefix}/world", compact_json(world_payload))
 
-    def send_hand_bounds_data(self, landmarks, world_landmarks, handedness):
+    def send_hand_bounds_data(self, landmarks, world_landmarks, handedness, transform=None):
         """Send bounding box data via OSC (single hand)"""
         hand_prefix = "left_hand" if handedness.lower() == "left" else "right_hand"
 
         if landmarks:
-            bounds = get_pose_bounds_with_values(landmarks)
+            bounds = get_pose_bounds_with_values(landmarks, transform)
             self.osc_sender.send_message(f"/{hand_prefix}/bounds", compact_json(bounds))
 
         if world_landmarks:
+            # World landmarks are already in real-world metres - no transform
             world_bounds = get_pose_bounds_with_values(world_landmarks)
             self.osc_sender.send_message(f"/{hand_prefix}/world_bounds", compact_json(world_bounds))
 
@@ -340,15 +341,17 @@ class TasksHolisticProcessor(PoseProcessor):
 
             h, w = frame.shape[:2]
             if w != proc_width or h != proc_height:
-                if (self._resize_buffer is None or
-                    self._resize_buffer.shape[0] != proc_height or
-                    self._resize_buffer.shape[1] != proc_width):
-                    self._resize_buffer = np.empty((proc_height, proc_width, 3), dtype=np.uint8)
-
-                cv2.resize(frame, (proc_width, proc_height), dst=self._resize_buffer, interpolation=cv2.INTER_LINEAR)
-                image = self._resize_buffer
+                # Letterbox instead of stretching: preserves the source aspect
+                # ratio (padding with black bars) so normalized coordinates
+                # sent over OSC stay correct relative to the true source frame
+                image, letterbox_transform = letterbox_frame(frame, proc_width, proc_height, self._resize_buffer)
+                if letterbox_transform.pad_x == 0 and letterbox_transform.pad_y == 0:
+                    # No padding needed - image is the reusable resize buffer
+                    self._resize_buffer = image
+                self._letterbox_transform = letterbox_transform
             else:
                 image = frame
+                self._letterbox_transform = LetterboxTransform(1.0, 0, 0, proc_width, proc_height, proc_width, proc_height)
 
             # Check if MediaPipe's async queue is backing up - skip frame if too many pending
             if self.pending_frames >= self.max_pending_frames:
@@ -399,6 +402,8 @@ class TasksHolisticProcessor(PoseProcessor):
             if fresh_results is not None:
                 # Keep for stale drawing on frames before the next callback lands (main thread only)
                 self._display_results = fresh_results
+                # Snapshot for this call - stable for the duration of process_frame
+                transform = self._letterbox_transform
 
                 # ------------------------------------------------------------
                 # Pose (single person - flat landmark list)
@@ -406,7 +411,8 @@ class TasksHolisticProcessor(PoseProcessor):
                 pose_detected = bool(fresh_results.pose_landmarks)
                 if pose_detected:
                     self._last_detection_state = True
-                    pose_landmarks = process_landmarks_to_dict(fresh_results.pose_landmarks, "pose_0")
+                    pose_landmarks = process_landmarks_to_dict(fresh_results.pose_landmarks, "pose_0", transform)
+                    # World landmarks are already real-world metres - no transform
                     pose_world_landmarks = []
                     if fresh_results.pose_world_landmarks:
                         pose_world_landmarks = process_landmarks_to_dict(fresh_results.pose_world_landmarks, "pose_world_0")
@@ -414,7 +420,8 @@ class TasksHolisticProcessor(PoseProcessor):
                     self.send_pose_data(pose_landmarks, pose_world_landmarks, timestamp)
                     self.send_bounds_data(
                         fresh_results.pose_landmarks,
-                        fresh_results.pose_world_landmarks if pose_world_landmarks else None
+                        fresh_results.pose_world_landmarks if pose_world_landmarks else None,
+                        transform
                     )
                     self.osc_sender.send_message("/mp/status", compact_json({"status": 1}))
 
@@ -443,13 +450,14 @@ class TasksHolisticProcessor(PoseProcessor):
                     if hand_lms:
                         hand_count += 1
                         setattr(self, last_state_attr, True)
-                        hand_landmarks = process_landmarks_to_dict(hand_lms, f"hand_{handedness.lower()}")
+                        hand_landmarks = process_landmarks_to_dict(hand_lms, f"hand_{handedness.lower()}", transform)
+                        # World landmarks are already real-world metres - no transform
                         hand_world_landmarks = None
                         if hand_world_lms:
                             hand_world_landmarks = process_landmarks_to_dict(hand_world_lms, f"hand_world_{handedness.lower()}")
 
                         self.send_hand_data(hand_landmarks, hand_world_landmarks, handedness, timestamp)
-                        self.send_hand_bounds_data(hand_lms, hand_world_lms if hand_world_landmarks else None, handedness)
+                        self.send_hand_bounds_data(hand_lms, hand_world_lms if hand_world_landmarks else None, handedness, transform)
 
                         self._draw_hand_landmarks(image, hand_lms, handedness)
 
