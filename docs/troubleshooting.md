@@ -45,6 +45,12 @@ The tracking engine's console output streams directly into the launcher's log pa
 | `⚠️ Failed to load config file` | `config.json` exists but couldn't be parsed (often a JSON syntax error from manual editing) — MP-OSC falls back to defaults for this run. Fix the file or use **💾 Save Config** to overwrite it with a valid one. |
 | `❌ Invalid OSC port` / `❌ Invalid camera device ID` | **💾 Save Config** refused to save because one of those fields isn't a valid number. Fix the field and save again. |
 
+## Updating
+
+If a download or install fails partway — a lost connection, a checksum mismatch, a signature that doesn't verify — MP-OSC shows the error, and the version you already have keeps running untouched; nothing is lost, and there's nothing to clean up by hand. See the **Updates** guide for the exact steps an install goes through.
+
+If you're offline, or MP-OSC can't self-update on this machine (it's still in `~/Downloads`, or installed somewhere your account can't write to), use **Help → Check for Updates…** once you're back online and in a writable location, or download the new version manually from the project's GitHub Releases page (**Help → Project on GitHub**).
+
 ## If none of this matches what you're seeing
 
 Copy the exact message from the log pane and check the **OSC Address Reference** and **Appendix** for anything more specific to the feature involved, or consult the project's GitHub page from the **Help** menu.

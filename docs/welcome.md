@@ -7,6 +7,8 @@ This guide is written for the app you're looking at: the launcher window, its ch
 ## What's in this guide
 
 - **Quick Start** — first launch, the Start/Stop lifecycle, confirming data is arriving.
+- **Settings** — the General/Tracking/Preview/Advanced window for everything beyond the main launcher.
+- **Updates** — how the built-in updater checks GitHub and installs a new version.
 - **Camera & NDI** — choosing an input source, and the mirror-preview option.
 - **OSC Output** — what MP-OSC sends and to where.
 - **TouchDesigner, Max, Unity** — patterns for the three most common receivers.
@@ -14,7 +16,3 @@ This guide is written for the app you're looking at: the launcher window, its ch
 - **Troubleshooting** — keyed to the exact messages the app prints.
 
 The **OSC Address Reference** and **Appendix** at the bottom are reference material, not a read-through — jump to them when you need a specific address or flag.
-
-## A note on accuracy
-
-Every claim in this documentation was checked against the app's actual source code, not assumed from how the feature "should" work. Where something behaves in a way that might surprise you — a status channel that isn't quite what it sounds like, a config option that has no effect — it's called out explicitly rather than glossed over.

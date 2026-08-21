@@ -11,6 +11,7 @@ Cross-platform compatible configuration system
 import json
 import os
 import sys
+import tempfile
 from typing import Dict, Any
 
 
@@ -38,7 +39,7 @@ class Config:
     # Default configuration values
     DEFAULT_CONFIG = {
         "osc": {
-            "host": "192.168.1.28",
+            "host": "127.0.0.1",
             "port": 1234,
             "queue_size": 10
         },
@@ -51,7 +52,7 @@ class Config:
             "processing_width": 640,
             "processing_height": 480,
             "use_ndi": False,
-            "ndi_source": None
+            "ndi_source": ""
         },
         "mediapipe": {
             "model_complexity": 0,
@@ -75,11 +76,14 @@ class Config:
             "right_connection_color": [200, 0, 0]
         },
         "performance": {
-            "prefer_gpu": True,
             "show_fps": False,
             "target_fps": 0,  # 0 = uncapped, set to 30 for stable 30fps cap
             "gc_enabled": True,  # Enable/disable garbage collection (disable for smoother FPS)
-            "gc_interval": 60  # Garbage collection interval in frames (higher = smoother but more memory)
+            "gc_interval": 60,  # Garbage collection interval in frames (higher = smoother but more memory)
+            "force_cpu": False,  # Force the CPU delegate (launch-time, GUI/Settings only)
+            "force_gpu": False,  # Force the GPU delegate - has a memory leak on Apple Silicon (launch-time)
+            "force_legacy": False,  # Use MediaPipe's legacy synchronous API (launch-time, GUI/Settings only)
+            "no_holistic": False  # In "all" mode, use separate pose+hand models instead of holistic (launch-time)
         },
         "display": {
             "show_window": True,
@@ -91,6 +95,21 @@ class Config:
             "landmark_radius": 2,
             "connection_thickness": 1,
             "connection_radius": 1
+        },
+        "updates": {
+            "check_on_launch": True,      # Silently check GitHub for a newer release on launch
+            "include_prereleases": True,  # Whether pre-release tags count as an available update
+            "check_interval_hours": 24,   # Minimum time between automatic launch checks
+            "last_check": 0,              # Epoch seconds of the last completed check
+            "last_etag": "",              # HTTP ETag from the last check (for If-None-Match)
+            "last_seen_version": "",      # Cached newest-known tag, used when a check 304s
+            "skipped_version": "",        # Tag the user chose "Skip This Version" on
+            "rate_limited_until": 0       # Epoch seconds; checks are suppressed until this passes
+        },
+        "ui": {
+            "input_section_open": True,
+            "osc_section_open": True,
+            "model_section_open": False
         }
     }
     
@@ -167,7 +186,6 @@ class Config:
             "MP_CAMERA_HEIGHT": ("camera", "height"),
             "MP_SHOW_FPS": ("performance", "show_fps"),
             "MP_MIRROR_PREVIEW": ("display", "mirror_preview"),
-            "MP_PREFER_GPU": ("performance", "prefer_gpu"),
             "MP_MIN_DETECTION_CONFIDENCE": ("mediapipe", "min_detection_confidence"),
             "MP_MIN_TRACKING_CONFIDENCE": ("mediapipe", "min_tracking_confidence")
         }
@@ -234,13 +252,31 @@ class Config:
     # ------------------------------------------------------------------------
     
     def save(self) -> None:
-        """Save current configuration to file"""
+        """
+        Save current configuration to file
+
+        Writes to a temp file in the same directory and atomically renames it
+        into place (os.replace), so a crash or power loss mid-write cannot
+        leave config.json truncated - the reader either sees the old file or
+        the fully-written new one, never a partial one.
+        """
+        directory = os.path.dirname(os.path.abspath(self.config_file)) or '.'
+        tmp_path = None
         try:
-            with open(self.config_file, 'w') as f:
+            fd, tmp_path = tempfile.mkstemp(dir=directory, prefix='.config.', suffix='.tmp')
+            with os.fdopen(fd, 'w') as f:
                 json.dump(self.config, f, indent=2)
+            os.replace(tmp_path, self.config_file)
+            tmp_path = None
             print(f"💾 Configuration saved to {self.config_file}")
-        except IOError as e:
+        except (IOError, OSError) as e:
             print(f"❌ Failed to save config file: {e}")
+        finally:
+            if tmp_path is not None and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
     
     def create_default_config_file(self) -> None:
         """Create a default configuration file"""
@@ -255,6 +291,19 @@ class Config:
         """Print current configuration"""
         print("📋 Current Configuration:")
         print(json.dumps(self.config, indent=2))
+
+
+# ============================================================================
+# VALIDATION HELPERS
+# ============================================================================
+def valid_port(value) -> bool:
+    """True if value is an int in the valid TCP/UDP port range"""
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 65535
+
+
+def valid_unit_float(value) -> bool:
+    """True if value is a number in [0.0, 1.0], for confidence thresholds"""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and 0.0 <= value <= 1.0
 
 
 # ============================================================================

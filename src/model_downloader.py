@@ -11,6 +11,16 @@ import os
 import sys
 import urllib.request
 
+from src.net import ssl_context
+
+# urlretrieve() and urlopen() both go through the process-wide opener, so
+# installing one HTTPSHandler here fixes TLS verification for every call in
+# this module without touching each call site. See src/net.py for why the
+# default context is broken inside the frozen app bundle.
+urllib.request.install_opener(
+    urllib.request.build_opener(urllib.request.HTTPSHandler(context=ssl_context()))
+)
+
 
 # ============================================================================
 # PATH RESOLUTION

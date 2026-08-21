@@ -197,3 +197,10 @@ assets/*.iconset/
 #   app bundle is built. They are large binaries (~64MB total) that Google
 #   serves from a stable URL, so there is no reason to keep them in history.
 src/tasks/*.task
+
+# Local runtime configuration
+#   config.json holds one machine's OSC target, camera and NDI setup. It is
+#   written by the app itself (Save Config / the Settings window) and should
+#   never be shared between installs - a fresh clone or install starts from
+#   src/config.py's DEFAULT_CONFIG instead.
+config.json

@@ -18,6 +18,7 @@ from tkinter import ttk
 from typing import Callable, Dict, Optional
 
 from src import docs
+from src import theme
 
 TABLE_WIDTH = 80
 LINK_CURSOR_CANDIDATES = ('pointinghand', 'hand2', 'arrow')
@@ -43,6 +44,7 @@ class HelpWindow:
         self.top.title("MP-OSC Help")
         self.top.minsize(820, 520)
         self.top.geometry("920x640")
+        self.top.configure(bg=theme.PALETTE['bg'])
         self.top.protocol("WM_DELETE_WINDOW", self.destroy)
         self.top.bind('<Escape>', lambda e: self.destroy())
         self.top.bind('<Command-w>', lambda e: self.destroy())
@@ -139,6 +141,7 @@ class HelpWindow:
             highlightthickness=0, padx=14, pady=10, width=84, height=30,
             cursor='arrow', font=self.fonts['body'],
         )
+        theme.style_text_widget(self.text)
         self.text.grid(row=0, column=0, sticky='nsew')
         text_scroll = ttk.Scrollbar(reader, orient='vertical', command=self.text.yview)
         text_scroll.grid(row=0, column=1, sticky='ns')
@@ -168,7 +171,7 @@ class HelpWindow:
         t.tag_configure('number', font=self.fonts['body'], lmargin1=18, lmargin2=32, spacing3=2)
         t.tag_configure('code_block', font=self.fonts['mono'], lmargin1=24, lmargin2=24,
                        spacing1=6, spacing3=6)
-        t.tag_configure('rule', font=self.fonts['mono'], foreground='#8e8e93')
+        t.tag_configure('rule', font=self.fonts['mono'], foreground=theme.PALETTE['text_dim'])
         t.tag_configure('table', font=self.fonts['mono'], spacing3=2)
 
         # Inline tags are created after block tags and explicitly raised, so
@@ -176,7 +179,7 @@ class HelpWindow:
         # (tk.Text tag precedence is creation order, later tags win).
         t.tag_configure('code_inline', font=self.fonts['mono'])
         t.tag_configure('bold', font=self.fonts['bold'])
-        t.tag_configure('link', foreground='systemLinkColor', underline=True)
+        t.tag_configure('link', foreground=theme.PALETTE['accent'], underline=True)
         for tag in ('code_inline', 'bold', 'link'):
             t.tag_raise(tag)
 

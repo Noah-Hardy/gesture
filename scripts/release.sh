@@ -157,8 +157,14 @@ fi
 
 # ----------------------------------------------------------------------------
 # Checksum and summary
+#
+# Run from inside dist/ so the filename embedded in the .sha256 is bare
+# (e.g. "MP-OSC-0.1.2-macos-arm64.zip") rather than "dist/MP-OSC-...zip".
+# `shasum -c` matches that embedded name against a file in the current
+# directory, so a dist/-prefixed name fails for anyone who downloads the
+# checksum file and the zip into the same folder.
 # ----------------------------------------------------------------------------
-shasum -a 256 "$ARCHIVE" > "${ARCHIVE}.sha256"
+(cd dist && shasum -a 256 "$(basename "$ARCHIVE")" > "$(basename "$ARCHIVE").sha256")
 
 echo
 echo "Archive : $(pwd)/$ARCHIVE  ($(du -h "$ARCHIVE" | cut -f1))"

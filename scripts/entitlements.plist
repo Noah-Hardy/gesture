@@ -8,6 +8,10 @@
 -->
 <plist version="1.0">
 <dict>
+    <!-- Do not add com.apple.security.app-sandbox here: the self-updater
+         added in 0.1.2 replaces the app's own bundle in place, which a
+         sandboxed app cannot do. -->
+
     <!-- TensorFlow Lite / XNNPACK generate executable code at runtime -->
     <key>com.apple.security.cs.allow-jit</key>
     <true/>

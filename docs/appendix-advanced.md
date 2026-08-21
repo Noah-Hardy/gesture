@@ -38,18 +38,19 @@ Run `python main.py --help` for the authoritative, always-current list.
 
 ## config.json
 
-Settings not exposed in the launcher live only in `config.json`. Key sections:
+The **Settings** window now exposes almost everything in this file directly — Tracking, Preview and Advanced between them cover most sections below. Only OSC host/port, tracking mode, pose model and FPS cap stay in the main launcher window; a small handful of things (like `camera.processing_width`/`processing_height`) exist only as raw config keys, with no field anywhere in the UI. Key sections:
 
 | Section | Notable keys |
 |---|---|
 | `osc` | `host`, `port`, `queue_size` (outgoing message queue depth before drops begin — see **OSC Output**) |
-| `camera` | `device_id`, `width`/`height` (capture resolution), `processing_width`/`processing_height` (see **Processing resolution** in **Camera & NDI**), `use_ndi`, `ndi_source` |
+| `camera` | `device_id`, `width`/`height` (capture resolution), `processing_width`/`processing_height` (see **Processing resolution** in **Camera & NDI** — not exposed in Settings), `use_ndi`, `ndi_source` |
 | `mediapipe` | `pose_model_type`, `num_poses` (Tasks API only; `>1` disables the combined holistic model in `all` mode), detection/tracking confidence thresholds |
 | `hand` | `num_hands`, confidence thresholds, left/right landmark and connection colors used in the preview |
 | `performance` | `target_fps`, `show_fps`, `gc_enabled`/`gc_interval` (see **Models & Performance**) |
 | `display` | `show_window`, `window_title`, `mirror_preview`, landmark/connection colors and stroke sizes used in the preview |
+| `updates` | Update-checker state — see the **Updates** guide |
 
-**One key has no effect:** `performance.prefer_gpu` is read from `config.json` but nothing in the engine acts on it — delegate selection is controlled entirely by `--force-cpu`/`--force-gpu` and automatic Apple Silicon detection (see **Models & Performance**). It's harmless to set, it just won't change anything.
+`config.json` is not part of the repository or the app bundle — it's written the first time you save something from the launcher or Settings, at `~/Library/Application Support/mp-osc/config.json` in the packaged app (or `config.json` in the working directory when running from source). A fresh clone or a fresh install has no config file at all until then; every key falls back to the built-in default shown in `src/config.py`'s `DEFAULT_CONFIG`, which matches this appendix.
 
 Environment variable overrides exist for a handful of the most common settings: `MP_OSC_HOST`, `MP_OSC_PORT`, `MP_CAMERA_ID`, `MP_CAMERA_WIDTH`, `MP_CAMERA_HEIGHT`, `MP_SHOW_FPS`, `MP_MIRROR_PREVIEW`, `MP_MIN_DETECTION_CONFIDENCE`, `MP_MIN_TRACKING_CONFIDENCE`.
 
@@ -69,4 +70,4 @@ The launcher window itself is `uv run python app.py` with no arguments — the s
 ./scripts/build_app.sh
 ```
 
-Downloads every landmarker model, then produces an ad-hoc-signed `dist/MP-OSC.app`. Distributing that build to another machine requires either clearing the quarantine flag by hand (`xattr -dr com.apple.quarantine`) or, for a build that opens with no extra steps, a paid Apple Developer ID certificate and notarization — see `scripts/release.sh` and the project README for the full signing and notarization process.
+Downloads every landmarker model, then produces an ad-hoc-signed `dist/MP-OSC.app`. Distributing that build to another machine requires either clearing the quarantine flag by hand (`xattr -dr com.apple.quarantine`) or, for a build that opens with no extra steps, a paid Apple Developer ID certificate and notarization — see `scripts/release.sh` and `docs/BUILDING.md` for the full signing and notarization process.

@@ -40,6 +40,8 @@ class Topic:
 TOPICS: Tuple[Topic, ...] = (
     Topic('welcome', '\U0001F44B Welcome', 'Guide', 'welcome.md'),
     Topic('quick-start', '\U0001F680 Quick Start', 'Guide', 'quick-start.md'),
+    Topic('settings', '\U0001F6E0️ Settings', 'Guide', 'settings.md'),
+    Topic('updates', '\U0001F504 Updates', 'Guide', 'updates.md'),
     Topic('input-sources', '\U0001F4F7 Camera & NDI', 'Guide', 'input-sources.md'),
     Topic('osc-output', '\U0001F4E1 OSC Output', 'Guide', 'osc-output.md'),
     Topic('receivers', '\U0001F39B TouchDesigner, Max, Unity', 'Guide', 'receivers.md'),

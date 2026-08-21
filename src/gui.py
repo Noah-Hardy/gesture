@@ -22,12 +22,16 @@ import threading
 import time
 import tkinter as tk
 import webbrowser
+from tkinter import font as tkfont
 from tkinter import messagebox, ttk
 from typing import Any, List, Optional
 
-from src import docs
-from src.config import get_config
+from src import docs, theme
+from src.config import get_config, valid_port
 from src.help_window import HelpWindow
+from src.settings_window import SettingsWindow
+from src.update_dialog import UpdateDialog
+from src.updater import UpdateController, cleanup_stale, spawn_installer
 
 # NDI discovery is optional - the library may not be installed
 try:
@@ -55,6 +59,9 @@ POSE_MODELS = ('lite', 'full', 'heavy')
 # Queue message tags (worker threads never touch tk widgets directly)
 TAG_LOG = 'log'
 TAG_NDI = 'ndi'
+TAG_UPDATE = 'update'
+
+UPDATE_CHECK_DELAY_MS = 1500  # deferred so a slow DNS lookup never delays first paint
 
 
 # ============================================================================
@@ -79,11 +86,14 @@ class LauncherGui:
         self._queue = queue.Queue()           # type: queue.Queue
         self._form_widgets = []               # type: List[Any]
         self.help_window = None               # type: Optional[HelpWindow]
+        self.settings_window = None           # type: Optional[SettingsWindow]
+        self.update_dialog = None             # type: Optional[UpdateDialog]
 
         root.title("MediaPipe OSC Launcher")
-        root.minsize(560, 620)
+        root.minsize(560, 520)
 
-        ttk.Style()  # Default theme (aqua on macOS) is fine
+        theme.apply_theme(root)
+        self.updater = UpdateController(self._queue, self.config, tag=TAG_UPDATE)
 
         self._init_variables()
         self._build_layout()
@@ -96,6 +106,13 @@ class LauncherGui:
             self._set_status("⚠️  NDI library not available - camera input only")
         else:
             self._set_status("✅ Ready")
+
+        # Cheap and local - safe to do before the queue/poll loop is relied on.
+        try:
+            cleanup_stale()
+        except Exception:
+            pass
+        self.root.after(UPDATE_CHECK_DELAY_MS, lambda: self.updater.check_async(manual=False))
 
     # ------------------------------------------------------------------------
     # Form state
@@ -113,7 +130,8 @@ class LauncherGui:
         self.var_camera = tk.StringVar(value=str(cfg.get('camera', 'device_id', 0)))
         self.var_ndi_source = tk.StringVar(value=cfg.get('camera', 'ndi_source') or '')
 
-        # OSC output
+        # OSC output - default host is localhost; port always has a value
+        # since a blank one cannot start the engine.
         self.var_host = tk.StringVar(value=str(cfg.get('osc', 'host', '127.0.0.1')))
         self.var_port = tk.StringVar(value=str(cfg.get('osc', 'port', 1234)))
 
@@ -128,10 +146,19 @@ class LauncherGui:
         # Preview
         self.var_mirror = tk.BooleanVar(value=bool(cfg.get('display', 'mirror_preview', False)))
 
-        # GUI-local toggles (no config keys)
-        self.var_force_cpu = tk.BooleanVar(value=False)
-        self.var_force_legacy = tk.BooleanVar(value=False)
-        self.var_no_holistic = tk.BooleanVar(value=False)
+        # Backend toggles - launch-only (never part of the argv used to
+        # resume a saved config), but now persisted so Settings remembers
+        # them. Owned here and shared with SettingsWindow, which is where
+        # they're actually edited (see _build_advanced_tab).
+        self.var_force_cpu = tk.BooleanVar(value=bool(cfg.get('performance', 'force_cpu', False)))
+        self.var_force_gpu = tk.BooleanVar(value=bool(cfg.get('performance', 'force_gpu', False)))
+        self.var_force_legacy = tk.BooleanVar(value=bool(cfg.get('performance', 'force_legacy', False)))
+        self.var_no_holistic = tk.BooleanVar(value=bool(cfg.get('performance', 'no_holistic', False)))
+
+        # Force CPU and Force GPU are mutually exclusive - main.py accepts
+        # both flags at once with undefined results, so the UI enforces it.
+        self.var_force_cpu.trace_add('write', lambda *a: self._enforce_delegate_choice('cpu'))
+        self.var_force_gpu.trace_add('write', lambda *a: self._enforce_delegate_choice('gpu'))
 
         self.var_status = tk.StringVar(value="")
 
@@ -158,8 +185,12 @@ class LauncherGui:
 
     def _build_input_frame(self, parent: ttk.Frame, row: int) -> None:
         """Mode selection and camera/NDI input source"""
-        frame = ttk.LabelFrame(parent, text="Input", padding=8)
-        frame.grid(row=row, column=0, sticky='ew', pady=(0, 8))
+        section = theme.CollapsibleSection(
+            parent, title="Input",
+            open=bool(self.config.get('ui', 'input_section_open', True)),
+            on_toggle=lambda is_open: self._on_section_toggle('input_section_open', is_open))
+        section.grid(row=row, column=0, sticky='ew', pady=(0, 8))
+        frame = section.body
         frame.columnconfigure(1, weight=1)
 
         ttk.Label(frame, text="Tracking mode:").grid(row=0, column=0, sticky='w', pady=2)
@@ -215,8 +246,12 @@ class LauncherGui:
 
     def _build_osc_frame(self, parent: ttk.Frame, row: int) -> None:
         """OSC destination host and port"""
-        frame = ttk.LabelFrame(parent, text="OSC Output", padding=8)
-        frame.grid(row=row, column=0, sticky='ew', pady=(0, 8))
+        section = theme.CollapsibleSection(
+            parent, title="OSC Output",
+            open=bool(self.config.get('ui', 'osc_section_open', True)),
+            on_toggle=lambda is_open: self._on_section_toggle('osc_section_open', is_open))
+        section.grid(row=row, column=0, sticky='ew', pady=(0, 8))
+        frame = section.body
         frame.columnconfigure(1, weight=1)
 
         ttk.Label(frame, text="Host:").grid(row=0, column=0, sticky='w', pady=2)
@@ -230,9 +265,19 @@ class LauncherGui:
         self._register(entry_port, 'normal')
 
     def _build_model_frame(self, parent: ttk.Frame, row: int) -> None:
-        """Pose model selection, frame rate cap and backend toggles"""
-        frame = ttk.LabelFrame(parent, text="Model & Performance", padding=8)
-        frame.grid(row=row, column=0, sticky='ew', pady=(0, 8))
+        """Pose model selection and frame rate cap
+
+        Show FPS / Force CPU / Force legacy / No holistic used to live here
+        as always-visible checkboxes. They're launch-time toggles most
+        sessions never touch, so they moved to Settings -> Advanced
+        (src.settings_window), leaving this section - and the window - short.
+        """
+        section = theme.CollapsibleSection(
+            parent, title="Model & Performance",
+            open=bool(self.config.get('ui', 'model_section_open', False)),
+            on_toggle=lambda is_open: self._on_section_toggle('model_section_open', is_open))
+        section.grid(row=row, column=0, sticky='ew', pady=(0, 8))
+        frame = section.body
         frame.columnconfigure(1, weight=1)
 
         ttk.Label(frame, text="Pose model:").grid(row=0, column=0, sticky='w', pady=2)
@@ -245,27 +290,23 @@ class LauncherGui:
         entry_fps = ttk.Entry(frame, textvariable=self.var_fps_cap, width=8)
         entry_fps.grid(row=1, column=1, sticky='w', padx=(6, 0), pady=2)
         self._register(entry_fps, 'normal')
-        ttk.Label(frame, text="(0 or empty = uncapped)").grid(row=1, column=2, sticky='w',
-                                                              padx=(6, 0), pady=2)
+        ttk.Label(frame, text="(0 or empty = uncapped)", style='Dim.TLabel').grid(
+            row=1, column=2, sticky='w', padx=(6, 0), pady=2)
 
-        toggles = ttk.Frame(frame)
-        toggles.grid(row=2, column=0, columnspan=3, sticky='w', pady=(6, 0))
+        ttk.Label(frame, text="More options in mp-osc → Settings…",
+                 style='Dim.TLabel').grid(row=2, column=0, columnspan=3, sticky='w', pady=(6, 0))
 
-        chk_show_fps = ttk.Checkbutton(toggles, text="Show FPS", variable=self.var_show_fps)
-        chk_show_fps.grid(row=0, column=0, sticky='w', padx=(0, 12))
-        self._register(chk_show_fps, 'normal')
+    def _on_section_toggle(self, ui_key: str, is_open: bool) -> None:
+        """Persist a collapsible section's open/closed state immediately"""
+        self.config.set('ui', ui_key, bool(is_open))
+        self.config.save()
 
-        chk_cpu = ttk.Checkbutton(toggles, text="Force CPU", variable=self.var_force_cpu)
-        chk_cpu.grid(row=0, column=1, sticky='w', padx=(0, 12))
-        self._register(chk_cpu, 'normal')
-
-        chk_legacy = ttk.Checkbutton(toggles, text="Force legacy", variable=self.var_force_legacy)
-        chk_legacy.grid(row=1, column=0, sticky='w', padx=(0, 12))
-        self._register(chk_legacy, 'normal')
-
-        chk_holistic = ttk.Checkbutton(toggles, text="No holistic", variable=self.var_no_holistic)
-        chk_holistic.grid(row=1, column=1, sticky='w', padx=(0, 12))
-        self._register(chk_holistic, 'normal')
+    def _enforce_delegate_choice(self, just_set: str) -> None:
+        """Force CPU and Force GPU are mutually exclusive - clear the other one"""
+        if just_set == 'cpu' and self.var_force_cpu.get():
+            self.var_force_gpu.set(False)
+        elif just_set == 'gpu' and self.var_force_gpu.get():
+            self.var_force_cpu.set(False)
 
     def _build_buttons(self, parent: ttk.Frame, row: int) -> None:
         """Save Config and the Start/Stop toggle"""
@@ -273,10 +314,11 @@ class LauncherGui:
         bar.grid(row=row, column=0, sticky='ew', pady=(0, 8))
         bar.columnconfigure(2, weight=1)
 
-        self.btn_start = ttk.Button(bar, text="▶ Start", width=12, command=self._toggle_engine)
+        self.btn_start = ttk.Button(bar, text="Start", width=12, style='Accent.TButton',
+                                    command=self._toggle_engine)
         self.btn_start.grid(row=0, column=0, sticky='w')
 
-        self.btn_save = ttk.Button(bar, text="💾 Save Config", command=self._save_config)
+        self.btn_save = ttk.Button(bar, text="Save Config", command=self._save_config)
         self.btn_save.grid(row=0, column=1, sticky='w', padx=(8, 0))
 
         self.btn_clear = ttk.Button(bar, text="Clear Log", command=self._clear_log)
@@ -290,8 +332,13 @@ class LauncherGui:
         frame.columnconfigure(0, weight=1)
 
         self.log = tk.Text(frame, height=14, wrap='none', state='disabled',
-                           borderwidth=0, highlightthickness=0)
+                           borderwidth=0, highlightthickness=0,
+                           font=tkfont.nametofont('TkFixedFont'))
+        theme.style_text_widget(self.log)
         self.log.grid(row=0, column=0, sticky='nsew')
+
+        self.log.tag_configure('warn', foreground=theme.PALETTE['warn'])
+        self.log.tag_configure('error', foreground=theme.PALETTE['error'])
 
         scroll = ttk.Scrollbar(frame, orient='vertical', command=self.log.yview)
         scroll.grid(row=0, column=1, sticky='ns')
@@ -338,6 +385,10 @@ class LauncherGui:
 
         help_menu = tk.Menu(menubar, name='help')
         menubar.add_cascade(label="Help", menu=help_menu)
+        # Check for Updates lives here rather than the App menu -
+        # _wire_app_menu deliberately adds no items to name='apple'.
+        help_menu.add_command(label="Check for Updates…", command=self._check_for_updates)
+        help_menu.add_separator()
         last_group = None
         for topic in docs.TOPICS:
             if topic.group != last_group:
@@ -441,10 +492,26 @@ class LauncherGui:
         )
 
     def _show_preferences(self) -> None:
-        """App > Settings… - the main window IS the settings form"""
-        self.root.deiconify()
-        self.root.lift()
-        self.root.focus_force()
+        """App > Settings… (⌘,) - opens the real Settings window, or brings it forward"""
+        if self.settings_window is not None and self.settings_window.exists():
+            self.settings_window.show()
+            return
+        self.settings_window = SettingsWindow(
+            self.root, self.config,
+            var_force_cpu=self.var_force_cpu,
+            var_force_gpu=self.var_force_gpu,
+            var_force_legacy=self.var_force_legacy,
+            var_no_holistic=self.var_no_holistic,
+            var_show_fps=self.var_show_fps,
+            on_open_config=self._open_config_file,
+            on_reveal_config=self._reveal_config,
+            on_check_now=lambda: self._check_for_updates(manual=True),
+            on_close=self._forget_settings,
+        )
+
+    def _forget_settings(self) -> None:
+        """Drop the reference once the Settings window closes"""
+        self.settings_window = None
 
     def _show_help(self, slug: str = None) -> None:
         """Open the docs viewer, or bring the existing one forward"""
@@ -474,6 +541,128 @@ class LauncherGui:
             webbrowser.open('https://github.com/Noah-Hardy/mp-osc')
         except Exception as e:
             self._append_log("⚠️  Failed to open GitHub: {}".format(e))
+
+    # ------------------------------------------------------------------------
+    # Update checking - src.updater.UpdateController does the network/
+    # filesystem work on a worker thread; every method here runs on the main
+    # thread, driven from _poll() via TAG_UPDATE payloads.
+    # ------------------------------------------------------------------------
+    def _check_for_updates(self, manual: bool = False) -> None:
+        """Help > Check for Updates…, Settings' Check Now, and the silent launch check"""
+        if self.updater.busy:
+            if manual:
+                self._set_status("🔄 Already checking for updates…")
+            return
+        if manual:
+            self._set_status("🔄 Checking for updates…")
+        self.updater.check_async(manual=manual)
+
+    def _handle_update(self, payload: dict) -> None:
+        """Dispatch one UpdateController payload (from _poll, main thread only)"""
+        persist = payload.get('persist')
+        if persist:
+            for key, value in persist.items():
+                self.config.set('updates', key, value)
+            self.config.save()
+
+        kind = payload.get('kind')
+
+        if kind == 'none':
+            if payload.get('manual'):
+                self._set_status(payload.get('message') or "✅ You're up to date")
+            return
+
+        if kind == 'error':
+            message = payload.get('message') or "Couldn't check for updates."
+            if payload.get('manual'):
+                messagebox.showinfo("Check for Updates", message, parent=self.root)
+            self._set_status("⚠️  {}".format(message))
+            return
+
+        if kind == 'available':
+            release = payload.get('release')
+            self._set_status("⬆️  MP-OSC {} is available".format(release.version))
+            self._open_update_dialog(release)
+            return
+
+        # Everything else is an install-flow update for whichever dialog is open.
+        if self.update_dialog is None or not self.update_dialog.exists():
+            return
+        if kind == 'progress':
+            self.update_dialog.show_progress(payload.get('done', 0), payload.get('total', 0))
+        elif kind == 'verifying':
+            self.update_dialog.show_verifying(payload.get('phase', ''))
+        elif kind == 'ready':
+            self.update_dialog.show_ready()
+            self._install_ready(payload.get('staged'))
+        elif kind == 'failed':
+            self.update_dialog.show_failed(payload.get('message', ''))
+
+    def _open_update_dialog(self, release) -> None:
+        if self.update_dialog is not None and self.update_dialog.exists():
+            self.update_dialog.lift()
+            return
+        self.update_dialog = UpdateDialog(
+            self.root, release,
+            on_install=lambda: self._start_update_install(release),
+            on_skip=lambda: self._skip_update(release),
+            on_later=self._forget_update_dialog,
+            on_cancel=self._cancel_update_install,
+            on_close=self._forget_update_dialog,
+        )
+
+    def _forget_update_dialog(self) -> None:
+        if self.update_dialog is not None:
+            self.update_dialog.destroy()
+        self.update_dialog = None
+
+    def _skip_update(self, release) -> None:
+        self.config.set('updates', 'skipped_version', release.tag)
+        self.config.save()
+        self._forget_update_dialog()
+
+    def _start_update_install(self, release) -> None:
+        if self.is_running():
+            if not messagebox.askyesno(
+                    "Stop Engine and Install?",
+                    "MP-OSC needs to stop the tracking engine to install this update. "
+                    "Stop it now?",
+                    parent=self.root):
+                return
+        self.updater.install_async(release)
+
+    def _cancel_update_install(self) -> None:
+        self.updater.cancel()
+
+    def _install_ready(self, staged) -> None:
+        """Update verified and staged - stop the engine, hand off, then quit
+
+        The swap script waits for THIS process to exit before moving the new
+        bundle into place, so spawning it has to be the last thing we do.
+        """
+        if self.is_running():
+            self._stop_engine()
+        self._await_install_shutdown(staged, time.monotonic())
+
+    def _await_install_shutdown(self, staged, started_at: float) -> None:
+        if self.proc is not None and self.proc.poll() is None:
+            if time.monotonic() - started_at <= CLOSE_GRACE:
+                self.root.after(100, lambda: self._await_install_shutdown(staged, started_at))
+                return
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+
+        try:
+            spawn_installer(staged)
+        except Exception as e:
+            self._append_log("⚠️  Failed to launch the installer: {}".format(e))
+            if self.update_dialog is not None and self.update_dialog.exists():
+                self.update_dialog.show_failed("Couldn't launch the installer: {}".format(e))
+            return
+
+        self.root.destroy()
 
     # ------------------------------------------------------------------------
     # Widget enable/disable helpers
@@ -527,8 +716,13 @@ class LauncherGui:
         """Append text to the read-only log pane, trimming old lines"""
         if not text.endswith('\n'):
             text += '\n'
+        tag = ()
+        if text.startswith(('❌', '🛑')):
+            tag = ('error',)
+        elif text.startswith('⚠️'):
+            tag = ('warn',)
         self.log.configure(state='normal')
-        self.log.insert('end', text)
+        self.log.insert('end', text, tag)
 
         # Cap the buffer so long sessions do not grow without bound
         line_count = int(self.log.index('end-1c').split('.')[0])
@@ -607,9 +801,11 @@ class LauncherGui:
         # Always explicit: the checkbox, not the saved config, decides
         cmd.append('--mirror' if self.var_mirror.get() else '--no-mirror')
 
-        # Backend toggles
+        # Backend toggles (mutually exclusive - enforced by _enforce_delegate_choice)
         if self.var_force_cpu.get():
             cmd.append('--force-cpu')
+        elif self.var_force_gpu.get():
+            cmd.append('--force-gpu')
         if self.var_force_legacy.get():
             cmd.append('--force-legacy')
         if self.var_no_holistic.get():
@@ -677,7 +873,7 @@ class LauncherGui:
         self.reader = threading.Thread(target=self._read_output, args=(self.proc,), daemon=True)
         self.reader.start()
 
-        self.btn_start.configure(text="⏹ Stop")
+        self.btn_start.configure(text="Stop", style='Error.TButton')
         self._set_form_enabled(False)
         self._set_status("🎥 Engine running (PID {})".format(self.proc.pid))
 
@@ -699,7 +895,7 @@ class LauncherGui:
         except Exception as e:
             self._append_log("⚠️  Failed to signal engine: {}".format(e))
         self.stop_requested_at = time.monotonic()
-        self.btn_start.configure(text="⏹ Stopping…", state='disabled')
+        self.btn_start.configure(text="Stopping…", state='disabled')
         self._set_status("🛑 Stopping engine…")
         self._sync_menu_state()
 
@@ -739,7 +935,7 @@ class LauncherGui:
         self.terminated = False
         self.killed = False
 
-        self.btn_start.configure(text="▶ Start", state='normal')
+        self.btn_start.configure(text="Start", style='Accent.TButton', state='normal')
         self._set_form_enabled(True)
 
     # ------------------------------------------------------------------------
@@ -754,6 +950,8 @@ class LauncherGui:
                     self._append_log(payload)
                 elif tag == TAG_NDI:
                     self._apply_ndi_sources(payload)
+                elif tag == TAG_UPDATE:
+                    self._handle_update(payload)
         except queue.Empty:
             pass
 
@@ -825,8 +1023,8 @@ class LauncherGui:
         """
         try:
             port = self._int_or_none(self.var_port.get())
-            if port is None:
-                self._set_status("❌ Invalid OSC port")
+            if port is None or not valid_port(port):
+                self._set_status("❌ Invalid OSC port (must be 0-65535)")
                 self._append_log("❌ Invalid OSC port - config not saved")
                 return
 
@@ -846,10 +1044,14 @@ class LauncherGui:
             self.config.set('osc', 'port', port)
             self.config.set('camera', 'device_id', camera)
             self.config.set('camera', 'use_ndi', self.var_source.get() == 'ndi')
-            self.config.set('camera', 'ndi_source', ndi_source if ndi_source else None)
+            self.config.set('camera', 'ndi_source', ndi_source)
             self.config.set('mediapipe', 'pose_model_type', self.var_pose_model.get())
             self.config.set('performance', 'target_fps', fps_cap)
             self.config.set('performance', 'show_fps', bool(self.var_show_fps.get()))
+            self.config.set('performance', 'force_cpu', bool(self.var_force_cpu.get()))
+            self.config.set('performance', 'force_gpu', bool(self.var_force_gpu.get()))
+            self.config.set('performance', 'force_legacy', bool(self.var_force_legacy.get()))
+            self.config.set('performance', 'no_holistic', bool(self.var_no_holistic.get()))
             self.config.set('display', 'mirror_preview', bool(self.var_mirror.get()))
 
             self.config.save()
@@ -860,8 +1062,8 @@ class LauncherGui:
 
         self._set_status("💾 Configuration saved to {}".format(self.config.config_file))
         self._append_log("💾 Configuration saved to {}".format(self.config.config_file))
-        self._append_log("   (mode, force CPU, force legacy and no-holistic are "
-                         "launch-only and are not stored)")
+        self._append_log("   (tracking mode is launch-only and is not stored - "
+                         "see mp-osc → Settings… for everything else)")
 
     # ------------------------------------------------------------------------
     # Window close
