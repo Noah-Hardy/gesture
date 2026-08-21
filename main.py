@@ -29,6 +29,20 @@ IS_APPLE_SILICON = platform.system() == "Darwin" and platform.machine() == "arm6
 
 
 # ============================================================================
+# EXIT CODES
+# ============================================================================
+# Setup failures that happen before the processing loop even starts (camera
+# open failure, no processor could be constructed, mismatched backends, bad
+# OSC target, ...) keep using the bare `1` they already used - that's out of
+# scope here. These are specifically for how run() reports *why the
+# processing loop itself ended*, so the launcher can tell a clean stop from
+# a real failure instead of treating every nonzero code the same way.
+EXIT_OK = 0                # Clean stop: user Stop (SIGINT), 'q', window closed
+EXIT_CAPTURE_LOST = 2      # Consecutive frame-read failures tripped the loop's guard
+EXIT_CRASH = 3             # Unhandled exception inside the processing loop
+
+
+# ============================================================================
 # COMMAND LINE ARGUMENT PARSING
 # ============================================================================
 def build_parser():
@@ -170,40 +184,54 @@ def setup_camera(config, use_ndi=False, ndi_source=None):
         ndi_source: Name of NDI source to connect to
         
     Returns:
-        cv2.VideoCapture or NDICapture object
+        cv2.VideoCapture or NDICapture object when a capture was opened.
+        None when NDI was explicitly requested and definitively failed
+        (library missing, no source found, or setup raised) - the caller
+        must treat that as a hard failure and NOT fall back to the webcam,
+        since the webcam's warm-up read is what triggers an unwanted
+        macOS camera-permission prompt for a user who asked for NDI.
     """
     camera_config = config.get('camera')
-    
+
     # Determine if NDI should be used (command line or config)
     use_ndi = use_ndi or camera_config.get('use_ndi', False)
     ndi_source = ndi_source or camera_config.get('ndi_source')
-    
+
     # ------------------------------------------------------------------------
-    # Try NDI capture if requested
+    # NDI capture if requested - any failure here is a hard error, not a
+    # silent fallback to the webcam (see docstring above).
     # ------------------------------------------------------------------------
     if use_ndi:
         if not NDI_AVAILABLE:
             print("❌ NDI requested but ndi-python not installed")
             print("   Install with: uv add ndi-python")
-            print("   Falling back to camera...")
-        else:
-            print("🎬 Setting up NDI capture...")
-            try:
-                cap = NDICapture(source_name=ndi_source)
-                if cap.isOpened():
-                    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    proc_w = camera_config.get('processing_width', 640)
-                    proc_h = camera_config.get('processing_height', 480)
-                    if actual_w != proc_w or actual_h != proc_h:
-                        print(f"📐 NDI: {actual_w}x{actual_h} → processing at {proc_w}x{proc_h}")
-                    return cap
-                else:
-                    print("❌ NDI capture failed to open, falling back to camera...")
-            except Exception as e:
-                print(f"❌ NDI setup failed: {e}")
-                print("   Falling back to camera...")
-    
+            return None
+
+        print("🎬 Setting up NDI capture...")
+        try:
+            cap = NDICapture(source_name=ndi_source)
+        except Exception as e:
+            print(f"❌ NDI setup failed: {e}")
+            print("   Check that ndi-python and the NDI runtime are installed correctly")
+            return None
+
+        if cap.isOpened():
+            actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            proc_w = camera_config.get('processing_width', 640)
+            proc_h = camera_config.get('processing_height', 480)
+            if actual_w != proc_w or actual_h != proc_h:
+                print(f"📐 NDI: {actual_w}x{actual_h} → processing at {proc_w}x{proc_h}")
+            return cap
+
+        print("❌ NDI source unavailable - not falling back to webcam")
+        print("   Check the source name and confirm it is broadcasting on the network")
+        try:
+            cap.release()
+        except Exception:
+            pass
+        return None
+
     # ------------------------------------------------------------------------
     # Standard OpenCV camera capture
     # ------------------------------------------------------------------------
@@ -276,11 +304,18 @@ def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
         reassert_dock_policy: Optional callable (macOS, launcher-spawned only)
             that re-applies the Accessory Dock policy after HighGUI's first
             window creation resets it. None elsewhere.
+
+    Returns:
+        One of the EXIT_* constants indicating why the loop ended, so run()
+        (which invokes this three different ways depending on which
+        processors are active) can report the real reason instead of
+        assuming every exit was a clean one.
     """
     consecutive_failures = 0
     last_frame_time = time.time()
     mirror_preview = display_config.get('mirror_preview', False)
-    
+    exit_reason = EXIT_OK
+
     while cap.isOpened():
         # Frame rate limiting
         if frame_interval > 0:
@@ -295,11 +330,12 @@ def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
             consecutive_failures += 1
             if consecutive_failures >= max_consecutive_failures:
                 print(f"❌ Too many consecutive frame failures ({consecutive_failures})")
+                exit_reason = EXIT_CAPTURE_LOST
                 break
             continue
-        
+
         consecutive_failures = 0
-        
+
         try:
             # Each processor's inference always reads the clean source
             # `frame` directly, never a previous processor's annotated
@@ -345,6 +381,8 @@ def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
             print(f"⚠️  Legacy frame processing error: {frame_error}")
             continue
 
+    return exit_reason
+
 
 # ============================================================================
 # MAIN APPLICATION FUNCTION
@@ -385,8 +423,14 @@ def run(args, config):
     # Initialize OSC communication
     # ------------------------------------------------------------------------
     print(f"🌐 OSC Target: {osc_config['host']}:{osc_config['port']}")
-    osc_client = udp_client.SimpleUDPClient(osc_config['host'], osc_config['port'])
-    threaded_osc = ThreadedOSCSender(osc_client, queue_size=osc_config['queue_size'])
+    try:
+        osc_client = udp_client.SimpleUDPClient(osc_config['host'], osc_config['port'])
+        threaded_osc = ThreadedOSCSender(osc_client, queue_size=osc_config['queue_size'])
+    except OSError as e:
+        print(f"❌ Could not resolve OSC target {osc_config['host']}:{osc_config['port']}: {e}")
+        print("   Check the OSC host address for typos")
+        print("   If using a hostname, try the IP address instead")
+        return 1
     
     # ------------------------------------------------------------------------
     # Frame rate limiting setup
@@ -403,7 +447,11 @@ def run(args, config):
     # Setup camera or NDI capture
     # ------------------------------------------------------------------------
     cap = setup_camera(config, use_ndi=args.ndi, ndi_source=args.ndi_source)
-    
+    if cap is None:
+        # setup_camera already printed a specific ❌ error (NDI was requested
+        # and definitively failed) - do not fall back to the webcam.
+        return 1
+
     # ------------------------------------------------------------------------
     # Initialize processor(s) based on mode (pose/hand/all)
     # ------------------------------------------------------------------------
@@ -598,6 +646,10 @@ def run(args, config):
     # ========================================================================
     # MAIN PROCESSING LOOP
     # ========================================================================
+    # Tracks *why* the loop ended so the final return code (below the
+    # `finally:` cleanup) can tell a clean stop from capture loss from an
+    # unhandled crash, instead of always reporting success.
+    exit_reason = EXIT_OK
     try:
         # NDI may have gaps between frames - allow more failures
         consecutive_failures = 0
@@ -638,11 +690,12 @@ def run(args, config):
                     consecutive_failures += 1
                     if consecutive_failures >= max_consecutive_failures:
                         print(f"❌ Too many consecutive frame failures ({consecutive_failures})")
+                        exit_reason = EXIT_CAPTURE_LOST
                         break
                     continue
-                
+
                 consecutive_failures = 0
-                
+
                 try:
                     timestamp_counter += 1
 
@@ -696,26 +749,30 @@ def run(args, config):
             # Handle legacy context managers
             if pose_ctx and hand_ctx:
                 with pose_ctx as pose, hand_ctx as hand:
-                    _legacy_loop(cap, pose_processor, pose, hand_processor, hand,
+                    exit_reason = _legacy_loop(cap, pose_processor, pose, hand_processor, hand,
                                 display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
                                 frame_interval, reassert_dock_policy)
             elif pose_ctx:
                 with pose_ctx as pose:
-                    _legacy_loop(cap, pose_processor, pose, None, None,
+                    exit_reason = _legacy_loop(cap, pose_processor, pose, None, None,
                                 display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
                                 frame_interval, reassert_dock_policy)
             elif hand_ctx:
                 with hand_ctx as hand:
-                    _legacy_loop(cap, None, None, hand_processor, hand,
+                    exit_reason = _legacy_loop(cap, None, None, hand_processor, hand,
                                 display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
                                 frame_interval, reassert_dock_policy)
-    
+
     except KeyboardInterrupt:
+        # This is how the launcher stops the engine cleanly (it sends SIGINT
+        # first) - a normal Stop must keep exiting 0, not look like a failure.
         print("\n🛑 Interrupted by user")
+        exit_reason = EXIT_OK
     except Exception as main_error:
         print(f"❌ Main processing error: {main_error}")
         print("🛑 Application will exit")
-    
+        exit_reason = EXIT_CRASH
+
     # ========================================================================
     # CLEANUP
     # ========================================================================
@@ -742,7 +799,10 @@ def run(args, config):
             pass
         print("✅ Cleanup completed")
 
-    return 0
+    # Read after `finally:` runs, not used to skip cleanup - whatever ended
+    # the loop (clean stop, capture loss, or an unhandled crash) determines
+    # the process exit code the launcher sees.
+    return exit_reason
 
 
 # ============================================================================
