@@ -301,19 +301,27 @@ def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
         consecutive_failures = 0
         
         try:
-            # Use frame directly - processors handle resizing internally
-            image = frame
-            
+            # Each processor's inference always reads the clean source
+            # `frame` directly, never a previous processor's annotated
+            # output - otherwise the second processor's model would see the
+            # first processor's skeleton painted over the pixels it's about
+            # to analyze, and would letterbox an already-letterboxed frame
+            # (an identity transform) instead of the true source frame,
+            # breaking its OSC coordinate mapping when processing/source
+            # aspect ratios differ. `display` accumulates both processors'
+            # overlays onto one shared array instead.
+            display = None
+
             # Process pose if enabled
             if pose_processor and pose_ctx:
-                image = pose_processor.process_frame(image, pose_ctx, "Pose")
-            
+                display = pose_processor.process_frame(frame, pose_ctx, "Pose", draw_target=display)
+
             # Process hand if enabled
             if hand_processor and hand_ctx:
-                image = hand_processor.process_frame(image, hand_ctx, "Hand")
-            
+                display = hand_processor.process_frame(frame, hand_ctx, "Hand", draw_target=display)
+
             if display_config.get('show_window', True):
-                show_preview(image, window_title, mirror_preview)
+                show_preview(display, window_title, mirror_preview)
 
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
@@ -637,19 +645,26 @@ def run(args, config):
                 
                 try:
                     timestamp_counter += 1
-                    # Use frame directly - processors handle resizing internally
-                    image = frame
-                    
-                    # Process pose if enabled
+
+                    # Each processor's inference always reads the clean
+                    # source `frame` directly, never a previous processor's
+                    # annotated output - otherwise the second processor's
+                    # model would see the first processor's skeleton painted
+                    # over the pixels it's about to analyze, and would
+                    # letterbox an already-letterboxed frame (an identity
+                    # transform) instead of the true source frame, breaking
+                    # its OSC coordinate mapping when processing/source
+                    # aspect ratios differ. `display` accumulates both
+                    # processors' overlays onto one shared array instead.
+                    display = None
                     if pose_processor and pose_is_tasks:
-                        image = pose_processor.process_frame(image, pose_landmarker, "Pose", timestamp_counter)
-                    
-                    # Process hand if enabled
+                        display = pose_processor.process_frame(frame, pose_landmarker, "Pose", timestamp_counter, draw_target=display)
+
                     if hand_processor and hand_is_tasks:
-                        image = hand_processor.process_frame(image, hand_landmarker, "Hand", timestamp_counter)
-                    
+                        display = hand_processor.process_frame(frame, hand_landmarker, "Hand", timestamp_counter, draw_target=display)
+
                     if display_config.get('show_window', True):
-                        show_preview(image, window_title, mirror_preview)
+                        show_preview(display, window_title, mirror_preview)
 
                         if cv2.waitKey(1) & 0xFF == ord('q'):
                             break

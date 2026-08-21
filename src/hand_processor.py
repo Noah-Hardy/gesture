@@ -387,23 +387,31 @@ class TasksHandProcessor(HandProcessor):
             self.pending_frames = max(0, self.pending_frames - 1)
         del output_image
     
-    def process_frame(self, frame, landmarker, backend_name, timestamp_counter):
+    def process_frame(self, frame, landmarker, backend_name, timestamp_counter, draw_target=None):
         """
         Process a single frame with MediaPipe Tasks hand landmarker
-        
+
         Args:
             frame: Input frame from camera/NDI
             landmarker: MediaPipe HandLandmarker instance
             backend_name: Backend name for FPS display
             timestamp_counter: Frame counter for async processing
-            
+            draw_target: Optional shared display array to draw landmarks into
+                instead of the inference frame. Lets a caller composite this
+                processor's overlays onto another processor's output (e.g.
+                pose + hand in one preview) without feeding annotated pixels
+                back into either model. Model input is always the clean
+                letterboxed frame, never draw_target. Defaults to None,
+                which falls back to today's single-processor behavior:
+                draw into (a copy of, if shared) the letterboxed frame.
+
         Returns:
-            Annotated frame with landmarks drawn
+            Annotated frame with landmarks drawn (draw_target, if provided)
         """
         try:
             if frame is None or frame.size == 0:
                 return frame
-            
+
             # Always resize frame for consistent display
             proc_width = self._proc_width
             proc_height = self._proc_height
@@ -422,12 +430,31 @@ class TasksHandProcessor(HandProcessor):
                 image = frame
                 self._letterbox_transform = LetterboxTransform(1.0, 0, 0, proc_width, proc_height, proc_width, proc_height)
 
+            # `image` is the inference input ONLY - always the clean,
+            # letterboxed frame, never annotated. `target` is what gets
+            # drawn into and returned; a caller-supplied draw_target lets
+            # multiple processors composite their overlays onto one shared
+            # array in a single loop iteration without leaking one
+            # processor's drawings into another's model input.
+            target = draw_target if draw_target is not None else (image.copy() if image is self._resize_buffer else image)
+
             # Check if MediaPipe's async queue is backing up
             if self.pending_frames >= self.max_pending_frames:
+                # Skip MediaPipe processing, but keep the preview skeleton
+                # alive by redrawing the last known results - otherwise it
+                # blinks on/off every time the model is the bottleneck
                 self.skipped_frames += 1
                 self.update_fps(backend_name)
-                return image.copy() if image is self._resize_buffer else image
-            
+                if self._display_results is not None and self._display_results.hand_landmarks:
+                    for i, hand_landmark in enumerate(self._display_results.hand_landmarks):
+                        handedness = "Unknown"
+                        if self._display_results.handedness and i < len(self._display_results.handedness):
+                            handedness = self._display_results.handedness[i][0].category_name
+                        self._draw_landmarks(target, hand_landmark, handedness)
+                # No OSC here - a skipped frame means "no new information",
+                # not "nothing detected"; sending status would misrepresent one or the other
+                return target
+
             # Convert to RGB for MediaPipe
             if (self._rgb_buffer is None or 
                 self._rgb_buffer.shape[0] != image.shape[0] or 
@@ -452,14 +479,7 @@ class TasksHandProcessor(HandProcessor):
             del mp_image
             
             timestamp = time.time()
-            
-            # Convert RGB back to BGR for OpenCV display
-            if self._resize_buffer is not None and self._resize_buffer.shape == rgb_frame.shape:
-                cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR, dst=self._resize_buffer)
-                image = self._resize_buffer
-            else:
-                image = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
-            
+
             # Atomically check-and-take fresh results from the callback thread
             # (hold the lock only for the swap - never during serialization/sends/drawing)
             fresh_results = None
@@ -526,7 +546,7 @@ class TasksHandProcessor(HandProcessor):
                     # Draw all hand landmarks
                     for i, hand_landmark in enumerate(fresh_results.hand_landmarks):
                         handedness = all_handedness[i] if i < len(all_handedness) else "Unknown"
-                        self._draw_landmarks(image, hand_landmark, handedness)
+                        self._draw_landmarks(target, hand_landmark, handedness)
 
                     del all_hand_landmarks
                     del all_hand_world_landmarks
@@ -555,20 +575,20 @@ class TasksHandProcessor(HandProcessor):
                         handedness = "Unknown"
                         if self._display_results.handedness and i < len(self._display_results.handedness):
                             handedness = self._display_results.handedness[i][0].category_name
-                        self._draw_landmarks(image, hand_landmark, handedness)
+                        self._draw_landmarks(target, hand_landmark, handedness)
                 # No fresh detection this frame - status 0 signals no actively tracked hand
                 self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
             else:
                 # No results yet - still send status so receivers know program is running
                 self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
-            
+
             del rgb_frame
             if 'rgba_frame' in locals():
                 del rgba_frame
-            
+
             self.update_fps(backend_name)
-            return image
-            
+            return target
+
         except Exception as e:
             print(f"⚠️  Hand frame processing error: {e}")
             # Clear results on error to prevent memory leak (under lock - shared with callback thread)
@@ -576,7 +596,7 @@ class TasksHandProcessor(HandProcessor):
                 self.results = None
                 self._has_fresh_results = False
             self._display_results = None
-            return frame
+            return draw_target if draw_target is not None else frame
 
     def _draw_landmarks(self, image, landmarks, handedness="Unknown"):
         """
@@ -646,17 +666,22 @@ class LegacyHandProcessor(HandProcessor):
         
         return hand_context, backend_name, window_title
     
-    def process_frame(self, frame, hand_context, backend_name):
+    def process_frame(self, frame, hand_context, backend_name, draw_target=None):
         """
         Process a single frame with Legacy MediaPipe hands
-        
+
         Args:
             frame: Input frame from camera/NDI
             hand_context: MediaPipe Hands context manager
             backend_name: Backend name for FPS display
-            
+            draw_target: Optional shared display array to draw landmarks
+                into instead of the inference frame - see
+                TasksHandProcessor.process_frame for the full rationale.
+                Defaults to None, which falls back to today's
+                single-processor behavior.
+
         Returns:
-            Annotated frame with landmarks drawn
+            Annotated frame with landmarks drawn (draw_target, if provided)
         """
         try:
             # Resize frame for processing if needed
@@ -677,6 +702,12 @@ class LegacyHandProcessor(HandProcessor):
                 image = frame
                 self._letterbox_transform = LetterboxTransform(1.0, 0, 0, proc_width, proc_height, proc_width, proc_height)
 
+            # `image` is the inference input ONLY - always the clean,
+            # letterboxed frame, never annotated. `target` is what gets
+            # drawn into and returned - see TasksHandProcessor.process_frame
+            # for the full rationale.
+            target = draw_target if draw_target is not None else (image.copy() if image is self._resize_buffer else image)
+
             # Convert to RGB for MediaPipe
             if (self._rgb_buffer is None or
                 self._rgb_buffer.shape[0] != image.shape[0] or
@@ -688,13 +719,7 @@ class LegacyHandProcessor(HandProcessor):
 
             # Process with MediaPipe Hands
             results = hand_context.process(rgb_image)
-            
-            # Convert back to BGR for display
-            if self._resize_buffer is not None and self._resize_buffer.shape == rgb_image.shape:
-                cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR, dst=self._resize_buffer)
-                image = self._resize_buffer
-            else:
-                image = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR)
+
             timestamp = time.time()
             
             hands_detected = bool(results.multi_hand_landmarks)
@@ -742,8 +767,8 @@ class LegacyHandProcessor(HandProcessor):
                 # Draw hand landmarks
                 for i, hand_landmark in enumerate(results.multi_hand_landmarks):
                     handedness = all_handedness[i] if i < len(all_handedness) else "Unknown"
-                    self._draw_landmarks_legacy(image, hand_landmark, handedness)
-                
+                    self._draw_landmarks_legacy(target, hand_landmark, handedness)
+
                 del all_hand_landmarks
                 del all_hand_world_landmarks
                 del all_handedness
@@ -756,13 +781,13 @@ class LegacyHandProcessor(HandProcessor):
                     self._last_detection_state = False
 
             self.update_fps(backend_name)
-            return image
+            return target
 
         except Exception as e:
             print(f"⚠️  Legacy hand frame processing error: {e}")
             if 'image' in locals() and image is not frame:
                 del image
-            return frame
+            return draw_target if draw_target is not None else frame
     
     def _draw_landmarks_legacy(self, image, hand_landmarks, handedness="Unknown"):
         """

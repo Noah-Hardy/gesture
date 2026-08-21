@@ -416,24 +416,32 @@ class TasksPoseProcessor(PoseProcessor):
         # Explicitly don't store output_image - it's not needed and causes memory leaks
         del output_image
     
-    def process_frame(self, frame, landmarker, backend_name, timestamp_counter):
+    def process_frame(self, frame, landmarker, backend_name, timestamp_counter, draw_target=None):
         """
         Process a single frame with MediaPipe Tasks
         Handles frame resizing, color conversion, and Apple Silicon compatibility
-        
+
         Args:
             frame: Input frame from camera/NDI
             landmarker: MediaPipe PoseLandmarker instance
             backend_name: Backend name for FPS display
             timestamp_counter: Frame counter for async processing
-            
+            draw_target: Optional shared display array to draw landmarks into
+                instead of the inference frame. Lets a caller composite this
+                processor's overlays onto another processor's output (e.g.
+                pose + hand in one preview) without feeding annotated pixels
+                back into either model. Model input is always the clean
+                letterboxed frame, never draw_target. Defaults to None,
+                which falls back to today's single-processor behavior:
+                draw into (a copy of, if shared) the letterboxed frame.
+
         Returns:
-            Annotated frame with landmarks drawn
+            Annotated frame with landmarks drawn (draw_target, if provided)
         """
         try:
             if frame is None or frame.size == 0:
                 return frame
-            
+
             # Always resize frame for consistent display, regardless of processing
             proc_width = self._proc_width
             proc_height = self._proc_height
@@ -452,14 +460,28 @@ class TasksPoseProcessor(PoseProcessor):
                 image = frame
                 self._letterbox_transform = LetterboxTransform(1.0, 0, 0, proc_width, proc_height, proc_width, proc_height)
 
+            # `image` is the inference input ONLY - always the clean,
+            # letterboxed frame, never annotated. `target` is what gets
+            # drawn into and returned; a caller-supplied draw_target lets
+            # multiple processors composite their overlays onto one shared
+            # array in a single loop iteration without leaking one
+            # processor's drawings into another's model input.
+            target = draw_target if draw_target is not None else (image.copy() if image is self._resize_buffer else image)
+
             # Check if MediaPipe's async queue is backing up - skip frame if too many pending
             if self.pending_frames >= self.max_pending_frames:
-                # Skip MediaPipe processing but return properly resized frame for display
+                # Skip MediaPipe processing, but keep the preview skeleton
+                # alive by redrawing the last known results - otherwise it
+                # blinks on/off every time the model is the bottleneck
                 self.skipped_frames += 1
                 self.update_fps(backend_name)
-                # Return a copy for display since we reuse the buffer
-                return image.copy() if image is self._resize_buffer else image
-            
+                if self._display_results is not None and self._display_results.pose_landmarks:
+                    for pose_landmark in self._display_results.pose_landmarks:
+                        self._draw_landmarks(target, pose_landmark)
+                # No OSC here - a skipped frame means "no new information",
+                # not "nothing detected"; sending status would misrepresent one or the other
+                return target
+
             # Convert to RGB for MediaPipe using pre-allocated buffer
             if (self._rgb_buffer is None or 
                 self._rgb_buffer.shape[0] != image.shape[0] or 
@@ -488,14 +510,7 @@ class TasksPoseProcessor(PoseProcessor):
             del mp_image
             
             timestamp = time.time()
-            
-            # Convert RGB back to BGR for OpenCV display - reuse resize buffer if available
-            if self._resize_buffer is not None and self._resize_buffer.shape == rgb_frame.shape:
-                cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR, dst=self._resize_buffer)
-                image = self._resize_buffer
-            else:
-                image = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
-            
+
             # Atomically check-and-take fresh results from the callback thread
             # (hold the lock only for the swap - never during serialization/sends/drawing)
             fresh_results = None
@@ -549,7 +564,7 @@ class TasksPoseProcessor(PoseProcessor):
 
                     # Draw all pose landmarks
                     for pose_landmark in fresh_results.pose_landmarks:
-                        self._draw_landmarks(image, pose_landmark)
+                        self._draw_landmarks(target, pose_landmark)
 
                     # Clear temporary lists to free memory
                     del all_pose_landmarks
@@ -565,21 +580,21 @@ class TasksPoseProcessor(PoseProcessor):
                 # We have results but they're stale (already processed), just draw landmarks
                 if self._display_results.pose_landmarks:
                     for pose_landmark in self._display_results.pose_landmarks:
-                        self._draw_landmarks(image, pose_landmark)
+                        self._draw_landmarks(target, pose_landmark)
                 # No fresh detection this frame - status 0 signals no actively tracked person
                 self.osc_sender.send_message("/mp/status", compact_json({"status": 0}))
             else:
                 # No results yet - still send status so receivers know program is running
                 self.osc_sender.send_message("/mp/status", compact_json({"status": 0}))
-            
+
             # Clear intermediate frames to free memory
             del rgb_frame
             if 'rgba_frame' in locals():
                 del rgba_frame
-            
+
             self.update_fps(backend_name)
-            return image
-            
+            return target
+
         except Exception as e:
             print(f"⚠️  Tasks frame processing error: {e}")
             # Clear results on error to prevent memory leak (under lock - shared with callback thread)
@@ -587,7 +602,7 @@ class TasksPoseProcessor(PoseProcessor):
                 self.results = None
                 self._has_fresh_results = False
             self._display_results = None
-            return frame
+            return draw_target if draw_target is not None else frame
 
 
 # ============================================================================
@@ -631,18 +646,23 @@ class LegacyPoseProcessor(PoseProcessor):
         
         return pose_context, backend_name, window_title
     
-    def process_frame(self, frame, pose_context, backend_name):
+    def process_frame(self, frame, pose_context, backend_name, draw_target=None):
         """
         Process a single frame with Legacy MediaPipe
         Simpler processing for single pose only
-        
+
         Args:
             frame: Input frame from camera/NDI
             pose_context: MediaPipe Pose context manager
             backend_name: Backend name for FPS display
-            
+            draw_target: Optional shared display array to draw landmarks
+                into instead of the inference frame - see
+                TasksPoseProcessor.process_frame for the full rationale.
+                Defaults to None, which falls back to today's
+                single-processor behavior.
+
         Returns:
-            Annotated frame with landmarks drawn
+            Annotated frame with landmarks drawn (draw_target, if provided)
         """
         try:
             # Resize frame for processing if needed
@@ -664,24 +684,24 @@ class LegacyPoseProcessor(PoseProcessor):
                 image = frame
                 self._letterbox_transform = LetterboxTransform(1.0, 0, 0, proc_width, proc_height, proc_width, proc_height)
 
+            # `image` is the inference input ONLY - always the clean,
+            # letterboxed frame, never annotated. `target` is what gets
+            # drawn into and returned - see TasksPoseProcessor.process_frame
+            # for the full rationale.
+            target = draw_target if draw_target is not None else (image.copy() if image is self._resize_buffer else image)
+
             # Convert to RGB for MediaPipe using pre-allocated buffer
-            if (self._rgb_buffer is None or 
-                self._rgb_buffer.shape[0] != image.shape[0] or 
+            if (self._rgb_buffer is None or
+                self._rgb_buffer.shape[0] != image.shape[0] or
                 self._rgb_buffer.shape[1] != image.shape[1]):
                 self._rgb_buffer = np.empty((image.shape[0], image.shape[1], 3), dtype=np.uint8)
-            
+
             cv2.cvtColor(image, cv2.COLOR_BGR2RGB, dst=self._rgb_buffer)
             rgb_image = self._rgb_buffer
-            
+
             # Process with MediaPipe Pose
             results = pose_context.process(rgb_image)
-            
-            # Convert back to BGR for display - reuse resize buffer
-            if self._resize_buffer is not None and self._resize_buffer.shape == rgb_image.shape:
-                cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR, dst=self._resize_buffer)
-                image = self._resize_buffer
-            else:
-                image = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR)
+
             timestamp = time.time()
             
             pose_detected = bool(results.pose_landmarks)
@@ -712,8 +732,8 @@ class LegacyPoseProcessor(PoseProcessor):
                 
                 # Draw pose landmarks
                 if results.pose_landmarks:
-                    self._draw_landmarks(image, results.pose_landmarks)
-                
+                    self._draw_landmarks(target, results.pose_landmarks)
+
                 # Clear temporary lists to free memory
                 del pose_landmarks
                 del pose_world_landmarks
@@ -726,14 +746,14 @@ class LegacyPoseProcessor(PoseProcessor):
                     self._last_detection_state = False
 
             self.update_fps(backend_name)
-            return image
+            return target
 
         except Exception as e:
             print(f"⚠️  Legacy frame processing error: {e}")
             # Ensure we don't hold references on error
             if 'image' in locals() and image is not frame:
                 del image
-            return frame
+            return draw_target if draw_target is not None else frame
     
     def _draw_landmarks(self, image, pose_landmarks):
         """
