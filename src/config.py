@@ -99,7 +99,7 @@ class Config:
         },
         "updates": {
             "check_on_launch": True,      # Silently check GitHub for a newer release on launch
-            "include_prereleases": True,  # Whether pre-release tags count as an available update
+            "include_prereleases": False, # Whether pre-release tags count as an available update
             "last_check": 0,              # Epoch seconds of the last completed check
             "last_etag": "",              # HTTP ETag from the last check (for If-None-Match)
             "last_seen_version": "",      # Newest version the last check saw; when it's newer

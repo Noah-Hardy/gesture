@@ -9,7 +9,7 @@ A few seconds after MP-OSC opens, it quietly asks GitHub whether a newer release
 Turn this off, or include pre-release builds in what counts as "newer," under **Settings → General**:
 
 - **Check for updates on launch** — uncheck to disable the silent check entirely. You can still check manually at any time (see below).
-- **Include pre-release builds** — pre-release tags on GitHub count as an available update when checked, ahead of a stable build that supersedes them.
+- **Include pre-release builds** (off by default) — pre-release tags on GitHub count as an available update when checked, ahead of a stable build that supersedes them.
 
 ## Checking manually
 
