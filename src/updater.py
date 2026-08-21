@@ -50,7 +50,11 @@ GITHUB_API = "https://api.github.com"
 USER_AGENT = "MP-OSC-Updater"
 BUNDLE_ID = "net.hardymail.mp-osc"
 
-_ASSET_RE = re.compile(r'^MP-OSC-(\d+\.\d+\.\d+)-macos-arm64\.zip$')
+# The optional 4th component is for hotfix releases (e.g. 0.1.5.1).
+_ASSET_RE = re.compile(r'^MP-OSC-(\d+\.\d+\.\d+(?:\.\d+)?)-macos-arm64\.zip$')
+
+# spctl lives in /usr/sbin, not /usr/bin like codesign and ditto.
+_SPCTL = '/usr/sbin/spctl'
 _VERSION_RE = re.compile(r'^[vV]?(\d+(?:\.\d+){0,3})(?:[-+.](.+))?$')
 
 
@@ -489,13 +493,19 @@ def download_and_install(release: Release, progress_cb: Callable[[dict], None],
     progress_cb({'kind': 'verifying', 'phase': 'signature'})
     try:
         _verify_staged_app(staged_app, release.version, pf.app_path)
-    except UpdateError:
+    except Exception:
+        # Any failure here, expected or not, must not leave the extracted
+        # bundle sitting next to the real app in /Applications.
         shutil.rmtree(extract_dir, ignore_errors=True)
         _silent_remove(zip_path)
         raise
 
     install_log = _install_log_path()
-    script_path = _write_install_script(updates_dir, staged_app, pf.app_path, extract_dir, zip_path)
+    try:
+        script_path = _write_install_script(updates_dir, staged_app, pf.app_path, extract_dir, zip_path)
+    except OSError as e:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        raise UpdateError(f"Couldn't prepare the installer: {e}") from e
 
     return StagedUpdate(script_path=script_path, install_log=install_log, target_app=pf.app_path)
 
@@ -570,13 +580,13 @@ def _verify_staged_app(staged_app: str, expected_version: str, running_app_path:
              '-R=' + requirement, staged_app],
             check=True, capture_output=True, timeout=300,
         )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
         raise UpdateError('This update could not be verified and was discarded.') from e
 
     try:
-        subprocess.run(['/usr/bin/spctl', '--assess', '--type', 'exec', '-vv', staged_app],
+        subprocess.run([_SPCTL, '--assess', '--type', 'exec', '-vv', staged_app],
                        check=True, capture_output=True, timeout=60)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
         raise UpdateError('This update was not accepted by Gatekeeper and was discarded.') from e
 
     staged_version = _read_bundle_version(staged_app)

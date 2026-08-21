@@ -232,11 +232,11 @@ jobs:
           # so a silent rename here must not be allowed to pass CI silently.
           # ------------------------------------------------------------------
           ARCHIVE_NAME="$(basename "$ARCHIVE")"
-          if ! [[ "$ARCHIVE_NAME" =~ ^MP-OSC-[0-9]+\.[0-9]+\.[0-9]+-macos-arm64\.zip$ ]]; then
+          if ! [[ "$ARCHIVE_NAME" =~ ^MP-OSC-[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?-macos-arm64\.zip$ ]]; then
             {
               echo "Release asset name does not match the expected pattern:"
               echo "  got:      $ARCHIVE_NAME"
-              echo "  expected: MP-OSC-<major>.<minor>.<patch>-macos-arm64.zip"
+              echo "  expected: MP-OSC-<major>.<minor>.<patch>[.<hotfix>]-macos-arm64.zip"
               echo
               echo "The in-app updater matches assets by exact filename, so this"
               echo "must be fixed before publishing."
