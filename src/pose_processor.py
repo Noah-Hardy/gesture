@@ -12,7 +12,6 @@ import os
 import time
 import platform
 import gc
-import sys
 import threading
 import cv2
 import numpy as np

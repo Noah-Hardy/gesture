@@ -340,7 +340,7 @@ def check_for_update(config, manual: bool = False, timeout: int = 10) -> CheckRe
             return CheckResult('none', persist=persist)
         message = f"GitHub returned an error ({e.code})."
         return CheckResult('error' if manual else 'none', message=message)
-    except (urllib.error.URLError, socket.timeout, ssl.SSLError, OSError) as e:
+    except (urllib.error.URLError, socket.timeout, ssl.SSLError, OSError):
         message = "Couldn't reach GitHub to check for updates."
         return CheckResult('error' if manual else 'none', message=message)
     except (json.JSONDecodeError, ValueError):

@@ -134,7 +134,7 @@ def download_holistic_model():
     os.makedirs(TASKS_DIR, exist_ok=True)
     model_path = os.path.join(TASKS_DIR, model_filename)
 
-    print(f"📥 Downloading holistic model from Google...")
+    print("📥 Downloading holistic model from Google...")
     try:
         urllib.request.urlretrieve(HOLISTIC_MODEL_URL, model_path)
         print(f"✅ Downloaded model to {model_path}")
@@ -164,7 +164,7 @@ def download_hand_model():
     os.makedirs(TASKS_DIR, exist_ok=True)
     model_path = os.path.join(TASKS_DIR, model_filename)
 
-    print(f"📥 Downloading hand model from Google...")
+    print("📥 Downloading hand model from Google...")
     try:
         urllib.request.urlretrieve(HAND_MODEL_URL, model_path)
         print(f"✅ Downloaded model to {model_path}")
