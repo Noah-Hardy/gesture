@@ -21,6 +21,13 @@ def test_missing_file_falls_back_to_defaults(config_path):
     assert cfg.get('camera', 'buffer_size') == 1
 
 
+def test_include_prereleases_defaults_to_false(config_path):
+    # Stable users should not be offered pre-release builds unless they
+    # opt in - see Settings -> General -> Include pre-release builds.
+    cfg = Config(config_path)
+    assert cfg.get('updates', 'include_prereleases') is False
+
+
 def test_deep_merge_preserves_sibling_defaults(config_path):
     with open(config_path, 'w') as f:
         json.dump({'osc': {'port': 9999}}, f)

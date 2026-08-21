@@ -41,11 +41,11 @@ class FakeResponse:
         return False
 
 
-def _release_payload(tag='v0.9.9'):
+def _release_payload(tag='v0.9.9', prerelease=False):
     name = f'MP-OSC-{tag.lstrip("v")}-macos-arm64.zip'
     return {
         'tag_name': tag, 'name': tag, 'body': '', 'html_url': 'https://example',
-        'prerelease': False, 'draft': False,
+        'prerelease': prerelease, 'draft': False,
         'assets': [
             {'name': name, 'browser_download_url': f'https://example/{name}', 'size': 1},
             {'name': name + '.sha256', 'browser_download_url': f'https://example/{name}.sha256'},
@@ -73,6 +73,16 @@ def test_returns_none_when_current_is_newest(monkeypatch):
     monkeypatch.setattr('src.updater.urllib.request.urlopen',
                          lambda *a, **k: FakeResponse([_release_payload('v0.0.1')]))
     result = check_for_update(FakeConfig(), manual=True)
+    assert result.kind == 'none'
+
+
+def test_prerelease_not_offered_when_config_omits_the_key(monkeypatch):
+    # updates_cfg.get('include_prereleases', False) - the fallback itself
+    # must default to False, not just the config.py schema default, for a
+    # config dict that omits the key entirely.
+    monkeypatch.setattr('src.updater.urllib.request.urlopen',
+                         lambda *a, **k: FakeResponse([_release_payload('v0.9.9', prerelease=True)]))
+    result = check_for_update(FakeConfig({}), manual=True)
     assert result.kind == 'none'
 
 
