@@ -24,6 +24,7 @@ from src import theme
 from src.config import Config, valid_unit_float
 
 FORCE_GPU_WARNING = "Force GPU has a known memory leak on Apple Silicon - use with caution."
+FORCE_LEGACY_WARNING = "Deprecated - will be removed in 0.2.0."
 
 
 # ============================================================================
@@ -377,6 +378,9 @@ class SettingsWindow:
         ttk.Checkbutton(frame, text="Force legacy MediaPipe API",
                         variable=self.var_force_legacy).grid(row=row, column=0, columnspan=2,
                                                              sticky='w', pady=2)
+        row += 1
+        ttk.Label(frame, text=FORCE_LEGACY_WARNING, style='Dim.TLabel').grid(
+            row=row, column=0, columnspan=2, sticky='w', padx=(20, 0))
         row += 1
         ttk.Checkbutton(frame, text='No holistic (separate pose + hand models in "all" mode)',
                         variable=self.var_no_holistic).grid(row=row, column=0, columnspan=2,

@@ -561,7 +561,8 @@ def run(args, config):
         print(f"❌ Pose and hand landed on different backends (pose_is_tasks={pose_is_tasks}, hand_is_tasks={hand_is_tasks})")
         print(f"   The {fallback_tracker} tracker fell back to the Legacy MediaPipe API while the other stayed on Tasks")
         print("   These two backends can't currently run together in one processing loop")
-        print("   Pass --force-legacy to force both trackers onto the same (Legacy) backend")
+        print("   --force-legacy forces both trackers onto the same (Legacy) backend, but it's")
+        print("   deprecated and will be removed in 0.2.0 - treat this as a stopgap, not a fix")
         return 1
     
     # Set window title based on mode
@@ -584,6 +585,9 @@ def run(args, config):
     print(f"🖼️  Window: {window_title}")
     if display_config.get('mirror_preview', False):
         print("🪞 Preview mirrored (display only - OSC coordinates are unchanged)")
+    if args.force_legacy:
+        print("⚠️  --force-legacy is deprecated and will be removed in 0.2.0; "
+              "the legacy MediaPipe Solutions API is being replaced by the unified Tasks-only pipeline")
     # Sentinel the launcher watches for to end its startup spinner
     print("🟢 Engine ready")
 

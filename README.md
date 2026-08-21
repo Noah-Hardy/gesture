@@ -71,7 +71,7 @@ Most settings live in the app itself: OSC host/port, tracking mode, pose model a
 - **General** — the update checker, and shortcuts to `config.json`.
 - **Tracking** — pose and hand detection thresholds, smoothing, and how many of each to track.
 - **Preview** — whether the preview window shows, mirroring, and landmark/connection colors and sizes.
-- **Advanced** — camera capture settings, performance and garbage-collection tuning, the OSC send queue size, and launch-time backend toggles (Force CPU/GPU, legacy API, holistic on/off).
+- **Advanced** — camera capture settings, performance and garbage-collection tuning, the OSC send queue size, and launch-time backend toggles (Force CPU/GPU, legacy API (deprecated), holistic on/off).
 
 Whatever remains reachable only through `config.json`, and the full list of every key the app understands, is documented in the in-app **Appendix: CLI & config.json**, which also covers running MP-OSC from the command line with flags and environment variables.
 
