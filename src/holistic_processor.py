@@ -338,7 +338,7 @@ class TasksHolisticProcessor(PoseProcessor):
     # Frame processing
     # ------------------------------------------------------------------------
 
-    def process_frame(self, frame, landmarker, backend_name, timestamp_counter):
+    def process_frame(self, frame, landmarker, backend_name, timestamp_counter, draw_target=None):
         """
         Process a single frame with the MediaPipe Tasks holistic landmarker
         Sends pose data on /pose/* channels and hand data on /left_hand/*
@@ -349,9 +349,18 @@ class TasksHolisticProcessor(PoseProcessor):
             landmarker: MediaPipe HolisticLandmarker instance
             backend_name: Backend name for FPS display
             timestamp_counter: Frame counter for async processing
+            draw_target: Optional shared display array to draw landmarks into
+                instead of the inference frame. Model input is always the
+                clean letterboxed frame, never draw_target. Defaults to
+                None, which falls back to today's behavior: draw into (a
+                copy of, if shared) the letterboxed frame. Holistic always
+                runs alone (never chained with a separate pose/hand
+                processor in the same loop iteration), so callers should
+                not need to pass this - included for interface parity with
+                the other Tasks processors.
 
         Returns:
-            Annotated frame with landmarks drawn
+            Annotated frame with landmarks drawn (draw_target, if provided)
         """
         try:
             if frame is None or frame.size == 0:
@@ -375,11 +384,28 @@ class TasksHolisticProcessor(PoseProcessor):
                 image = frame
                 self._letterbox_transform = LetterboxTransform(1.0, 0, 0, proc_width, proc_height, proc_width, proc_height)
 
+            # `image` is the inference input ONLY - always the clean,
+            # letterboxed frame, never annotated. `target` is what gets
+            # drawn into and returned.
+            target = draw_target if draw_target is not None else (image.copy() if image is self._resize_buffer else image)
+
             # Check if MediaPipe's async queue is backing up - skip frame if too many pending
             if self.pending_frames >= self.max_pending_frames:
+                # Skip MediaPipe processing, but keep the preview skeleton
+                # alive by redrawing the last known results - otherwise it
+                # blinks on/off every time the model is the bottleneck
                 self.skipped_frames += 1
                 self.update_fps(backend_name)
-                return image.copy() if image is self._resize_buffer else image
+                if self._display_results is not None:
+                    if self._display_results.pose_landmarks:
+                        self._draw_landmarks(target, self._display_results.pose_landmarks)
+                    if self._display_results.left_hand_landmarks:
+                        self._draw_hand_landmarks(target, self._display_results.left_hand_landmarks, "Left")
+                    if self._display_results.right_hand_landmarks:
+                        self._draw_hand_landmarks(target, self._display_results.right_hand_landmarks, "Right")
+                # No OSC here - a skipped frame means "no new information",
+                # not "nothing detected"; sending status would misrepresent one or the other
+                return target
 
             # Convert to RGB for MediaPipe using pre-allocated buffer
             if (self._rgb_buffer is None or
@@ -405,13 +431,6 @@ class TasksHolisticProcessor(PoseProcessor):
             del mp_image
 
             timestamp = time.time()
-
-            # Convert RGB back to BGR for OpenCV display - reuse resize buffer if available
-            if self._resize_buffer is not None and self._resize_buffer.shape == rgb_frame.shape:
-                cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR, dst=self._resize_buffer)
-                image = self._resize_buffer
-            else:
-                image = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
 
             # Atomically check-and-take fresh results from the callback thread
             fresh_results = None
@@ -447,7 +466,7 @@ class TasksHolisticProcessor(PoseProcessor):
                     )
                     self.osc_sender.send_message("/mp/status", compact_json({"status": 1}))
 
-                    self._draw_landmarks(image, fresh_results.pose_landmarks)
+                    self._draw_landmarks(target, fresh_results.pose_landmarks)
 
                     del pose_landmarks
                     del pose_world_landmarks
@@ -481,7 +500,7 @@ class TasksHolisticProcessor(PoseProcessor):
                         self.send_hand_data(hand_landmarks, hand_world_landmarks, handedness, timestamp)
                         self.send_hand_bounds_data(hand_lms, hand_world_lms if hand_world_landmarks else None, handedness, transform)
 
-                        self._draw_hand_landmarks(image, hand_lms, handedness)
+                        self._draw_hand_landmarks(target, hand_lms, handedness)
 
                         del hand_landmarks
                         del hand_world_landmarks
@@ -495,11 +514,11 @@ class TasksHolisticProcessor(PoseProcessor):
             elif self._display_results is not None:
                 # We have results but they're stale (already processed), just draw landmarks
                 if self._display_results.pose_landmarks:
-                    self._draw_landmarks(image, self._display_results.pose_landmarks)
+                    self._draw_landmarks(target, self._display_results.pose_landmarks)
                 if self._display_results.left_hand_landmarks:
-                    self._draw_hand_landmarks(image, self._display_results.left_hand_landmarks, "Left")
+                    self._draw_hand_landmarks(target, self._display_results.left_hand_landmarks, "Left")
                 if self._display_results.right_hand_landmarks:
-                    self._draw_hand_landmarks(image, self._display_results.right_hand_landmarks, "Right")
+                    self._draw_hand_landmarks(target, self._display_results.right_hand_landmarks, "Right")
                 # No fresh detection this frame - status 0 signals no actively tracked person
                 self.osc_sender.send_message("/mp/status", compact_json({"status": 0}))
                 self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
@@ -514,7 +533,7 @@ class TasksHolisticProcessor(PoseProcessor):
                 del rgba_frame
 
             self.update_fps(backend_name)
-            return image
+            return target
 
         except Exception as e:
             print(f"⚠️  Holistic frame processing error: {e}")
@@ -522,7 +541,7 @@ class TasksHolisticProcessor(PoseProcessor):
                 self.results = None
                 self._has_fresh_results = False
             self._display_results = None
-            return frame
+            return draw_target if draw_target is not None else frame
 
     # ------------------------------------------------------------------------
     # Drawing
