@@ -98,7 +98,24 @@ a = Analysis(
     pathex=[],
     binaries=binaries,
     datas=datas,
-    hiddenimports=['NDIlib'],
+    # src/__init__.py resolves its exports through a PEP 562 module
+    # __getattr__ (importlib.import_module) instead of top-level `from
+    # .x import y` statements, so PyInstaller's static import graph never
+    # sees these submodules and silently leaves them out of the bundle -
+    # `from src import ThreadedOSCSender` then fails at runtime with
+    # ModuleNotFoundError: No module named 'src.osc_sender'. List every
+    # submodule src/__init__.py's _EXPORTS map can resolve to.
+    hiddenimports=[
+        'NDIlib',
+        'src.osc_sender',
+        'src.pose_utils',
+        'src.model_downloader',
+        'src.pose_processor',
+        'src.hand_processor',
+        'src.holistic_processor',
+        'src.config',
+        'src.ndi_capture',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

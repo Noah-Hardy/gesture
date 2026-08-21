@@ -453,8 +453,11 @@ class LauncherGui:
         help_menu.add_command(label="Check for Updates…",
                               command=lambda: self._check_for_updates(manual=True))
         help_menu.add_separator()
-        help_menu.add_command(label="MP-OSC Help", command=lambda: self._show_help())
-        help_menu.add_separator()
+        # No "MP-OSC Help" add_command here: registering tk::mac::ShowHelp in
+        # _wire_app_menu already makes Aqua Tk auto-insert that exact item
+        # (with the standard Command-? accelerator) into this name='help'
+        # menu. Adding one by hand duplicated it - two "MP-OSC Help" entries
+        # doing the same thing.
         help_menu.add_command(label="Open Full Documentation in Browser",
                               command=self._open_full_docs)
         help_menu.add_command(label="Project on GitHub", command=self._open_github)

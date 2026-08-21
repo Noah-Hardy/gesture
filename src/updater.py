@@ -302,7 +302,7 @@ def check_for_update(config, manual: bool = False, timeout: int = 10) -> CheckRe
             when = time.strftime('%H:%M', time.localtime(rl_until))
             return CheckResult('error', message=f"GitHub rate limit reached. Try again after {when}.")
 
-    include_pre = bool(updates_cfg.get('include_prereleases', True))
+    include_pre = bool(updates_cfg.get('include_prereleases', False))
     headers = {
         'Accept': 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28',
@@ -340,7 +340,7 @@ def check_for_update(config, manual: bool = False, timeout: int = 10) -> CheckRe
             return CheckResult('none', persist=persist)
         message = f"GitHub returned an error ({e.code})."
         return CheckResult('error' if manual else 'none', message=message)
-    except (urllib.error.URLError, socket.timeout, ssl.SSLError, OSError) as e:
+    except (urllib.error.URLError, socket.timeout, ssl.SSLError, OSError):
         message = "Couldn't reach GitHub to check for updates."
         return CheckResult('error' if manual else 'none', message=message)
     except (json.JSONDecodeError, ValueError):

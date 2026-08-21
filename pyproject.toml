@@ -1,20 +1,38 @@
 [project]
 name = "mp-osc"
-version = "0.1.6"
+version = "0.1.7"
 description = "MediaPipe pose and hand tracking, streamed live over OSC"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.12"
 dependencies = [
-    "certifi",
+    "certifi>=2024.2.2",
     "mediapipe<=0.10.21",
     "ndi-python>=6.3.2",
     "numpy<2",
-    "opencv-python",
+    "opencv-python>=4.10",
     "psutil>=7.2.1",
-    "python-osc",
+    "python-osc>=1.9",
 ]
 
 [dependency-groups]
 dev = [
     "pyinstaller>=6.0,<7",
 ]
+test = [
+    "pytest>=8",
+]
+lint = [
+    "ruff>=0.8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+# Narrow on purpose: pyflakes (F) plus syntax errors (E9). The full default
+# rule set currently reports 232 findings (BLE001, UP006, I001, ...) across
+# the tree - widening this selection is its own follow-up, not a CI gate.
+select = ["E9", "F"]

@@ -362,9 +362,9 @@ def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
                 # Re-fight HighGUI for the Dock policy right after it has
-                # had its chance to reset it on window creation;
-                # reassert_accessory_policy() caps itself after a few
-                # calls, so this is cheap once it wins.
+                # had its chance to reset it on window creation. Called
+                # every frame, unconditionally - see macos_app.py for why a
+                # fixed call budget isn't enough (that was #43).
                 if reassert_dock_policy is not None:
                     reassert_dock_policy()
                 # The red close button destroys the window; without this
@@ -727,8 +727,9 @@ def run(args, config):
                             break
                         # Re-fight HighGUI for the Dock policy right after
                         # it has had its chance to reset it on window
-                        # creation; reassert_accessory_policy() caps itself
-                        # after a few calls, so this is cheap once it wins.
+                        # creation. Called every frame, unconditionally -
+                        # see macos_app.py for why a fixed call budget
+                        # isn't enough (that was #43).
                         if reassert_dock_policy is not None:
                             reassert_dock_policy()
                         # The red close button destroys the window; without
