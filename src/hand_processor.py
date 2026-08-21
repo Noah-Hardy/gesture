@@ -64,6 +64,8 @@ class HandProcessor:
         self.max_pending_frames = 1
         self.skipped_frames = 0
         self._last_detection_state = False  # Track if we had detection last time
+        self._last_left_hand_state = False  # Per-hand detection state for transition-to-empty clearing
+        self._last_right_hand_state = False
         self._has_fresh_results = False  # Track if callback delivered new results
         self._display_results = None  # Main-thread-only copy of last taken results for stale drawing
 
@@ -161,6 +163,19 @@ class HandProcessor:
             world_bounds = get_pose_bounds_with_values(world_landmarks)
             self.osc_sender.send_message(f"/{hand_prefix}/world_bounds", compact_json(world_bounds))
     
+    def send_empty_single_hand_data(self, handedness, timestamp):
+        """Send empty data for one hand to clear stale data on receiving machine"""
+        hand_prefix = "left_hand" if handedness.lower() == "left" else "right_hand"
+        empty_payload = {
+            "timestamp": timestamp,
+            "handedness": handedness,
+            "landmarks": []
+        }
+        self.osc_sender.send_message(f"/{hand_prefix}/raw", compact_json(empty_payload))
+        self.osc_sender.send_message(f"/{hand_prefix}/world", compact_json(empty_payload))
+        self.osc_sender.send_message(f"/{hand_prefix}/bounds", compact_json({}))
+        self.osc_sender.send_message(f"/{hand_prefix}/world_bounds", compact_json({}))
+
     def send_empty_hand_data(self, timestamp):
         """Send empty data to clear stale data on receiving machine"""
         empty_payload = {
@@ -461,8 +476,13 @@ class TasksHandProcessor(HandProcessor):
                 self._display_results = fresh_results
                 hands_detected = bool(fresh_results.hand_landmarks)
 
+                # Track which hand prefixes (left_hand/right_hand) are actually sent this
+                # frame, resolved via the same rule send_hand_data uses, so an "Unknown"
+                # handedness label can't desync the flags from what was actually sent.
+                seen_prefixes = set()
+                hand_count = 0
+
                 if hands_detected and len(fresh_results.hand_landmarks) > 0:
-                    self._last_detection_state = True
                     all_hand_landmarks = []
                     all_hand_world_landmarks = []
                     all_handedness = []
@@ -493,6 +513,8 @@ class TasksHandProcessor(HandProcessor):
                         hand_landmarks = all_hand_landmarks[i]
                         hand_world_landmarks = all_hand_world_landmarks[i] if i < len(all_hand_world_landmarks) else None
                         handedness = all_handedness[i]
+                        seen_prefixes.add("left_hand" if handedness.lower() == "left" else "right_hand")
+                        hand_count += 1
                         self.send_hand_data(hand_landmarks, hand_world_landmarks, handedness, timestamp)
                         self.send_hand_bounds_data(
                             fresh_results.hand_landmarks[i],
@@ -500,8 +522,6 @@ class TasksHandProcessor(HandProcessor):
                             handedness,
                             transform
                         )
-
-                    self.osc_sender.send_message("/hand/status", compact_json({"status": len(fresh_results.hand_landmarks)}))
 
                     # Draw all hand landmarks
                     for i, hand_landmark in enumerate(fresh_results.hand_landmarks):
@@ -511,13 +531,23 @@ class TasksHandProcessor(HandProcessor):
                     del all_hand_landmarks
                     del all_hand_world_landmarks
                     del all_handedness
-                else:
-                    # Always send status message so receivers know program is running
-                    self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
-                    # Only send empty data once when transitioning from detected to not detected
-                    if self._last_detection_state:
-                        self.send_empty_hand_data(timestamp)
-                        self._last_detection_state = False
+
+                # Always send status message so receivers know program is running
+                self.osc_sender.send_message("/hand/status", compact_json({"status": hand_count}))
+
+                # Per-hand transition-to-empty clearing: any hand not seen this frame
+                # that was tracked last frame gets cleared exactly once. Running this
+                # against an empty seen_prefixes set in the no-hands case subsumes the
+                # old all-hands-at-once clear, so the two paths can't double-send.
+                for hand_prefix, handedness_label, last_state_attr in (
+                    ("left_hand", "Left", '_last_left_hand_state'),
+                    ("right_hand", "Right", '_last_right_hand_state'),
+                ):
+                    if hand_prefix in seen_prefixes:
+                        setattr(self, last_state_attr, True)
+                    elif getattr(self, last_state_attr):
+                        self.send_empty_single_hand_data(handedness_label, timestamp)
+                        setattr(self, last_state_attr, False)
             elif self._display_results is not None:
                 # We have results but they're stale, just draw landmarks
                 if self._display_results.hand_landmarks:
@@ -670,10 +700,11 @@ class LegacyHandProcessor(HandProcessor):
             hands_detected = bool(results.multi_hand_landmarks)
             
             if hands_detected:
+                self._last_detection_state = True
                 all_hand_landmarks = []
                 all_hand_world_landmarks = []
                 all_handedness = []
-                
+
                 for i, hand_landmark in enumerate(results.multi_hand_landmarks):
                     hand_landmarks = process_landmarks_to_dict(hand_landmark.landmark, f"hand_{i}", self._letterbox_transform)
                     all_hand_landmarks.append(hand_landmarks)
@@ -719,10 +750,14 @@ class LegacyHandProcessor(HandProcessor):
             else:
                 # Always send status message so receivers know program is running
                 self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
-            
+                # Only send empty data once when transitioning from detected to not detected
+                if self._last_detection_state:
+                    self.send_empty_hand_data(timestamp)
+                    self._last_detection_state = False
+
             self.update_fps(backend_name)
             return image
-            
+
         except Exception as e:
             print(f"⚠️  Legacy hand frame processing error: {e}")
             if 'image' in locals() and image is not frame:

@@ -687,6 +687,7 @@ class LegacyPoseProcessor(PoseProcessor):
             pose_detected = bool(results.pose_landmarks)
             
             if pose_detected:
+                self._last_detection_state = True
                 # Process landmarks
                 pose_landmarks = process_landmarks_to_dict(
                     results.pose_landmarks.landmark, "pose", self._letterbox_transform
@@ -719,10 +720,14 @@ class LegacyPoseProcessor(PoseProcessor):
             else:
                 # Always send status message so receivers know program is running
                 self.osc_sender.send_message("/mp/status", compact_json({"status": 0}))
-            
+                # Only send empty data once when transitioning from detected to not detected
+                if self._last_detection_state:
+                    self.send_empty_data(timestamp)
+                    self._last_detection_state = False
+
             self.update_fps(backend_name)
             return image
-            
+
         except Exception as e:
             print(f"⚠️  Legacy frame processing error: {e}")
             # Ensure we don't hold references on error
