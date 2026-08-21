@@ -264,15 +264,18 @@ def show_preview(image, window_title, mirror):
 # ============================================================================
 # LEGACY PROCESSING LOOP HELPER
 # ============================================================================
-def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx, 
+def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
                  display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
-                 frame_interval=0):
+                 frame_interval=0, reassert_dock_policy=None):
     """
     Helper function to run the legacy processing loop
     Handles both single and combined processor modes
-    
+
     Args:
         frame_interval: Minimum time between frames (0 = uncapped)
+        reassert_dock_policy: Optional callable (macOS, launcher-spawned only)
+            that re-applies the Accessory Dock policy after HighGUI's first
+            window creation resets it. None elsewhere.
     """
     consecutive_failures = 0
     last_frame_time = time.time()
@@ -314,6 +317,12 @@ def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
 
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
+                # Re-fight HighGUI for the Dock policy right after it has
+                # had its chance to reset it on window creation;
+                # reassert_accessory_policy() caps itself after a few
+                # calls, so this is cheap once it wins.
+                if reassert_dock_policy is not None:
+                    reassert_dock_policy()
                 # The red close button destroys the window; without this
                 # check the loop would keep running and imshow would
                 # recreate it on the next frame.
@@ -350,7 +359,20 @@ def run(args, config):
     osc_config = config.get('osc')
     performance_config = config.get('performance')
     display_config = config.get('display')
-    
+
+    # ------------------------------------------------------------------------
+    # Dock policy reassert (macOS, launcher-spawned only)
+    # ------------------------------------------------------------------------
+    # HighGUI resets the Accessory policy set in main() the moment it creates
+    # its first preview window, so the loops below re-apply it right after
+    # their first cv2.waitKey() following the first cv2.imshow(). Lazily
+    # imported and gated the same way as set_accessory_policy() so CLI/
+    # non-GUI runs never touch libobjc.
+    reassert_dock_policy = None
+    if os.environ.get('MPOSC_LAUNCHED_FROM_GUI'):
+        from src.macos_app import reassert_accessory_policy
+        reassert_dock_policy = reassert_accessory_policy
+
     # ------------------------------------------------------------------------
     # Initialize OSC communication
     # ------------------------------------------------------------------------
@@ -631,6 +653,12 @@ def run(args, config):
 
                         if cv2.waitKey(1) & 0xFF == ord('q'):
                             break
+                        # Re-fight HighGUI for the Dock policy right after
+                        # it has had its chance to reset it on window
+                        # creation; reassert_accessory_policy() caps itself
+                        # after a few calls, so this is cheap once it wins.
+                        if reassert_dock_policy is not None:
+                            reassert_dock_policy()
                         # The red close button destroys the window; without
                         # this check the loop would keep running and imshow
                         # would recreate it on the next frame.
@@ -653,19 +681,19 @@ def run(args, config):
             # Handle legacy context managers
             if pose_ctx and hand_ctx:
                 with pose_ctx as pose, hand_ctx as hand:
-                    _legacy_loop(cap, pose_processor, pose, hand_processor, hand, 
+                    _legacy_loop(cap, pose_processor, pose, hand_processor, hand,
                                 display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
-                                frame_interval)
+                                frame_interval, reassert_dock_policy)
             elif pose_ctx:
                 with pose_ctx as pose:
                     _legacy_loop(cap, pose_processor, pose, None, None,
                                 display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
-                                frame_interval)
+                                frame_interval, reassert_dock_policy)
             elif hand_ctx:
                 with hand_ctx as hand:
                     _legacy_loop(cap, None, None, hand_processor, hand,
                                 display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
-                                frame_interval)
+                                frame_interval, reassert_dock_policy)
     
     except KeyboardInterrupt:
         print("\n🛑 Interrupted by user")

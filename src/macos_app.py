@@ -11,6 +11,13 @@ still show and can take key focus when clicked.
 
 LSUIElement in Info.plist can't be used instead - the launcher shares the
 same plist and would disappear from the Dock too.
+
+HighGUI itself undoes this: the first time it actually creates a window
+(inside cv2.imshow), Cocoa's window-creation path re-registers the app as a
+Regular application, popping the second Dock tile right back up even though
+we set Accessory before any window existed. There's no hook into that
+moment, so the fix is to reassert Accessory immediately after the first
+imshow/waitKey pair - see reassert_accessory_policy() below.
 """
 
 # ============================================================================
@@ -22,13 +29,21 @@ import platform
 
 NS_ACTIVATION_POLICY_ACCESSORY = 1
 
+# reassert_accessory_policy() only needs to win the race against HighGUI's
+# first window a handful of times - once the policy has stuck, further
+# calls are wasted objc round-trips for the rest of the (possibly
+# long-running) session. Cap them.
+_MAX_REASSERT_CALLS = 10
+_reassert_call_count = 0
 
-def set_accessory_policy() -> bool:
+
+def _apply_accessory_policy() -> bool:
     """
-    Keep this process out of the Dock while still allowing windows.
+    Shared ctypes/objc plumbing behind both set_accessory_policy() and
+    reassert_accessory_policy().
 
-    Creates the shared NSApplication (HighGUI reuses it later) and sets its
-    activation policy to Accessory. Safe no-op off macOS or on any failure.
+    Gets (or creates) the shared NSApplication and sets its activation
+    policy to Accessory. Safe no-op off macOS or on any failure.
 
     Returns:
         True if the policy was applied
@@ -59,3 +74,41 @@ def set_accessory_policy() -> bool:
                                 NS_ACTIVATION_POLICY_ACCESSORY))
     except Exception:
         return False
+
+
+def set_accessory_policy() -> bool:
+    """
+    Keep this process out of the Dock while still allowing windows.
+
+    Creates the shared NSApplication (HighGUI reuses it later) and sets its
+    activation policy to Accessory. Safe no-op off macOS or on any failure.
+
+    Returns:
+        True if the policy was applied
+    """
+    return _apply_accessory_policy()
+
+
+def reassert_accessory_policy() -> bool:
+    """
+    Re-apply the Accessory policy after HighGUI has created its window.
+
+    HighGUI's Cocoa backend flips the app back to the Regular activation
+    policy the moment it creates its first window (inside cv2.imshow),
+    which is what makes the second Dock tile reappear even though
+    set_accessory_policy() already ran at startup. Calling this right after
+    the first cv2.waitKey() that follows the first cv2.imshow() wins that
+    race back. Safe no-op off macOS, on any failure, or once it has already
+    been called _MAX_REASSERT_CALLS times (no need to keep paying for an
+    objc round-trip every frame for the life of the process).
+
+    Returns:
+        True if the policy was (re)applied
+    """
+    global _reassert_call_count
+    if platform.system() != 'Darwin':
+        return False
+    if _reassert_call_count >= _MAX_REASSERT_CALLS:
+        return False
+    _reassert_call_count += 1
+    return _apply_accessory_policy()

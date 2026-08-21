@@ -963,7 +963,7 @@ class LauncherGui:
     def _engine_became_ready(self) -> None:
         self._stop_spinner()
         if self.is_running():
-            self._set_status("🎥 Engine running (PID {})".format(self.proc.pid))
+            self._set_status("🎥 Engine launched (PID {})".format(self.proc.pid))
 
     def _read_output(self, proc: subprocess.Popen) -> None:
         """Worker thread: pump child stdout into the queue (no tk access here)"""
