@@ -74,17 +74,17 @@ ALL_NODES = CORE_NODES + JOINT_NODES
 BG_TOP = (30, 33, 41)      # #1E2129
 BG_BOTTOM = (14, 16, 20)   # #0E1014
 
-# The app's own display.landmark_color / display.connection_color config
-# defaults are OpenCV BGR tuples ([245,117,66] / [245,66,230]); read as RGB
-# they give exactly the orange/magenta this icon uses.
-LANDMARK_RGB = (245, 117, 66)     # #F57542 -- node dots
-CONNECTION_RGB = (245, 66, 230)   # #F542E6 -- connecting lines
+# The app's green-on-dark-grey theme colors (see src/theme.py's PALETTE):
+# nodes use the bright accent green so they read as the highlight, lines use
+# a dimmer green so they recede behind the nodes.
+LANDMARK_RGB = (61, 220, 132)     # #3DDC84 -- node dots (theme accent)
+CONNECTION_RGB = (47, 120, 86)    # #2F7856 -- connecting lines
 
 BODY_FRACTION = 0.8047       # 824/1024 -- Big Sur-style rounded-square body
 CORNER_FRACTION = 0.2249     # corner radius as a fraction of body size
 
 DEFAULT_STYLE = {
-    'inset': 0.135,
+    'inset': 0.174,
     'line_w': 0.045,
     'node_r': 0.050,
     'joint_r': 0.033,
@@ -92,9 +92,9 @@ DEFAULT_STYLE = {
     'dots': ALL_NODES,
 }
 SIZE_OVERRIDES = {
-    16: {'inset': 0.145, 'line_w': 0.100, 'node_r': 0.088, 'head_k': 1.30, 'dots': MINIMAL_NODES},
-    32: {'inset': 0.140, 'line_w': 0.078, 'node_r': 0.070, 'head_k': 1.35, 'dots': CORE_NODES},
-    64: {'inset': 0.135, 'line_w': 0.060, 'node_r': 0.058, 'joint_r': 0.038, 'dots': ALL_NODES},
+    16: {'inset': 0.214, 'line_w': 0.100, 'node_r': 0.088, 'head_k': 1.30, 'dots': MINIMAL_NODES},
+    32: {'inset': 0.195, 'line_w': 0.078, 'node_r': 0.070, 'head_k': 1.35, 'dots': CORE_NODES},
+    64: {'inset': 0.182, 'line_w': 0.060, 'node_r': 0.058, 'joint_r': 0.038, 'dots': ALL_NODES},
 }
 
 RENDER_SIZES = (16, 32, 64, 128, 256, 512, 1024)

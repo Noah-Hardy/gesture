@@ -18,7 +18,7 @@ Leave **FPS cap** blank or `0` to run uncapped (as fast as the camera and models
 
 ## Show FPS
 
-**Show FPS** prints a stats line to the log pane roughly every 30 frames:
+**Show FPS**, in **Settings → Advanced**, prints a stats line to the log pane roughly every 30 frames:
 
 ```
 CPU (MediaPipe Tasks) FPS: 28.41 | Memory: 412.3MB | OSC Sent: 8420 Dropped: 0 Queued: 2 | MP Pending: 0 Skipped: 3
@@ -35,7 +35,7 @@ MediaPipe's detector runs asynchronously from frame capture, and only one frame 
 
 ## Force CPU / Force GPU delegate
 
-By default, MP-OSC picks a delegate automatically: **Apple Silicon Macs always use CPU**, because MediaPipe's GPU delegate has a known memory leak on Apple Silicon. **Force CPU** and **Force Legacy** are launch-only toggles in the launcher (not saved to `config.json`) for troubleshooting or deliberately trading GPU acceleration for stability. Forcing GPU is only exposed via the command line (see the **Appendix**) precisely because of that memory-leak risk — it isn't offered as a launcher checkbox.
+By default, MP-OSC picks a delegate automatically: **Apple Silicon Macs always use CPU**, because MediaPipe's GPU delegate has a known memory leak on Apple Silicon. **Force CPU**, **Force GPU** and **Force Legacy** live in **Settings → Advanced**, labeled "applies on next Start" since they're launch-time only — they take effect the next time you click Start, not while the engine is already running. Force CPU and Force Legacy are saved to `config.json`; Force GPU is not (it's mutually exclusive with Force CPU and carries its own memory-leak warning right on the checkbox — use it deliberately, not as a default).
 
 ## Force Legacy
 
@@ -43,4 +43,4 @@ By default, MP-OSC picks a delegate automatically: **Apple Silicon Macs always u
 
 ## Garbage collection and memory
 
-`config.json`'s `performance.gc_enabled` and `performance.gc_interval` (not exposed in the launcher) control periodic Python garbage collection during tracking. Disabling it can produce smoother, more consistent frame timing at the cost of higher memory use over a long-running session. See the **Appendix** for these config keys.
+**Enable garbage collection** and **GC interval (frames)**, in **Settings → Advanced**, control periodic Python garbage collection during tracking (`config.json`'s `performance.gc_enabled` and `performance.gc_interval`). Disabling it can produce smoother, more consistent frame timing at the cost of higher memory use over a long-running session.

@@ -223,6 +223,31 @@ jobs:
           ARCHIVE="dist/MP-OSC-${VERSION}-macos-arm64.zip"
           [[ -f "$ARCHIVE" ]] || { echo "expected $ARCHIVE, not found" >&2; ls -la dist >&2; exit 1; }
 
+          # ------------------------------------------------------------------
+          # A future in-app updater matches release assets by exact filename,
+          # so a silent rename here must not be allowed to pass CI silently.
+          # ------------------------------------------------------------------
+          ARCHIVE_NAME="$(basename "$ARCHIVE")"
+          if ! [[ "$ARCHIVE_NAME" =~ ^MP-OSC-[0-9]+\.[0-9]+\.[0-9]+-macos-arm64\.zip$ ]]; then
+            {
+              echo "Release asset name does not match the expected pattern:"
+              echo "  got:      $ARCHIVE_NAME"
+              echo "  expected: MP-OSC-<major>.<minor>.<patch>-macos-arm64.zip"
+              echo
+              echo "The in-app updater matches assets by exact filename, so this"
+              echo "must be fixed before publishing."
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [[ ! -f "${ARCHIVE}.sha256" ]]; then
+            {
+              echo "Missing checksum sibling file:"
+              echo "  expected: ${ARCHIVE_NAME}.sha256"
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "Archive name and checksum sibling verified: $ARCHIVE_NAME"
+
           if spctl -a -t exec dist/MP-OSC.app >/dev/null 2>&1; then
             GATEKEEPER='accepted - runs on other machines with no extra steps'
           else
@@ -298,6 +323,8 @@ jobs:
           gh release create "$TAG" "$ARCHIVE" "${ARCHIVE}.sha256" \
             --title "MP-OSC $VERSION" \
             --notes-file "$NOTES" \
+            --generate-notes \
+            --latest \
             --target "$(git rev-parse HEAD)" \
             ${{ inputs.draft && '--draft' || '' }}
 
