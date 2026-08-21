@@ -21,6 +21,18 @@ dev = [
 test = [
     "pytest>=8",
 ]
+lint = [
+    "ruff>=0.8",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+# Narrow on purpose: pyflakes (F) plus syntax errors (E9). The full default
+# rule set currently reports 232 findings (BLE001, UP006, I001, ...) across
+# the tree - widening this selection is its own follow-up, not a CI gate.
+select = ["E9", "F"]

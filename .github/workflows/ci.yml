@@ -1,0 +1,49 @@
+name: CI
+
+# Validates every push and PR before merge. Runs on a cheap Linux runner:
+# uv.lock carries manylinux wheels for the full dependency set (mediapipe,
+# ndi-python, opencv, numpy), so nothing here needs to skip or mock the ML
+# stack - it genuinely installs and imports on ubuntu-latest.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: ruff, compileall, pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      # opencv-python (not the headless variant) dlopen's libGL at import
+      # time even for pure CPU/array work; ubuntu-latest doesn't ship it.
+      - name: Install libGL for opencv-python
+        run: sudo apt-get update && sudo apt-get install -y libgl1 libglib2.0-0t64
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Create the virtual environment
+        run: uv sync --group test --group lint
+
+      - name: ruff
+        run: uv run ruff check .
+
+      - name: compileall
+        run: uv run python -m compileall -q src main.py app.py
+
+      - name: pytest
+        run: uv run pytest -q
+
+      - name: docs self-check
+        run: uv run python -m src.docs
