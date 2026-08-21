@@ -284,7 +284,8 @@ class SettingsWindow:
                               'mediapipe', 'min_tracking_confidence')
         row = self._row_float(frame, row, "Min pose presence confidence:",
                               'mediapipe', 'min_pose_presence_confidence')
-        row = self._row_check(frame, row, "Smooth landmarks", 'mediapipe', 'smooth_landmarks')
+        row = self._row_check(frame, row, "Smooth landmarks", 'mediapipe', 'smooth_landmarks',
+                              note="Legacy API only; has no effect unless Force Legacy is enabled.")
 
         row += 1
         ttk.Separator(frame, orient='horizontal').grid(
