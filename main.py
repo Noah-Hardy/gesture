@@ -9,6 +9,7 @@ Main entry point for pose tracking with network streaming
 # ============================================================================
 import cv2
 import argparse
+import os
 import platform
 import sys
 import time
@@ -308,12 +309,21 @@ def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
             if hand_processor and hand_ctx:
                 image = hand_processor.process_frame(image, hand_ctx, "Hand")
             
-            if display_config['show_window']:
+            if display_config.get('show_window', True):
                 show_preview(image, window_title, mirror_preview)
-            
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-                
+
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+                # The red close button destroys the window; without this
+                # check the loop would keep running and imshow would
+                # recreate it on the next frame.
+                try:
+                    if cv2.getWindowProperty(window_title, cv2.WND_PROP_VISIBLE) < 1:
+                        print("🛑 Preview window closed - stopping")
+                        break
+                except cv2.error:
+                    break
+
         except Exception as frame_error:
             print(f"⚠️  Legacy frame processing error: {frame_error}")
             continue
@@ -538,7 +548,9 @@ def run(args, config):
     print(f"🖼️  Window: {window_title}")
     if display_config.get('mirror_preview', False):
         print("🪞 Preview mirrored (display only - OSC coordinates are unchanged)")
-    
+    # Sentinel the launcher watches for to end its startup spinner
+    print("🟢 Engine ready")
+
     # ========================================================================
     # MAIN PROCESSING LOOP
     # ========================================================================
@@ -600,12 +612,21 @@ def run(args, config):
                     if hand_processor and hand_is_tasks:
                         image = hand_processor.process_frame(image, hand_landmarker, "Hand", timestamp_counter)
                     
-                    if display_config['show_window']:
+                    if display_config.get('show_window', True):
                         show_preview(image, window_title, mirror_preview)
-                    
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
-                        break
-                        
+
+                        if cv2.waitKey(1) & 0xFF == ord('q'):
+                            break
+                        # The red close button destroys the window; without
+                        # this check the loop would keep running and imshow
+                        # would recreate it on the next frame.
+                        try:
+                            if cv2.getWindowProperty(window_title, cv2.WND_PROP_VISIBLE) < 1:
+                                print("🛑 Preview window closed - stopping")
+                                break
+                        except cv2.error:
+                            break
+
                 except Exception as frame_error:
                     print(f"⚠️  Tasks frame processing error: {frame_error}")
                     continue
@@ -658,7 +679,7 @@ def run(args, config):
         except:
             pass
         try:
-            if display_config['show_window']:
+            if display_config.get('show_window', True):
                 cv2.destroyAllWindows()
         except:
             pass
@@ -681,6 +702,12 @@ def main(argv=None):
         Process exit code (0 on success)
     """
     args = parse_args(argv)
+
+    # When the launcher spawns us, drop out of the Dock before any window
+    # exists so the engine doesn't get a second identical Dock tile.
+    if os.environ.get('MPOSC_LAUNCHED_FROM_GUI'):
+        from src.macos_app import set_accessory_policy
+        set_accessory_policy()
 
     config = get_config()
     apply_config_overrides(args, config)

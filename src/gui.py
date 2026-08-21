@@ -63,6 +63,11 @@ TAG_UPDATE = 'update'
 
 UPDATE_CHECK_DELAY_MS = 1500  # deferred so a slow DNS lookup never delays first paint
 
+# Startup spinner: shown from Start until the engine prints its ready line
+SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+SPINNER_INTERVAL_MS = 90
+ENGINE_READY_PREFIX = "🟢 Engine ready"
+
 
 # ============================================================================
 # LAUNCHER GUI
@@ -85,6 +90,9 @@ class LauncherGui:
         self.killed = False
         self._queue = queue.Queue()           # type: queue.Queue
         self._form_widgets = []               # type: List[Any]
+        self._starting = False                # engine launched, ready line not yet seen
+        self._spinner_job = None
+        self._spinner_idx = 0
         self.help_window = None               # type: Optional[HelpWindow]
         self.settings_window = None           # type: Optional[SettingsWindow]
         self.update_dialog = None             # type: Optional[UpdateDialog]
@@ -119,41 +127,37 @@ class LauncherGui:
     # ------------------------------------------------------------------------
     def _init_variables(self) -> None:
         """Create tk variables seeded from the configuration file"""
-        cfg = self.config
-
         # Mode has no config key - GUI-local default
         self.var_mode = tk.StringVar(value='all')
 
         # Input
-        use_ndi = bool(cfg.get('camera', 'use_ndi', False)) and NDI_AVAILABLE
-        self.var_source = tk.StringVar(value='ndi' if use_ndi else 'camera')
-        self.var_camera = tk.StringVar(value=str(cfg.get('camera', 'device_id', 0)))
-        self.var_ndi_source = tk.StringVar(value=cfg.get('camera', 'ndi_source') or '')
+        self.var_source = tk.StringVar()
+        self.var_camera = tk.StringVar()
+        self.var_ndi_source = tk.StringVar()
 
         # OSC output - default host is localhost; port always has a value
         # since a blank one cannot start the engine.
-        self.var_host = tk.StringVar(value=str(cfg.get('osc', 'host', '127.0.0.1')))
-        self.var_port = tk.StringVar(value=str(cfg.get('osc', 'port', 1234)))
+        self.var_host = tk.StringVar()
+        self.var_port = tk.StringVar()
 
         # Model & performance
-        model = cfg.get('mediapipe', 'pose_model_type', 'lite')
-        if model not in POSE_MODELS:
-            model = 'lite'
-        self.var_pose_model = tk.StringVar(value=model)
-        self.var_fps_cap = tk.StringVar(value=str(cfg.get('performance', 'target_fps', 0)))
-        self.var_show_fps = tk.BooleanVar(value=bool(cfg.get('performance', 'show_fps', False)))
+        self.var_pose_model = tk.StringVar()
+        self.var_fps_cap = tk.StringVar()
+        self.var_show_fps = tk.BooleanVar()
 
         # Preview
-        self.var_mirror = tk.BooleanVar(value=bool(cfg.get('display', 'mirror_preview', False)))
+        self.var_mirror = tk.BooleanVar()
 
         # Backend toggles - launch-only (never part of the argv used to
         # resume a saved config), but now persisted so Settings remembers
         # them. Owned here and shared with SettingsWindow, which is where
         # they're actually edited (see _build_advanced_tab).
-        self.var_force_cpu = tk.BooleanVar(value=bool(cfg.get('performance', 'force_cpu', False)))
-        self.var_force_gpu = tk.BooleanVar(value=bool(cfg.get('performance', 'force_gpu', False)))
-        self.var_force_legacy = tk.BooleanVar(value=bool(cfg.get('performance', 'force_legacy', False)))
-        self.var_no_holistic = tk.BooleanVar(value=bool(cfg.get('performance', 'no_holistic', False)))
+        self.var_force_cpu = tk.BooleanVar()
+        self.var_force_gpu = tk.BooleanVar()
+        self.var_force_legacy = tk.BooleanVar()
+        self.var_no_holistic = tk.BooleanVar()
+
+        self._seed_vars_from_config()
 
         # Force CPU and Force GPU are mutually exclusive - main.py accepts
         # both flags at once with undefined results, so the UI enforces it.
@@ -161,6 +165,43 @@ class LauncherGui:
         self.var_force_gpu.trace_add('write', lambda *a: self._enforce_delegate_choice('gpu'))
 
         self.var_status = tk.StringVar(value="")
+
+    def _seed_vars_from_config(self) -> None:
+        """Push the current config values into the form's tk variables
+
+        Used at construction and again after Settings saves, so the launcher
+        form (and the argv/Save Config built from it) never holds stale
+        values that would overwrite what Settings just wrote.
+        """
+        cfg = self.config
+
+        use_ndi = bool(cfg.get('camera', 'use_ndi', False)) and NDI_AVAILABLE
+        self.var_source.set('ndi' if use_ndi else 'camera')
+        self.var_camera.set(str(cfg.get('camera', 'device_id', 0)))
+        self.var_ndi_source.set(cfg.get('camera', 'ndi_source') or '')
+
+        self.var_host.set(str(cfg.get('osc', 'host', '127.0.0.1')))
+        self.var_port.set(str(cfg.get('osc', 'port', 1234)))
+
+        model = cfg.get('mediapipe', 'pose_model_type', 'lite')
+        if model not in POSE_MODELS:
+            model = 'lite'
+        self.var_pose_model.set(model)
+        self.var_fps_cap.set(str(cfg.get('performance', 'target_fps', 0)))
+        self.var_show_fps.set(bool(cfg.get('performance', 'show_fps', False)))
+
+        self.var_mirror.set(bool(cfg.get('display', 'mirror_preview', False)))
+
+        self.var_force_cpu.set(bool(cfg.get('performance', 'force_cpu', False)))
+        self.var_force_gpu.set(bool(cfg.get('performance', 'force_gpu', False)))
+        self.var_force_legacy.set(bool(cfg.get('performance', 'force_legacy', False)))
+        self.var_no_holistic.set(bool(cfg.get('performance', 'no_holistic', False)))
+
+    def _reload_form_from_config(self) -> None:
+        """Settings saved - refresh the launcher form from the new config"""
+        self._seed_vars_from_config()
+        self._update_source_state()
+        self._set_status("💾 Settings saved")
 
     # ------------------------------------------------------------------------
     # Layout
@@ -172,7 +213,9 @@ class LauncherGui:
         self.root.rowconfigure(0, weight=1)
         self.root.columnconfigure(0, weight=1)
         outer.columnconfigure(0, weight=1)
-        outer.rowconfigure(4, weight=1)  # log pane absorbs extra height
+        # Open log pane absorbs extra height; collapsed it gives the row up
+        self._outer = outer
+        outer.rowconfigure(4, weight=1 if self.config.get('ui', 'log_section_open', True) else 0)
 
         self._build_input_frame(outer, row=0)
         self._build_osc_frame(outer, row=1)
@@ -293,7 +336,7 @@ class LauncherGui:
         ttk.Label(frame, text="(0 or empty = uncapped)", style='Dim.TLabel').grid(
             row=1, column=2, sticky='w', padx=(6, 0), pady=2)
 
-        ttk.Label(frame, text="More options in mp-osc → Settings…",
+        ttk.Label(frame, text="More options in Settings (⌘,)",
                  style='Dim.TLabel').grid(row=2, column=0, columnspan=3, sticky='w', pady=(6, 0))
 
     def _on_section_toggle(self, ui_key: str, is_open: bool) -> None:
@@ -325,9 +368,13 @@ class LauncherGui:
         self.btn_clear.grid(row=0, column=3, sticky='e')
 
     def _build_log(self, parent: ttk.Frame, row: int) -> None:
-        """Read-only stdout pane with a scrollbar"""
-        frame = ttk.LabelFrame(parent, text="Engine Output", padding=4)
-        frame.grid(row=row, column=0, sticky='nsew')
+        """Read-only stdout pane with a scrollbar, in a collapsible section"""
+        section = theme.CollapsibleSection(
+            parent, title="Engine Output", fill=True,
+            open=bool(self.config.get('ui', 'log_section_open', True)),
+            on_toggle=self._on_log_toggle)
+        section.grid(row=row, column=0, sticky='nsew')
+        frame = section.body
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
 
@@ -343,6 +390,11 @@ class LauncherGui:
         scroll = ttk.Scrollbar(frame, orient='vertical', command=self.log.yview)
         scroll.grid(row=0, column=1, sticky='ns')
         self.log.configure(yscrollcommand=scroll.set)
+
+    def _on_log_toggle(self, is_open: bool) -> None:
+        """The log row only absorbs extra height while the section is open"""
+        self._outer.rowconfigure(4, weight=1 if is_open else 0)
+        self._on_section_toggle('log_section_open', is_open)
 
     def _build_status(self, parent: ttk.Frame, row: int) -> None:
         """Single-line status label"""
@@ -389,12 +441,7 @@ class LauncherGui:
         # _wire_app_menu deliberately adds no items to name='apple'.
         help_menu.add_command(label="Check for Updates…", command=self._check_for_updates)
         help_menu.add_separator()
-        last_group = None
-        for topic in docs.TOPICS:
-            if topic.group != last_group:
-                help_menu.add_separator()
-                last_group = topic.group
-            help_menu.add_command(label=topic.label, command=lambda s=topic.slug: self._show_help(s))
+        help_menu.add_command(label="MP-OSC Help", command=lambda: self._show_help())
         help_menu.add_separator()
         help_menu.add_command(label="Open Full Documentation in Browser",
                               command=self._open_full_docs)
@@ -507,6 +554,7 @@ class LauncherGui:
             on_reveal_config=self._reveal_config,
             on_check_now=lambda: self._check_for_updates(manual=True),
             on_close=self._forget_settings,
+            on_saved=self._reload_form_from_config,
         )
 
     def _forget_settings(self) -> None:
@@ -839,6 +887,9 @@ class LauncherGui:
 
         env = os.environ.copy()
         env['PYTHONUNBUFFERED'] = '1'
+        # Tells the engine to run as a macOS accessory app so its preview
+        # window doesn't add a second Dock icon (see src.macos_app).
+        env['MPOSC_LAUNCHED_FROM_GUI'] = '1'
 
         # From source, run the child in the repo root so it resolves the same
         # relative config.json the GUI just wrote. Frozen builds use an absolute
@@ -875,7 +926,40 @@ class LauncherGui:
 
         self.btn_start.configure(text="Stop", style='Error.TButton')
         self._set_form_enabled(False)
-        self._set_status("🎥 Engine running (PID {})".format(self.proc.pid))
+        self._starting = True
+        self._start_spinner()
+
+    # ------------------------------------------------------------------------
+    # Startup spinner - animates the status line until the engine's ready
+    # sentinel (printed by main.py right before its processing loop) arrives.
+    # ------------------------------------------------------------------------
+    def _start_spinner(self) -> None:
+        self._stop_spinner_job()
+        self._spinner_idx = 0
+        self._tick_spinner()
+
+    def _tick_spinner(self) -> None:
+        frame = SPINNER_FRAMES[self._spinner_idx % len(SPINNER_FRAMES)]
+        self._spinner_idx += 1
+        self.var_status.set("{} Starting engine…".format(frame))
+        self._spinner_job = self.root.after(SPINNER_INTERVAL_MS, self._tick_spinner)
+
+    def _stop_spinner_job(self) -> None:
+        if self._spinner_job is not None:
+            try:
+                self.root.after_cancel(self._spinner_job)
+            except tk.TclError:
+                pass
+            self._spinner_job = None
+
+    def _stop_spinner(self) -> None:
+        self._stop_spinner_job()
+        self._starting = False
+
+    def _engine_became_ready(self) -> None:
+        self._stop_spinner()
+        if self.is_running():
+            self._set_status("🎥 Engine running (PID {})".format(self.proc.pid))
 
     def _read_output(self, proc: subprocess.Popen) -> None:
         """Worker thread: pump child stdout into the queue (no tk access here)"""
@@ -895,6 +979,7 @@ class LauncherGui:
         except Exception as e:
             self._append_log("⚠️  Failed to signal engine: {}".format(e))
         self.stop_requested_at = time.monotonic()
+        self._stop_spinner()
         self.btn_start.configure(text="Stopping…", state='disabled')
         self._set_status("🛑 Stopping engine…")
         self._sync_menu_state()
@@ -922,6 +1007,7 @@ class LauncherGui:
 
     def _on_engine_exit(self, returncode: int) -> None:
         """Reset the UI once the child has exited"""
+        self._stop_spinner()
         if returncode == 0:
             self._append_log("✅ Engine exited (code 0)")
             self._set_status("✅ Engine stopped")
@@ -947,6 +1033,8 @@ class LauncherGui:
             while True:
                 tag, payload = self._queue.get_nowait()
                 if tag == TAG_LOG:
+                    if self._starting and payload.startswith(ENGINE_READY_PREFIX):
+                        self._engine_became_ready()
                     self._append_log(payload)
                 elif tag == TAG_NDI:
                     self._apply_ndi_sources(payload)
