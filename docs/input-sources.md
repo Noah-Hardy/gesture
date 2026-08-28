@@ -18,6 +18,10 @@ A few behaviors worth knowing:
 
 NDI and the OSC coordinates it produces don't have a fixed relationship to real-world size — see **Processing resolution**, below, for why that matters.
 
+## Show preview window
+
+**🖼️ Show preview window**, under **Input**, controls whether the separate confirmation window opens at all — titled **"MP-OSC Preview — not the OSC output"** so it's never mistaken for the data feed itself. It's on by default; uncheck it to run without the window (headless use, or if it's distracting). This mirrors **Mirror preview**, below, in also being a launcher checkbox that always overrides the saved `config.json` value for the run about to start (also available in **Settings → Preview**, and as `--preview`/`--no-preview` on the command line).
+
 ## Mirror preview
 
 **🪞 Mirror preview window** flips the preview horizontally, so a webcam feed looks like a mirror (your right hand appears on the right side of the screen) rather than a video call (your right hand appears on the left). This is a **display-only** setting — it does not change any OSC data. Landmark coordinates and every value MP-OSC sends over the network are computed before the mirror flip and are completely unaffected by this checkbox.

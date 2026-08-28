@@ -20,7 +20,9 @@ The launcher itself never runs MediaPipe. Pressing **Start** launches a second, 
 4. Leave **Tracking mode** on `all` — it tracks pose and both hands together.
 5. Click **Start**.
 
-The log pane will fill with startup messages: which delegate (CPU or GPU) was chosen, which model loaded, and a confirmation line once tracking begins. A preview window opens separately, showing the camera feed with the detected skeleton drawn over it — this is for your own confirmation, and is not what gets sent over OSC. Press `q` with that window focused to stop tracking early, or use the launcher's **Stop** button (the Start button turns into Stop, in red, while the engine is running).
+The log pane will fill with startup messages: which delegate (CPU or GPU) was chosen, which model loaded, and a confirmation line once tracking begins. A preview window opens separately, titled **"MP-OSC Preview — not the OSC output"** — a reminder that this window is for your own confirmation only, showing the camera feed with the detected skeleton drawn over it, and is never itself what gets sent over OSC. Press `q` with that window focused to stop tracking early, or use the launcher's **Stop** button (the Start button turns into Stop, in red, while the engine is running).
+
+Uncheck **🖼️ Show preview window** under **Input** if you don't want the window to open at all — for example, running headless, or if you find it distracting. With the preview hidden, `q` has nothing to be pressed in, so **Stop** is the only way to end tracking.
 
 ## Confirming data is arriving
 

@@ -32,6 +32,6 @@ When a pose or hand that was previously detected disappears, MP-OSC sends one em
 
 ## OSC send queue and dropped messages
 
-Outgoing messages are queued and sent by a background thread so that a slow network target can't stall tracking. If messages are produced faster than the sender thread can push them out, the **newest** message is dropped once the queue is full, and a running count of drops appears in the FPS/stats line (see **Models & Performance**) when **Show FPS** is enabled.
+Outgoing messages are queued and sent by a background thread so that a slow network target can't stall tracking. If messages are produced faster than the sender thread can push them out, the **oldest** queued message is dropped to make room for the newest one — under sustained congestion, a stale pose isn't worth keeping over a fresh one. A running count of drops appears in the FPS/stats line (see **Models & Performance**) when **Show FPS** is enabled.
 
 OSC is UDP, which is fire-and-forget: sending to a host/port nobody is listening on doesn't fail, block, or come back as an error — it just silently goes nowhere. An absent or wrong OSC target does **not** produce Dropped counts by itself. A climbing "Dropped" count instead means MP-OSC's own outgoing queue is filling up faster than it can be drained — i.e. landmark data is being produced faster than it can be sent, regardless of whether anything is actually listening on the other end.

@@ -154,6 +154,7 @@ class LauncherGui:
         self.var_show_fps = tk.BooleanVar()
 
         # Preview
+        self.var_show_preview = tk.BooleanVar()
         self.var_mirror = tk.BooleanVar()
 
         # Backend toggles - launch-only (never part of the argv used to
@@ -198,6 +199,7 @@ class LauncherGui:
         self.var_fps_cap.set(str(cfg.get('performance', 'target_fps', 0)))
         self.var_show_fps.set(bool(cfg.get('performance', 'show_fps', False)))
 
+        self.var_show_preview.set(bool(cfg.get('display', 'show_window', True)))
         self.var_mirror.set(bool(cfg.get('display', 'mirror_preview', False)))
 
         self.var_force_cpu.set(bool(cfg.get('performance', 'force_cpu', False)))
@@ -283,10 +285,16 @@ class LauncherGui:
         ttk.Separator(frame, orient='horizontal').grid(row=4, column=0, columnspan=3,
                                                        sticky='ew', pady=6)
 
+        chk_show_preview = ttk.Checkbutton(
+            frame, text="🖼️ Show preview window (local confirmation only - not the OSC output)",
+            variable=self.var_show_preview)
+        chk_show_preview.grid(row=5, column=0, columnspan=3, sticky='w', pady=2)
+        self._register(chk_show_preview, 'normal')
+
         chk_mirror = ttk.Checkbutton(
             frame, text="🪞 Mirror preview window (display only - OSC data is unchanged)",
             variable=self.var_mirror)
-        chk_mirror.grid(row=5, column=0, columnspan=3, sticky='w', pady=2)
+        chk_mirror.grid(row=6, column=0, columnspan=3, sticky='w', pady=2)
         self._register(chk_mirror, 'normal')
 
         if not NDI_AVAILABLE:
@@ -863,6 +871,7 @@ class LauncherGui:
 
         # Always explicit: the checkbox, not the saved config, decides
         cmd.append('--mirror' if self.var_mirror.get() else '--no-mirror')
+        cmd.append('--preview' if self.var_show_preview.get() else '--no-preview')
 
         # Backend toggles (mutually exclusive - enforced by _enforce_delegate_choice)
         if self.var_force_cpu.get():
@@ -1186,6 +1195,7 @@ class LauncherGui:
             self.config.set('performance', 'force_legacy', bool(self.var_force_legacy.get()))
             self.config.set('performance', 'no_holistic', bool(self.var_no_holistic.get()))
             self.config.set('display', 'mirror_preview', bool(self.var_mirror.get()))
+            self.config.set('display', 'show_window', bool(self.var_show_preview.get()))
 
             self.config.save()
         except Exception as e:

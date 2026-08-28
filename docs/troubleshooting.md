@@ -51,6 +51,16 @@ If a download or install fails partway — a lost connection, a checksum mismatc
 
 If you're offline, or MP-OSC can't self-update on this machine (it's still in `~/Downloads`, or installed somewhere your account can't write to), use **Help → Check for Updates…** once you're back online and in a writable location, or download the new version manually from the project's GitHub Releases page (**Help → Project on GitHub**).
 
+## Data arrives but is incomplete
+
+Some OSC channels come through fine — usually `/mp/status`, `/hand/status`, and the small `*_bounds` channels — while the larger landmark channels (`/pose/raw`, `/left_hand/raw`, `/right_hand/raw`, and the `*/world` variants) arrive rarely or not at all. This has no single console message; it shows up as a gap between what your receiver logs and what MP-OSC's own `Sent` count (Show FPS) says it transmitted. Three causes, in the order to check them:
+
+- **Outgoing send queue too small.** `all` mode sends 14 messages per frame; older configs could have a queue depth (`osc.queue_size`) too small to hold even one frame's worth, so any brief stall in the sender thread dropped landmark channels every frame. Fixed as of 0.1.8 — the default and the enforced floor are both 32, and older saved configs are migrated automatically the first time you launch a 0.1.8 build. Confirm with **Show FPS**: `Dropped` should stay flat under normal load; if it's still climbing, check your `osc.queue_size` in **Settings → Advanced**.
+- **MTU fragmentation.** A full pose's landmark JSON can exceed a single network packet's size, and not every receiver reassembles fragmented UDP OSC payloads correctly. Planned for 0.3.0 (see the OSC protocol overhaul).
+- **JSON-vs-numeric payload format.** MP-OSC sends one JSON string argument per message; a receiver expecting separate float/int OSC arguments (some patches in Isadora, TouchDesigner's OSC In CHOP, and Resolume in particular) can silently fail to parse it as anything at all. A native-float output mode is planned for 0.3.0.
+
+Until the 0.3.0 protocol work lands, if you're still seeing gaps after confirming the queue isn't the cause: switching **Tracking mode** to `pose` or `hand` instead of `all` cuts the per-frame message count roughly in half, which reduces exposure to both the fragmentation and parsing issues even though it doesn't fix them outright.
+
 ## If none of this matches what you're seeing
 
 Copy the exact message from the log pane and check the **OSC Address Reference** and **Appendix** for anything more specific to the feature involved, or consult the project's GitHub page from the **Help** menu.

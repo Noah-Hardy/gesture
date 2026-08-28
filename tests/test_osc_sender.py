@@ -1,5 +1,5 @@
-"""ThreadedOSCSender against a fake client: drop counting on a full queue,
-stats, and clean stop()/join."""
+"""ThreadedOSCSender against a fake client: drop-oldest eviction on a full
+queue, stats, and clean stop()/join."""
 import threading
 import time
 
@@ -40,7 +40,7 @@ def test_send_message_is_delivered():
         sender.stop()
 
 
-def test_full_queue_drops_and_counts_without_blocking():
+def test_full_queue_evicts_oldest_and_delivers_newest():
     hold = threading.Event()  # never set: worker blocks forever on the first message
     client = FakeClient(block_until=hold)
     sender = ThreadedOSCSender(client, queue_size=1)
@@ -49,9 +49,14 @@ def test_full_queue_drops_and_counts_without_blocking():
         sender.send_message('/a', 1)
         assert _wait_until(lambda: sender.message_queue.empty())
         # Queue now has room for exactly one more; fill it, then overflow it.
+        # Drop-oldest semantics: '/b' (the stale queued entry) is evicted to
+        # make room for '/c' (the newest arrival), not the other way around.
         sender.send_message('/b', 2)
-        sender.send_message('/c', 3)  # queue full -> dropped
+        sender.send_message('/c', 3)
         assert sender.get_stats()['dropped'] == 1
+        hold.set()
+        assert _wait_until(lambda: len(client.sent) == 2)
+        assert client.sent == [('/a', 1), ('/c', 3)]
     finally:
         hold.set()
         sender.stop()

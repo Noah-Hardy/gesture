@@ -43,6 +43,17 @@ EXIT_CRASH = 3             # Unhandled exception inside the processing loop
 
 
 # ============================================================================
+# PREVIEW WINDOW TITLE
+# ============================================================================
+# Matches src.config.Config.DEFAULT_CONFIG['display']['window_title']. Used
+# as the fallback/initializer here whenever display.window_title comes back
+# empty (config default is never empty, so that's a manually-edited config
+# only) - kept unambiguous rather than mode-specific so it never regresses
+# to a name that sounds like the OSC output (see issue #60).
+DEFAULT_WINDOW_TITLE = "MP-OSC Preview — not the OSC output"
+
+
+# ============================================================================
 # COMMAND LINE ARGUMENT PARSING
 # ============================================================================
 def build_parser():
@@ -74,6 +85,11 @@ def build_parser():
                               help='Mirror the preview window horizontally (display only - OSC coordinates are unchanged)')
     mirror_group.add_argument('--no-mirror', dest='mirror_preview', action='store_false',
                               help='Do not mirror the preview window (overrides the config value)')
+    preview_group = parser.add_mutually_exclusive_group()
+    preview_group.add_argument('--preview', dest='show_window', action='store_true', default=None,
+                               help='Show the preview window (local confirmation only, not the OSC output)')
+    preview_group.add_argument('--no-preview', dest='show_window', action='store_false',
+                               help='Do not show the preview window (overrides the config value)')
     parser.add_argument('mode', choices=['pose', 'hand', 'all'], help='Tracking mode: pose, hand, or all (both)')
     return parser
 
@@ -121,6 +137,8 @@ def apply_config_overrides(args, config):
         config.set('performance', 'target_fps', args.fps_cap)
     if args.mirror_preview is not None:
         config.set('display', 'mirror_preview', args.mirror_preview)
+    if args.show_window is not None:
+        config.set('display', 'show_window', args.show_window)
 
 
 # ============================================================================
@@ -474,7 +492,7 @@ def run(args, config):
     hand_is_tasks = False
     
     backend_names = []
-    window_title = "MediaPipe OSC Detection"
+    window_title = DEFAULT_WINDOW_TITLE
     
     # ------------------------------------------------------------------------
     # Setup Holistic Processor (preferred for 'all' mode - pose + hands in
@@ -621,13 +639,9 @@ def run(args, config):
         print("   deprecated and will be removed in 0.2.0 - treat this as a stopgap, not a fix")
         return 1
     
-    # Set window title based on mode
-    if tracking_mode == 'pose':
-        window_title = "MediaPipe Pose Detection"
-    elif tracking_mode == 'hand':
-        window_title = "MediaPipe Hand Detection"
-    else:
-        window_title = "MediaPipe Pose + Hand Detection"
+    # Default window title (overridden below if display.window_title is set,
+    # which it is by default - see DEFAULT_WINDOW_TITLE)
+    window_title = DEFAULT_WINDOW_TITLE
     
     # ------------------------------------------------------------------------
     # Configure display window
