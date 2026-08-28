@@ -213,6 +213,39 @@ def preflight(min_free_bytes: int = 0) -> Preflight:
     return Preflight(True, 'ok', '', app)
 
 
+# Preflight codes that mean "MP-OSC is not sitting somewhere it should run
+# from long-term" - install_location_warning() below reuses preflight()'s
+# own detection rather than re-implementing it, but rewords the message for
+# someone who just opened the app for the first time rather than someone
+# who clicked Install on an update.
+_BAD_INSTALL_LOCATIONS = {
+    'translocated': (
+        "MP-OSC is running from the disk image it was downloaded on, or a temporary "
+        "copy of it. Drag MP-OSC to your Applications folder and open it from there."
+    ),
+    'read_only_volume': (
+        "MP-OSC is running from a read-only disk image. Drag MP-OSC to your "
+        "Applications folder and open it from there."
+    ),
+    'not_writable': (
+        "MP-OSC is installed somewhere your account can't write to, so it won't be able "
+        "to install updates. An administrator can fix the folder's permissions, or move "
+        "MP-OSC somewhere your account can write to."
+    ),
+}
+
+
+def install_location_warning() -> Optional[str]:
+    """
+    A user-facing message if the running .app is somewhere it will behave
+    oddly long-term (settings/updates blocked), or None if the location is
+    fine or this isn't a packaged build at all (preflight() code 'not_frozen'
+    - running from source should never warn about install location).
+    """
+    pf = preflight()
+    return _BAD_INSTALL_LOCATIONS.get(pf.code)
+
+
 def cleanup_stale() -> None:
     """
     Sweep leftovers from interrupted or crashed installs. Safe to call on

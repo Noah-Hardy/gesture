@@ -30,7 +30,7 @@ The positional `mode` argument is required and selects `pose`, `hand`, or `all` 
 | `--no-holistic` | In `all` mode, use separate pose + hand models instead of the combined holistic model |
 | `--force-cpu` | Force the CPU delegate |
 | `--force-gpu` | Force the GPU delegate (has a known memory leak on Apple Silicon — use with caution) |
-| `--force-legacy` | Use MediaPipe's older synchronous API instead of the modern Tasks API (**deprecated** — removed in 0.2.0) |
+| `--force-legacy` | Use MediaPipe's older synchronous API instead of the modern Tasks API (**deprecated** — removed in a future release) |
 | `--config PATH` | Use a specific configuration file instead of `config.json` |
 | `--create-config` | Write a default `config.json` and exit |
 | `--show-config` | Print the fully-resolved configuration and exit |
@@ -45,8 +45,8 @@ The **Settings** window now exposes almost everything in this file directly — 
 |---|---|
 | `osc` | `host`, `port`, `queue_size` (outgoing message queue depth before drops begin — see **OSC Output**) |
 | `camera` | `device_id`, `width`/`height` (capture resolution), `processing_width`/`processing_height` (see **Processing resolution** in **Camera & NDI** — not exposed in Settings), `use_ndi`, `ndi_source` |
-| `mediapipe` | `pose_model_type`, `num_poses` (Tasks API only; `>1` disables the combined holistic model in `all` mode), detection/tracking confidence thresholds, `model_complexity`/`enable_segmentation`/`smooth_landmarks` (**Legacy API only** — see `--force-legacy`; dead weight once the legacy path is removed in 0.2.0) |
-| `hand` | `num_hands`, confidence thresholds, left/right landmark and connection colors used in the preview, `model_complexity` (**Legacy API only** — same 0.2.0 removal as above) |
+| `mediapipe` | `pose_model_type`, `num_poses` (Tasks API only; `>1` disables the combined holistic model in `all` mode), detection/tracking confidence thresholds, `model_complexity`/`enable_segmentation`/`smooth_landmarks` (**Legacy API only** — see `--force-legacy`; dead weight once the legacy path is removed in a future release) |
+| `hand` | `num_hands`, confidence thresholds, left/right landmark and connection colors used in the preview, `model_complexity` (**Legacy API only** — same future removal as above) |
 | `performance` | `target_fps`, `show_fps`, `gc_enabled`/`gc_interval` (see **Models & Performance**) |
 | `display` | `show_window`, `window_title`, `mirror_preview`, landmark/connection colors and stroke sizes used in the preview |
 | `updates` | Update-checker state — see the **Updates** guide |

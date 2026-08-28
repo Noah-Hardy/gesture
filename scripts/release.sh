@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
 #
-# Package MP-OSC.app into a distributable archive for a GitHub release.
+# Package MP-OSC.app into distributable archives for a GitHub release.
 #
-# Produces dist/MP-OSC-<version>-macos-arm64.zip plus a .sha256 checksum.
-# The zip is created with ditto, which is the only archiver that reliably
-# preserves macOS bundle structure and code signatures.
+# Produces dist/MP-OSC-<version>-macos-arm64.zip plus a .sha256 checksum, and,
+# when a signing identity is set, also dist/MP-OSC-<version>-macos-arm64.dmg
+# plus its own .sha256. The zip is created with ditto, which is the only
+# archiver that reliably preserves macOS bundle structure and code
+# signatures; the DMG is what the Releases page and README point humans at,
+# since drag-to-Applications is the install gesture macOS users already know.
+#
+# The zip is not cosmetic leftover: src/updater.py's in-app updater matches
+# release assets by the exact zip filename and skips any release that lacks
+# one (see _ASSET_RE / _pick_release), so every release must keep shipping it
+# or existing installs silently stop offering updates.
 #
 # Usage:
 #   ./scripts/release.sh              # package the existing dist/MP-OSC.app
@@ -15,9 +23,11 @@
 #   export MPOSC_NOTARY_PROFILE="mp-osc-notary"   # see notarytool store-credentials
 #   ./scripts/release.sh --build
 #
-# Without MPOSC_CODESIGN_IDENTITY the build is ad-hoc signed. It runs fine on
-# this machine, but Gatekeeper rejects it anywhere else and users must strip the
-# quarantine attribute by hand. See the README for what that means.
+# Without MPOSC_CODESIGN_IDENTITY the build is ad-hoc signed and only the zip
+# is produced (no DMG, since an unsigned DMG has the same Gatekeeper problem
+# as the app inside it, and stapling has nothing to attach to). It runs fine
+# on this machine, but Gatekeeper rejects it anywhere else and users must
+# strip the quarantine attribute by hand. See the README for what that means.
 #
 set -euo pipefail
 
@@ -26,6 +36,7 @@ cd "$(dirname "$0")/.."
 APP="dist/MP-OSC.app"
 VERSION="$(grep -m1 '^version' pyproject.toml | sed 's/.*"\(.*\)".*/\1/')"
 ARCHIVE="dist/MP-OSC-${VERSION}-macos-arm64.zip"
+DMG="dist/MP-OSC-${VERSION}-macos-arm64.dmg"
 
 # ----------------------------------------------------------------------------
 # Optional rebuild
@@ -128,26 +139,26 @@ echo "==> Verifying the signature"
 codesign --verify --deep --strict --verbose=1 "$APP" 2>&1 | tail -2
 
 # ----------------------------------------------------------------------------
-# Archive (ditto preserves the bundle and its signature; plain zip does not)
+# Interim archive (ditto preserves the bundle and its signature; plain zip
+# does not). Notarization submission #1 runs against this zip, since
+# notarytool needs an archive, not a loose .app directory - the ticket it
+# returns is then stapled directly onto $APP below, which is what makes the
+# .app itself (not just this zip) carry proof of notarization.
 # ----------------------------------------------------------------------------
 echo "==> Creating $ARCHIVE"
 rm -f "$ARCHIVE"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ARCHIVE"
 
 # ----------------------------------------------------------------------------
-# Notarize, when credentials are available
+# Notarize the app, when credentials are available
 # ----------------------------------------------------------------------------
 if [[ -n "${MPOSC_NOTARY_PROFILE:-}" ]]; then
-    echo "==> Submitting to Apple for notarization (this takes a few minutes)"
+    echo "==> Submitting the app to Apple for notarization (this takes a few minutes)"
     xcrun notarytool submit "$ARCHIVE" \
         --keychain-profile "$MPOSC_NOTARY_PROFILE" --wait
 
     echo "==> Stapling the ticket to the app"
     xcrun stapler staple "$APP"
-
-    echo "==> Repackaging so the archive contains the stapled app"
-    rm -f "$ARCHIVE"
-    ditto -c -k --sequesterRsrc --keepParent "$APP" "$ARCHIVE"
 
     echo "==> Verifying Gatekeeper acceptance"
     spctl -a -vvv -t exec "$APP" 2>&1 | tail -3
@@ -156,19 +167,66 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-# Checksum and summary
+# DMG (only when signed - an unsigned DMG hits the same Gatekeeper rejection
+# as the app inside it, and there is no notarization ticket to staple to it).
 #
-# Run from inside dist/ so the filename embedded in the .sha256 is bare
+# Built from the now-stapled $APP, so the ticket travels inside the image;
+# building it first and stapling after would seal a DMG whose contents don't
+# yet carry the ticket. The Applications symlink makes the DMG a drag-to-
+# install window - the flow macOS users already know from every other app.
+# ----------------------------------------------------------------------------
+if [[ -n "${MPOSC_CODESIGN_IDENTITY:-}" ]]; then
+    echo "==> Building $DMG"
+    rm -f "$DMG"
+    DMG_STAGE="$(mktemp -d)"
+    trap 'rm -rf "$DMG_STAGE"' EXIT
+    ditto "$APP" "$DMG_STAGE/MP-OSC.app"
+    ln -s /Applications "$DMG_STAGE/Applications"
+    hdiutil create -srcfolder "$DMG_STAGE" -volname "MP-OSC" -fs HFS+ -format UDZO -ov "$DMG"
+    rm -rf "$DMG_STAGE"
+    trap - EXIT
+
+    echo "==> Signing $DMG"
+    codesign --force --timestamp --sign "$MPOSC_CODESIGN_IDENTITY" "$DMG"
+
+    if [[ -n "${MPOSC_NOTARY_PROFILE:-}" ]]; then
+        echo "==> Submitting the disk image to Apple for notarization"
+        xcrun notarytool submit "$DMG" \
+            --keychain-profile "$MPOSC_NOTARY_PROFILE" --wait
+
+        echo "==> Stapling the ticket to the disk image"
+        xcrun stapler staple "$DMG"
+
+        echo "==> Verifying Gatekeeper acceptance"
+        spctl -a -vvv -t open --context context:primary-signature "$DMG" 2>&1 | tail -3
+    fi
+
+    echo "==> Repackaging $ARCHIVE so it also contains the stapled app"
+    rm -f "$ARCHIVE"
+    ditto -c -k --sequesterRsrc --keepParent "$APP" "$ARCHIVE"
+else
+    echo "==> Skipping DMG (no MPOSC_CODESIGN_IDENTITY set - ad-hoc builds ship the zip only)"
+fi
+
+# ----------------------------------------------------------------------------
+# Checksums and summary
+#
+# Run from inside dist/ so the filename embedded in each .sha256 is bare
 # (e.g. "MP-OSC-0.1.2-macos-arm64.zip") rather than "dist/MP-OSC-...zip".
 # `shasum -c` matches that embedded name against a file in the current
 # directory, so a dist/-prefixed name fails for anyone who downloads the
-# checksum file and the zip into the same folder.
+# checksum file and the archive into the same folder.
 # ----------------------------------------------------------------------------
 (cd dist && shasum -a 256 "$(basename "$ARCHIVE")" > "$(basename "$ARCHIVE").sha256")
+[[ -f "$DMG" ]] && (cd dist && shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256")
 
 echo
 echo "Archive : $(pwd)/$ARCHIVE  ($(du -h "$ARCHIVE" | cut -f1))"
 echo "Checksum: $(cut -d' ' -f1 < "${ARCHIVE}.sha256")"
+if [[ -f "$DMG" ]]; then
+    echo "DMG     : $(pwd)/$DMG  ($(du -h "$DMG" | cut -f1))"
+    echo "Checksum: $(cut -d' ' -f1 < "${DMG}.sha256")"
+fi
 echo
 echo "Gatekeeper status:"
 if spctl -a -t exec "$APP" >/dev/null 2>&1; then
@@ -179,6 +237,12 @@ else
 fi
 echo
 echo "Publish with:"
-echo "  git tag -a v${VERSION} -m 'MP-OSC v${VERSION}' && git push origin v${VERSION}"
-echo "  gh release create v${VERSION} '${ARCHIVE}' '${ARCHIVE}.sha256' \\"
-echo "    --title 'MP-OSC v${VERSION}' --notes-file RELEASE_NOTES.md"
+if [[ -f "$DMG" ]]; then
+    echo "  git tag -a v${VERSION} -m 'MP-OSC v${VERSION}' && git push origin v${VERSION}"
+    echo "  gh release create v${VERSION} '${DMG}' '${DMG}.sha256' '${ARCHIVE}' '${ARCHIVE}.sha256' \\"
+    echo "    --title 'MP-OSC v${VERSION}' --notes-file RELEASE_NOTES.md"
+else
+    echo "  git tag -a v${VERSION} -m 'MP-OSC v${VERSION}' && git push origin v${VERSION}"
+    echo "  gh release create v${VERSION} '${ARCHIVE}' '${ARCHIVE}.sha256' \\"
+    echo "    --title 'MP-OSC v${VERSION}' --notes-file RELEASE_NOTES.md"
+fi

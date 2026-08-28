@@ -1,6 +1,6 @@
 [project]
 name = "mp-osc"
-version = "0.1.8"
+version = "0.2.0"
 description = "MediaPipe pose and hand tracking, streamed live over OSC"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
