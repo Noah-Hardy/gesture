@@ -356,7 +356,8 @@ class SettingsWindow:
         ttk.Label(frame, text="OSC", style='Dim.TLabel').grid(
             row=row, column=0, sticky='w', pady=(0, 2)); row += 1
         row = self._row_int(frame, row, "Send queue size:", 'osc', 'queue_size', width=8,
-                            note="Older queued messages are dropped once full.", minimum=1)
+                            note="Older queued messages are dropped once full.",
+                            minimum=Config.MIN_OSC_QUEUE_SIZE)
 
         row += 1
         ttk.Separator(frame, orient='horizontal').grid(

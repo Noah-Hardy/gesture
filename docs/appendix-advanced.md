@@ -26,6 +26,7 @@ The positional `mode` argument is required and selects `pose`, `hand`, or `all` 
 | `--fps-cap N` | Cap the frame rate (0 or omitted = uncapped) |
 | `--fps` | Show the FPS/stats line in the console |
 | `--mirror` / `--no-mirror` | Mirror the preview window (display only; overrides `config.json`) |
+| `--preview` / `--no-preview` | Show or hide the preview window (overrides `config.json`) |
 | `--no-holistic` | In `all` mode, use separate pose + hand models instead of the combined holistic model |
 | `--force-cpu` | Force the CPU delegate |
 | `--force-gpu` | Force the GPU delegate (has a known memory leak on Apple Silicon — use with caution) |

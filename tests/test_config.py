@@ -66,6 +66,44 @@ def test_sanitize_repairs_non_numeric_buffer_size(config_path):
     assert cfg.get('camera', 'buffer_size') == 1
 
 
+def test_sanitize_raises_undersized_queue_to_floor(config_path):
+    # Regression: configs saved before 0.1.8 could have queue_size below one
+    # frame's worth of 'all'-mode OSC traffic (14 messages), causing
+    # mid-frame drops even under normal load (issue #49).
+    with open(config_path, 'w') as f:
+        json.dump({'osc': {'queue_size': 5}}, f)
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'queue_size') == Config.MIN_OSC_QUEUE_SIZE
+
+
+def test_sanitize_preserves_larger_queue_size(config_path):
+    with open(config_path, 'w') as f:
+        json.dump({'osc': {'queue_size': 64}}, f)
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'queue_size') == 64
+
+
+def test_sanitize_repairs_non_numeric_queue_size(config_path):
+    with open(config_path, 'w') as f:
+        json.dump({'osc': {'queue_size': 'not a number'}}, f)
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'queue_size') == Config.MIN_OSC_QUEUE_SIZE
+
+
+def test_sanitize_replaces_legacy_window_title(config_path):
+    with open(config_path, 'w') as f:
+        json.dump({'display': {'window_title': 'MediaPipe OSC Pose Detection'}}, f)
+    cfg = Config(config_path)
+    assert cfg.get('display', 'window_title') == Config.DEFAULT_CONFIG['display']['window_title']
+
+
+def test_sanitize_preserves_custom_window_title(config_path):
+    with open(config_path, 'w') as f:
+        json.dump({'display': {'window_title': 'My Custom Title'}}, f)
+    cfg = Config(config_path)
+    assert cfg.get('display', 'window_title') == 'My Custom Title'
+
+
 def test_corrupt_json_falls_back_to_defaults(config_path):
     with open(config_path, 'w') as f:
         f.write('{not valid json')

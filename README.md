@@ -34,7 +34,7 @@ xattr -dr com.apple.quarantine /Applications/MP-OSC.app
 3. Under **Input**, choose **Camera** or **NDI** and pick a source.
 4. Click **Start**.
 
-A preview window opens showing the camera feed with detected landmarks drawn over it, and the launcher's log pane fills with startup and status messages. The preview is for your own confirmation only — it isn't what gets sent over OSC. See the in-app **Quick Start** guide (Help menu) for the full walkthrough, including a tour of the Settings window.
+A preview window, titled "MP-OSC Preview — not the OSC output", opens showing the camera feed with detected landmarks drawn over it, and the launcher's log pane fills with startup and status messages. The preview is for your own confirmation only — it isn't what gets sent over OSC. See the in-app **Quick Start** guide (Help menu) for the full walkthrough, including a tour of the Settings window.
 
 **Tracking mode** decides what gets tracked and sent:
 

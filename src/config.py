@@ -36,13 +36,29 @@ class Config:
     Configuration manager with file and environment variable support
     Provides centralized configuration for the application
     """
-    
+
+    # Floor for osc.queue_size. In 'all' mode a single frame's holistic
+    # burst is 14 messages; a queue smaller than that can't hold one whole
+    # frame, so any stall in the sender thread drops messages mid-frame,
+    # every frame (the root cause of issue #49's field report). Shared by
+    # DEFAULT_CONFIG, _sanitize's repair of old saved configs, and the
+    # Settings window's spinner minimum.
+    MIN_OSC_QUEUE_SIZE = 32
+
+    # window_title values previous releases shipped as the default -
+    # _sanitize replaces an exact match with the current default so
+    # existing configs pick up a retitle. A user's custom title never
+    # matches one of these and is left alone.
+    _LEGACY_WINDOW_TITLES = (
+        "MediaPipe OSC Pose Detection",
+    )
+
     # Default configuration values
     DEFAULT_CONFIG = {
         "osc": {
             "host": "127.0.0.1",
             "port": 1234,
-            "queue_size": 10
+            "queue_size": MIN_OSC_QUEUE_SIZE
         },
         "camera": {
             "device_id": 0,
@@ -88,7 +104,7 @@ class Config:
         },
         "display": {
             "show_window": True,
-            "window_title": "MediaPipe OSC Pose Detection",
+            "window_title": "MP-OSC Preview — not the OSC output",
             "mirror_preview": False,  # Flip the preview horizontally (display only - OSC data is unaffected)
             "landmark_color": [245, 117, 66],
             "connection_color": [245, 66, 230],
@@ -167,6 +183,22 @@ class Config:
         except (TypeError, ValueError):
             buffer_size = 1
         config['camera']['buffer_size'] = max(1, buffer_size)
+
+        # Configs saved by builds before 0.1.8 can carry a queue_size too
+        # small to hold one frame's OSC burst (see MIN_OSC_QUEUE_SIZE) -
+        # raise it, but leave a deliberately larger value alone.
+        try:
+            queue_size = int(config['osc'].get('queue_size', self.MIN_OSC_QUEUE_SIZE))
+        except (TypeError, ValueError):
+            queue_size = self.MIN_OSC_QUEUE_SIZE
+        config['osc']['queue_size'] = max(self.MIN_OSC_QUEUE_SIZE, queue_size)
+
+        # A saved window_title exactly matching a previous release's
+        # default is a config that never customized it - pick up the
+        # retitle. A real custom title never matches and is untouched.
+        if config['display'].get('window_title') in self._LEGACY_WINDOW_TITLES:
+            config['display']['window_title'] = self.DEFAULT_CONFIG['display']['window_title']
+
         return config
     
     def _deep_merge(self, base: Dict, override: Dict) -> Dict:
