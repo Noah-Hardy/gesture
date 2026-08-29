@@ -225,11 +225,17 @@ jobs:
           set -euo pipefail
           VERSION="$(grep -m1 '^version' pyproject.toml | sed 's/.*"\(.*\)".*/\1/')"
           ARCHIVE="dist/MP-OSC-${VERSION}-macos-arm64.zip"
+          DMG="dist/MP-OSC-${VERSION}-macos-arm64.dmg"
           [[ -f "$ARCHIVE" ]] || { echo "expected $ARCHIVE, not found" >&2; ls -la dist >&2; exit 1; }
 
           # ------------------------------------------------------------------
-          # A future in-app updater matches release assets by exact filename,
-          # so a silent rename here must not be allowed to pass CI silently.
+          # The in-app updater (src/updater.py's _ASSET_RE / _pick_release)
+          # matches release assets by this exact zip filename, and skips a
+          # release entirely when it finds none - so a silent rename here
+          # would silently strand every existing install with no update
+          # prompt, not just fail CI. The DMG has no such backward-
+          # compatibility constraint; it only needs to exist and be named
+          # consistently for the README/docs that point at it.
           # ------------------------------------------------------------------
           ARCHIVE_NAME="$(basename "$ARCHIVE")"
           if ! [[ "$ARCHIVE_NAME" =~ ^MP-OSC-[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?-macos-arm64\.zip$ ]]; then
@@ -252,6 +258,30 @@ jobs:
           fi
           echo "Archive name and checksum sibling verified: $ARCHIVE_NAME"
 
+          HAVE_DMG=0
+          if [[ -f "$DMG" ]]; then
+            HAVE_DMG=1
+            DMG_NAME="$(basename "$DMG")"
+            if ! [[ "$DMG_NAME" =~ ^MP-OSC-[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?-macos-arm64\.dmg$ ]]; then
+              {
+                echo "DMG asset name does not match the expected pattern:"
+                echo "  got:      $DMG_NAME"
+                echo "  expected: MP-OSC-<major>.<minor>.<patch>[.<hotfix>]-macos-arm64.dmg"
+              } | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            if [[ ! -f "${DMG}.sha256" ]]; then
+              {
+                echo "Missing checksum sibling file:"
+                echo "  expected: ${DMG_NAME}.sha256"
+              } | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            echo "DMG name and checksum sibling verified: $DMG_NAME"
+          else
+            echo "No DMG produced (ad-hoc build) - shipping the zip only."
+          fi
+
           if spctl -a -t exec dist/MP-OSC.app >/dev/null 2>&1; then
             GATEKEEPER='accepted - runs on other machines with no extra steps'
           else
@@ -262,6 +292,10 @@ jobs:
             echo "version=$VERSION"
             echo "archive=$ARCHIVE"
             echo "checksum=$(cut -d' ' -f1 < "${ARCHIVE}.sha256")"
+            if [[ "$HAVE_DMG" == 1 ]]; then
+              echo "dmg=$DMG"
+              echo "dmg_checksum=$(cut -d' ' -f1 < "${DMG}.sha256")"
+            fi
           } >> "$GITHUB_OUTPUT"
 
           {
@@ -271,8 +305,12 @@ jobs:
             echo "|---|---|"
             echo "| Ref built | \`${{ inputs.ref || github.ref }}\` |"
             echo "| Commit | \`$(git rev-parse --short HEAD)\` |"
+            if [[ "$HAVE_DMG" == 1 ]]; then
+              echo "| DMG | \`$(basename "$DMG")\` ($(du -h "$DMG" | cut -f1)) |"
+              echo "| DMG SHA-256 | \`$(cut -d' ' -f1 < "${DMG}.sha256")\` |"
+            fi
             echo "| Archive | \`$(basename "$ARCHIVE")\` ($(du -h "$ARCHIVE" | cut -f1)) |"
-            echo "| SHA-256 | \`$(cut -d' ' -f1 < "${ARCHIVE}.sha256")\` |"
+            echo "| Archive SHA-256 | \`$(cut -d' ' -f1 < "${ARCHIVE}.sha256")\` |"
             echo "| Gatekeeper | $GATEKEEPER |"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -284,7 +322,9 @@ jobs:
           path: |
             ${{ steps.facts.outputs.archive }}
             ${{ steps.facts.outputs.archive }}.sha256
-          if-no-files-found: error
+            ${{ steps.facts.outputs.dmg }}
+            ${{ steps.facts.outputs.dmg && format('{0}.sha256', steps.facts.outputs.dmg) || '' }}
+          if-no-files-found: warn
           retention-days: 30
 
       - name: Create the GitHub Release
@@ -294,6 +334,8 @@ jobs:
           VERSION: ${{ steps.facts.outputs.version }}
           ARCHIVE: ${{ steps.facts.outputs.archive }}
           CHECKSUM: ${{ steps.facts.outputs.checksum }}
+          DMG: ${{ steps.facts.outputs.dmg }}
+          DMG_CHECKSUM: ${{ steps.facts.outputs.dmg_checksum }}
         run: |
           set -euo pipefail
           TAG="v$VERSION"
@@ -306,13 +348,17 @@ jobs:
 
           NOTES="$RUNNER_TEMP/notes.md"
           {
-            echo "Apple Silicon Mac, macOS 13 or later. Intel Macs are not supported:"
-            echo "ndi-python publishes no x86_64 wheels."
-            echo
+            if [[ -n "$DMG" ]]; then
+              echo "Download the \`.dmg\`, open it, and drag MP-OSC into Applications."
+              echo
+            fi
             echo "Built from \`$(git rev-parse HEAD)\`."
             echo
             echo "\`\`\`"
-            echo "SHA-256  $CHECKSUM"
+            if [[ -n "$DMG" ]]; then
+              echo "SHA-256 (dmg)  $DMG_CHECKSUM"
+            fi
+            echo "SHA-256 (zip)  $CHECKSUM"
             echo "\`\`\`"
             if ! spctl -a -t exec dist/MP-OSC.app >/dev/null 2>&1; then
               echo
@@ -324,7 +370,12 @@ jobs:
             fi
           } > "$NOTES"
 
-          gh release create "$TAG" "$ARCHIVE" "${ARCHIVE}.sha256" \
+          ASSETS=("$ARCHIVE" "${ARCHIVE}.sha256")
+          if [[ -n "$DMG" ]]; then
+            ASSETS=("$DMG" "${DMG}.sha256" "${ASSETS[@]}")
+          fi
+
+          gh release create "$TAG" "${ASSETS[@]}" \
             --title "MP-OSC $VERSION" \
             --notes-file "$NOTES" \
             --generate-notes \

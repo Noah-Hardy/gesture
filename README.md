@@ -19,13 +19,9 @@ MP-OSC requires an **Apple Silicon Mac running macOS 13 or later**. Intel Macs a
 
 ## Install
 
-Drag `MP-OSC.app` into your **Applications** folder and open it.
+Open the downloaded `.dmg`, then drag `MP-OSC.app` into the **Applications** shortcut inside it. Open MP-OSC from your Applications folder, not from inside the disk image — it works fine there, but the copy on the disk image is read-only, so the in-app updater can't install into it.
 
-If you see a Gatekeeper warning ("Apple could not verify this app is free of malware"), that means you have an ad-hoc-signed build rather than a notarized one. Clear the quarantine flag and it opens normally after that:
-
-```sh
-xattr -dr com.apple.quarantine /Applications/MP-OSC.app
-```
+MP-OSC is signed with a Developer ID and notarized by Apple, so it opens with no Gatekeeper warning and no Terminal step.
 
 ## Quick Start
 

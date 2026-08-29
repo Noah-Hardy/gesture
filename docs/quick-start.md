@@ -1,5 +1,9 @@
 # Quick Start
 
+## Installing
+
+Open the `.dmg` you downloaded, then drag `MP-OSC.app` into the **Applications** shortcut inside it, and open MP-OSC from your Applications folder — not from inside the disk image. The copy on the disk image is read-only, so it works for a quick look but the in-app updater can't install into it; MP-OSC warns about this once at launch if you do.
+
 ## The launcher window
 
 Opening MP-OSC.app shows one window with three collapsible sections, then Start/Save Config/Clear Log buttons, a live log of the engine's output, and a status line. Click a section's ▾/▸ header to expand or collapse it — the app remembers each section's open/closed state between launches.

@@ -31,7 +31,7 @@ from src.config import get_config, valid_port
 from src.help_window import HelpWindow
 from src.settings_window import SettingsWindow
 from src.update_dialog import UpdateDialog
-from src.updater import UpdateController, cleanup_stale, spawn_installer
+from src.updater import UpdateController, cleanup_stale, install_location_warning, spawn_installer
 
 # NDI discovery is optional - the library may not be installed
 try:
@@ -129,6 +129,18 @@ class LauncherGui:
         except Exception:
             pass
         self.root.after(UPDATE_CHECK_DELAY_MS, lambda: self.updater.check_async(manual=False))
+
+        # Deferred past first paint, same reasoning as the update check above -
+        # a dialog popping up before the window is visible is jarring.
+        self.root.after(UPDATE_CHECK_DELAY_MS, self._warn_if_bad_install_location)
+
+    def _warn_if_bad_install_location(self) -> None:
+        try:
+            message = install_location_warning()
+        except Exception:
+            return
+        if message:
+            messagebox.showwarning("Move MP-OSC to Applications", message)
 
     # ------------------------------------------------------------------------
     # Form state

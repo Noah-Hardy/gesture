@@ -24,7 +24,7 @@ from src import theme
 from src.config import Config, valid_unit_float
 
 FORCE_GPU_WARNING = "Force GPU has a known memory leak on Apple Silicon - use with caution."
-FORCE_LEGACY_WARNING = "Deprecated - will be removed in 0.2.0."
+FORCE_LEGACY_WARNING = "Deprecated - will be removed in a future release."
 
 
 # ============================================================================

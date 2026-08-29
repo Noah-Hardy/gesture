@@ -53,24 +53,35 @@ The script downloads all five landmarker models so they ship inside the bundle, 
 
 ## Releasing
 
-`scripts/release.sh` packages the built app into a distributable archive:
+`scripts/release.sh` packages the built app into distributable archives:
 
 ```sh
 ./scripts/release.sh --build     # build, then package
 ```
 
-This produces `dist/MP-OSC-<version>-macos-arm64.zip` and a matching `.sha256`. The archive is created with `ditto`, which is the only macOS archiver that reliably preserves bundle structure and code signatures — a plain `zip` corrupts the signature. The script prints the current Gatekeeper status and the commands to publish.
+This always produces `dist/MP-OSC-<version>-macos-arm64.zip` and a matching `.sha256`. The zip is created with `ditto`, which is the only macOS archiver that reliably preserves bundle structure and code signatures — a plain `zip` corrupts the signature. The in-app updater (`src/updater.py`) matches release assets by this exact filename pattern (see `_ASSET_RE` / `_pick_release`), and skips a release entirely when no matching zip is attached — so the zip ships on every release, unconditionally, or existing installs silently stop being offered updates.
+
+When `MPOSC_CODESIGN_IDENTITY` is set, the script also produces `dist/MP-OSC-<version>-macos-arm64.dmg` and its own `.sha256` — a disk image with an `Applications` shortcut, which is what the README and Releases page point people at for a fresh install (drag-to-Applications is the flow macOS users already know). An unsigned build skips the DMG: an unsigned disk image would hit the same Gatekeeper rejection as the app inside it, and there's no notarization ticket to staple to it anyway.
+
+Building the DMG involves **two separate notarization submissions** when `MPOSC_NOTARY_PROFILE` is set, not one:
+
+1. The interim zip is submitted first, and the returned ticket is stapled directly onto `MP-OSC.app` — this is what makes the `.app` itself carry proof of notarization, not just whatever archive happens to be wrapping it.
+2. The DMG is built *from that already-stapled app*, signed, then submitted and stapled a second time, so the disk image itself also opens clean and offline.
+
+Building the DMG before stapling the app would seal a disk image whose contents don't yet carry the ticket, so the order matters. The script prints the current Gatekeeper status and the commands to publish.
 
 To publish on GitHub:
 
 ```sh
 git tag -a v<version> -m "MP-OSC v<version>"
 git push origin v<version>
-gh release create v<version> dist/MP-OSC-<version>-macos-arm64.zip dist/MP-OSC-<version>-macos-arm64.zip.sha256 \
+gh release create v<version> \
+  dist/MP-OSC-<version>-macos-arm64.dmg dist/MP-OSC-<version>-macos-arm64.dmg.sha256 \
+  dist/MP-OSC-<version>-macos-arm64.zip dist/MP-OSC-<version>-macos-arm64.zip.sha256 \
   --title "MP-OSC v<version>" --notes "..."
 ```
 
-`gh` is the GitHub CLI (`brew install gh`, then `gh auth login`). The GitHub web release form works just as well — attach the same two files. The in-app updater (`src/updater.py`) matches release assets by this exact filename pattern, so the archive name has to stay `MP-OSC-<version>-macos-arm64.zip`.
+`gh` is the GitHub CLI (`brew install gh`, then `gh auth login`). The GitHub web release form works just as well — attach the same four files (the DMG is optional if the build was unsigned). The zip's filename has to stay `MP-OSC-<version>-macos-arm64.zip` exactly, for the updater-compatibility reason above; the DMG's name isn't load-bearing the same way, but keeping it consistent (`MP-OSC-<version>-macos-arm64.dmg`) is what `.github/workflows/release.yml` expects and validates.
 
 ### Building a release on GitHub Actions
 
@@ -85,8 +96,9 @@ Start it from **Actions → Build macOS release → Run workflow**:
 | `publish` | off | Create a GitHub Release, not just a build artifact |
 | `draft` | on | When publishing, create the release as a draft |
 
-Every run uploads the zip and its checksum as a build artifact (kept 30 days),
-so `publish` is only needed when the build should become a Release.
+Every run uploads the zip (and the DMG, when the build is signed) plus their
+checksums as a build artifact (kept 30 days), so `publish` is only needed
+when the build should become a Release.
 
 The runner is `macos-15`, which is arm64. This is not optional: `ndi-python`
 publishes only arm64 macOS wheels. The workflow installs Homebrew

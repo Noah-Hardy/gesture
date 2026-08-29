@@ -32,7 +32,7 @@ If the tracking engine is running when you click Install, MP-OSC asks to stop it
 
 ## What Install and Relaunch does
 
-1. **Download** — fetches the release's zip archive from GitHub, with a progress bar showing megabytes and percent complete.
+1. **Download** — fetches the release's zip archive from GitHub, with a progress bar showing megabytes and percent complete. (Releases also publish a `.dmg` for anyone installing by hand from the Releases page — the updater itself always uses the zip.)
 2. **Verify checksum** — computes the SHA-256 of what was downloaded and compares it against the published `.sha256` file. A mismatch (a truncated or corrupted download) aborts here.
 3. **Verify signature and notarization** — unpacks the archive and checks that the new `MP-OSC.app` is signed by the *same* Developer ID as the app you're currently running, and that it passes Gatekeeper's assessment. Anything else is rejected and discarded — this is what stops a tampered or mismatched build from ever being installed, regardless of what the checksum said.
 4. **Swap** — once verified, MP-OSC quits itself; a small helper script waits for it to fully exit, moves the current `.app` aside as a backup, moves the new one into its place, and reopens it.
@@ -47,7 +47,7 @@ If the download, checksum, signature check, or swap fails at any point, the old 
 The updater only works on an installed, packaged `.app` sitting somewhere your account can write to. It explains why and offers to open the GitHub Releases page in your browser instead when:
 
 - **You're running from source** (`uv run python app.py`), not the packaged app — updates only apply to `MP-OSC.app`.
-- **MP-OSC is translocated** — macOS quarantines apps launched straight from a disk image or a Downloads folder into a temporary, read-only copy. Move `MP-OSC.app` to your **Applications** folder and reopen it from there first.
+- **MP-OSC is translocated, or still running from the `.dmg`** — opening `MP-OSC.app` straight out of the mounted disk image (instead of dragging it to Applications first), or from a Downloads folder, runs it from a temporary or read-only copy macOS controls, not the real location. MP-OSC warns about this once at launch; either way, drag `MP-OSC.app` to your **Applications** folder and reopen it from there.
 - **MP-OSC is installed somewhere your account can't write to** — for example, `/Applications` on a Mac where you're not an administrator. An administrator can move it somewhere writable, or you can download and install the new version by hand.
 
 In any of these cases, grabbing the new version manually from the project's GitHub Releases page and replacing the old `.app` works exactly the same as letting the updater do it.
