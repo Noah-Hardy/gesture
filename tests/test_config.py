@@ -278,9 +278,22 @@ def test_frozen_config_path_uses_app_support_dir(home, monkeypatch):
 
 
 def test_env_override_bool_coercion(config_path, monkeypatch):
-    monkeypatch.setenv('MP_SHOW_FPS', 'true')
+    monkeypatch.setenv('GESTURE_SHOW_FPS', 'true')
     cfg = Config(config_path)
     assert cfg.get('performance', 'show_fps') is True
+
+
+def test_env_override_accepts_pre_rename_name(config_path, monkeypatch):
+    monkeypatch.setenv('MP_CAMERA_ID', '2')
+    cfg = Config(config_path)
+    assert cfg.get('camera', 'device_id') == 2
+
+
+def test_env_override_gesture_name_wins_over_pre_rename(config_path, monkeypatch):
+    monkeypatch.setenv('GESTURE_CAMERA_ID', '3')
+    monkeypatch.setenv('MP_CAMERA_ID', '2')
+    cfg = Config(config_path)
+    assert cfg.get('camera', 'device_id') == 3
 
 
 def test_save_is_atomic_and_round_trips(config_path):
