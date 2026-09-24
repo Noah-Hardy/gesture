@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MediaPipe OSC Source Package
+Gesture Source Package
 Main package initialization and exports
 """
 

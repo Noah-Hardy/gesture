@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Settings Window / Launcher GUI Module
-Plain tkinter/ttk front-end for the MediaPipe OSC tracking engine
+Plain tkinter/ttk front-end for the Gesture tracking engine
 
 The GUI does NOT run MediaPipe in-process: on macOS both tkinter's mainloop
 and cv2.imshow require the process main thread. Instead the form is turned
@@ -105,7 +105,7 @@ class LauncherGui:
         self.settings_window = None           # type: Optional[SettingsWindow]
         self.update_dialog = None             # type: Optional[UpdateDialog]
 
-        root.title("MediaPipe OSC Launcher")
+        root.title("Gesture")
         root.minsize(560, 520)
 
         theme.apply_theme(root)
@@ -140,7 +140,7 @@ class LauncherGui:
         except Exception:
             return
         if message:
-            messagebox.showwarning("Move MP-OSC to Applications", message)
+            messagebox.showwarning("Move Gesture to Applications", message)
 
     # ------------------------------------------------------------------------
     # Form state
@@ -475,10 +475,10 @@ class LauncherGui:
         help_menu.add_command(label="Check for Updates…",
                               command=lambda: self._check_for_updates(manual=True))
         help_menu.add_separator()
-        # No "MP-OSC Help" add_command here: registering tk::mac::ShowHelp in
+        # No "Gesture Help" add_command here: registering tk::mac::ShowHelp in
         # _wire_app_menu already makes Aqua Tk auto-insert that exact item
         # (with the standard Command-? accelerator) into this name='help'
-        # menu. Adding one by hand duplicated it - two "MP-OSC Help" entries
+        # menu. Adding one by hand duplicated it - two "Gesture Help" entries
         # doing the same thing.
         help_menu.add_command(label="Open Full Documentation in Browser",
                               command=self._open_full_docs)
@@ -564,15 +564,16 @@ class LauncherGui:
             self._append_log("⚠️  Failed to reveal config: {}".format(e))
 
     def _show_about(self) -> None:
-        """App > About MP-OSC"""
+        """App > About Gesture"""
         version = docs.app_version()
-        title = "MP-OSC {}".format(version).strip() if version else "MP-OSC"
+        title = "Gesture {}".format(version).strip() if version else "Gesture"
         messagebox.showinfo(
             parent=self.root,
-            title="About MP-OSC",
+            title="About Gesture",
             message=title,
-            detail="MediaPipe pose and hand tracking, streamed over OSC.\n\n"
-                   "https://github.com/Noah-Hardy/mp-osc",
+            detail="MediaPipe pose and hand tracking, streamed over OSC.\n"
+                   "Formerly MP-OSC.\n\n"
+                   "https://github.com/Noah-Hardy/gesture",
         )
 
     def _show_preferences(self) -> None:
@@ -623,7 +624,7 @@ class LauncherGui:
     def _open_github(self) -> None:
         """Help > Project on GitHub"""
         try:
-            webbrowser.open('https://github.com/Noah-Hardy/mp-osc')
+            webbrowser.open('https://github.com/Noah-Hardy/gesture')
         except Exception as e:
             self._append_log("⚠️  Failed to open GitHub: {}".format(e))
 
@@ -666,7 +667,7 @@ class LauncherGui:
 
         if kind == 'available':
             release = payload.get('release')
-            self._set_status("⬆️  MP-OSC {} is available".format(release.version))
+            self._set_status("⬆️  Gesture {} is available".format(release.version))
             self._open_update_dialog(release)
             return
 
@@ -710,7 +711,7 @@ class LauncherGui:
         if self.is_running():
             if not messagebox.askyesno(
                     "Stop Engine and Install?",
-                    "MP-OSC needs to stop the tracking engine to install this update. "
+                    "Gesture needs to stop the tracking engine to install this update. "
                     "Stop it now?",
                     parent=self.root):
                 return
@@ -946,7 +947,9 @@ class LauncherGui:
         env = os.environ.copy()
         env['PYTHONUNBUFFERED'] = '1'
         # Tells the engine to run as a macOS accessory app so its preview
-        # window doesn't add a second Dock icon (see src.macos_app).
+        # window doesn't add a second Dock icon (see src.macos_app). The
+        # pre-rename name is set too, for an engine that predates GESTURE_*.
+        env['GESTURE_LAUNCHED_FROM_GUI'] = '1'
         env['MPOSC_LAUNCHED_FROM_GUI'] = '1'
 
         # From source, run the child in the repo root so it resolves the same

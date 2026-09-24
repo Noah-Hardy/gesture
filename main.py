@@ -10,7 +10,6 @@ Main entry point for pose tracking with network streaming
 import cv2
 import argparse
 import gc
-import os
 import platform
 import sys
 import time
@@ -21,6 +20,7 @@ from src import ThreadedOSCSender, TasksPoseProcessor, LegacyPoseProcessor, get_
 from src import TasksHandProcessor, LegacyHandProcessor
 from src import TasksHolisticProcessor
 from src import NDICapture, list_ndi_sources, NDI_AVAILABLE
+from src.config import getenv
 from src.runtime import FrameClock, ParentWatch, ReconnectingCapture, install_sigterm_handler
 
 
@@ -52,7 +52,7 @@ EXIT_CRASH = 3             # Unhandled exception inside the processing loop
 # empty (config default is never empty, so that's a manually-edited config
 # only) - kept unambiguous rather than mode-specific so it never regresses
 # to a name that sounds like the OSC output (see issue #60).
-DEFAULT_WINDOW_TITLE = "MP-OSC Preview — not the OSC output"
+DEFAULT_WINDOW_TITLE = "Gesture Preview — not the OSC output"
 
 
 # ============================================================================
@@ -473,7 +473,7 @@ def run(args, config):
     # their first cv2.waitKey() following the first cv2.imshow(). Lazily
     # imported and gated the same way as set_accessory_policy() so CLI/
     # non-GUI runs never touch libobjc.
-    launched_from_gui = bool(os.environ.get('MPOSC_LAUNCHED_FROM_GUI'))
+    launched_from_gui = bool(getenv('GESTURE_LAUNCHED_FROM_GUI', 'MPOSC_LAUNCHED_FROM_GUI'))
     reassert_dock_policy = None
     if launched_from_gui:
         from src.macos_app import reassert_accessory_policy
@@ -905,7 +905,7 @@ def main(argv=None):
 
     # When the launcher spawns us, drop out of the Dock before any window
     # exists so the engine doesn't get a second identical Dock tile.
-    if os.environ.get('MPOSC_LAUNCHED_FROM_GUI'):
+    if getenv('GESTURE_LAUNCHED_FROM_GUI', 'MPOSC_LAUNCHED_FROM_GUI'):
         from src.macos_app import set_accessory_policy
         set_accessory_policy()
 

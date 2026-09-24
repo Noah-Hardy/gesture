@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-from src.config import Config, get_config
+from src.config import Config, app_support_dir, default_config_path, get_config, getenv
 
 
 @pytest.fixture
@@ -138,10 +138,122 @@ def test_corrupt_json_falls_back_to_defaults(config_path):
 
 
 def test_env_override_applies_and_coerces_type(config_path, monkeypatch):
-    monkeypatch.setenv('MP_OSC_PORT', '5555')
+    monkeypatch.delenv('MP_OSC_PORT', raising=False)
+    monkeypatch.setenv('GESTURE_OSC_PORT', '5555')
     cfg = Config(config_path)
     assert cfg.get('osc', 'port') == 5555
     assert isinstance(cfg.get('osc', 'port'), int)
+
+
+def test_legacy_env_name_still_works(config_path, monkeypatch):
+    monkeypatch.delenv('GESTURE_OSC_PORT', raising=False)
+    monkeypatch.setenv('MP_OSC_PORT', '5556')
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'port') == 5556
+
+
+def test_gesture_env_name_wins_over_legacy(config_path, monkeypatch):
+    monkeypatch.setenv('GESTURE_OSC_HOST', '10.0.0.2')
+    monkeypatch.setenv('MP_OSC_HOST', '10.0.0.1')
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'host') == '10.0.0.2'
+
+
+def test_getenv_order_and_default(monkeypatch):
+    monkeypatch.delenv('GESTURE_X', raising=False)
+    monkeypatch.delenv('MPOSC_X', raising=False)
+    assert getenv('GESTURE_X', 'MPOSC_X', default='d') == 'd'
+    monkeypatch.setenv('MPOSC_X', 'legacy')
+    assert getenv('GESTURE_X', 'MPOSC_X') == 'legacy'
+    monkeypatch.setenv('GESTURE_X', 'new')
+    assert getenv('GESTURE_X', 'MPOSC_X') == 'new'
+
+
+def test_previous_default_window_title_is_retitled(config_path):
+    with open(config_path, 'w') as f:
+        json.dump({'display': {'window_title': 'MP-OSC Preview — not the OSC output'}}, f)
+    cfg = Config(config_path)
+    assert cfg.get('display', 'window_title') == Config.DEFAULT_CONFIG['display']['window_title']
+    assert cfg.get('display', 'window_title').startswith('Gesture')
+
+
+# ----------------------------------------------------------------------------
+# app_support_dir: the one-time mp-osc -> Gesture data folder migration
+# ----------------------------------------------------------------------------
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    monkeypatch.setenv('HOME', str(tmp_path))
+    support = tmp_path / 'Library' / 'Application Support'
+    support.mkdir(parents=True)
+    return support
+
+
+def test_app_support_dir_fresh_install(home):
+    path = app_support_dir()
+    assert path == str(home / 'Gesture')
+    assert os.path.isdir(path)
+    assert not (home / 'mp-osc').exists()
+
+
+def test_app_support_dir_migrates_the_old_folder(home):
+    old = home / 'mp-osc'
+    (old / 'models').mkdir(parents=True)
+    (old / 'config.json').write_text('{"osc": {"port": 4321}}')
+
+    path = app_support_dir()
+    assert path == str(home / 'Gesture')
+    assert not old.exists()
+    assert (home / 'Gesture' / 'config.json').read_text() == '{"osc": {"port": 4321}}'
+    assert (home / 'Gesture' / 'models').is_dir()
+
+    # Idempotent: a second call finds the migrated folder and leaves it be
+    assert app_support_dir() == path
+
+
+def test_app_support_dir_keeps_gesture_when_both_exist(home):
+    (home / 'mp-osc').mkdir()
+    (home / 'mp-osc' / 'config.json').write_text('old')
+    (home / 'Gesture').mkdir()
+    (home / 'Gesture' / 'config.json').write_text('new')
+
+    assert app_support_dir() == str(home / 'Gesture')
+    # Never merged or overwritten
+    assert (home / 'Gesture' / 'config.json').read_text() == 'new'
+    assert (home / 'mp-osc' / 'config.json').read_text() == 'old'
+
+
+def test_app_support_dir_falls_back_to_the_old_folder_when_rename_fails(home, monkeypatch):
+    import src.config as config_module
+    (home / 'mp-osc').mkdir()
+
+    def failing_rename(src, dst):
+        raise PermissionError('nope')
+
+    monkeypatch.setattr(config_module.os, 'rename', failing_rename)
+    assert app_support_dir() == str(home / 'mp-osc')
+    assert not (home / 'Gesture').exists()
+
+
+def test_app_support_dir_tolerates_losing_the_rename_race(home, monkeypatch):
+    # The launcher and the engine it spawned both try to migrate; the
+    # loser's rename fails because the winner already moved the folder
+    import src.config as config_module
+    (home / 'mp-osc').mkdir()
+    real_rename = os.rename
+
+    def racing_rename(src, dst):
+        real_rename(src, dst)          # the other process wins...
+        raise FileNotFoundError(src)   # ...and ours finds nothing to move
+
+    monkeypatch.setattr(config_module.os, 'rename', racing_rename)
+    assert app_support_dir() == str(home / 'Gesture')
+
+
+def test_frozen_config_path_uses_app_support_dir(home, monkeypatch):
+    import src.config as config_module
+    monkeypatch.setattr(config_module.sys, 'frozen', True, raising=False)
+    assert default_config_path() == str(home / 'Gesture' / 'config.json')
 
 
 def test_env_override_bool_coercion(config_path, monkeypatch):

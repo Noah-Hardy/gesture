@@ -52,7 +52,7 @@ class UpdateDialog:
         self.release = release
 
         self.top = tk.Toplevel(parent)
-        self.top.title(f"MP-OSC {release.version} Available")
+        self.top.title(f"Gesture {release.version} Available")
         self.top.minsize(560, 420)
         self.top.geometry("620x480")
         self.top.configure(bg=theme.PALETTE['bg'])
@@ -168,7 +168,7 @@ class UpdateDialog:
     # Release notes (state 1)
     # ------------------------------------------------------------------------
     def _render_notes(self, release: Release) -> None:
-        self.header.configure(text=f"MP-OSC {release.version} is available")
+        self.header.configure(text=f"Gesture {release.version} is available")
         body = release.notes.strip() or "No release notes were provided."
         blocks = docs.parse(body)
         plan = docs.render_tk(blocks, width_chars=TABLE_WIDTH)
@@ -184,7 +184,7 @@ class UpdateDialog:
 
         running = current_version()
         if running:
-            self.status_var.set(f"You're running MP-OSC {running}.")
+            self.status_var.set(f"You're running Gesture {running}.")
         else:
             self.status_var.set("You're running an older version.")
 
@@ -234,7 +234,7 @@ class UpdateDialog:
         if self._busy:
             return
         self._busy = True
-        self.header.configure(text=f"MP-OSC {self.release.version}")
+        self.header.configure(text=f"Gesture {self.release.version}")
         self.progress.grid(row=2, column=0, sticky='ew', pady=(8, 0))
         for child in self.button_bar.winfo_children():
             child.destroy()
@@ -250,7 +250,7 @@ class UpdateDialog:
             self.progress.stop()
         except tk.TclError:
             pass
-        self.status_var.set("Installing and relaunching MP-OSC…")
+        self.status_var.set("Installing and relaunching Gesture…")
         for child in self.button_bar.winfo_children():
             child.destroy()
 

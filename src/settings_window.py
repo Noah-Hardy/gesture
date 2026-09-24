@@ -2,7 +2,7 @@
 """
 Settings Window Module
 
-The tabbed preferences window reachable from mp-osc -> Settings... (Command-,)
+The tabbed preferences window reachable from Gesture -> Settings... (Command-,)
 and from the Help/File menus' existing config shortcuts. Everything the
 launcher's collapsible "Model & Performance" section doesn't expose day to
 day lives here instead: tracking thresholds, preview styling, performance
@@ -66,7 +66,7 @@ class SettingsWindow:
         self.var_show_fps = var_show_fps
 
         self.top = tk.Toplevel(parent)
-        self.top.title("MP-OSC Settings")
+        self.top.title("Gesture Settings")
         self.top.configure(bg=theme.PALETTE['bg'])
         self.top.protocol("WM_DELETE_WINDOW", self.destroy)
         self.top.bind('<Escape>', lambda e: self.destroy())

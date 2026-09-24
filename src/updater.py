@@ -2,7 +2,7 @@
 """
 Self-Updater Module
 
-Checks GitHub Releases for a newer MP-OSC build, and - if the user chooses to
+Checks GitHub Releases for a newer Gesture build, and - if the user chooses to
 install it - downloads, verifies and swaps the running .app bundle for the
 new one before relaunching.
 
@@ -40,6 +40,7 @@ import urllib.request
 from typing import Callable, NamedTuple, Optional
 
 from src import docs
+from src.config import app_support_dir, getenv
 from src.net import ssl_context
 
 # ============================================================================
@@ -51,8 +52,15 @@ from src.net import ssl_context
 # mp-osc repo is ever re-created, so don't rely on it alone.
 DEFAULT_REPOS = ["Noah-Hardy/gesture", "Noah-Hardy/mp-osc"]
 GITHUB_API = "https://api.github.com"
-USER_AGENT = "MP-OSC-Updater"
+USER_AGENT = "Gesture-Updater"
+# Unchanged by the MP-OSC -> Gesture rename, on purpose: 0.2.1's updater
+# verifies a downloaded update against exactly this identifier, so changing
+# it would make every future release uninstallable from 0.2.1.
 BUNDLE_ID = "net.hardymail.mp-osc"
+
+# The app bundle's name before and after the rename. See _install_destination.
+APP_NAME = "Gesture.app"
+LEGACY_APP_NAME = "MP-OSC.app"
 
 # The optional 4th component is for hotfix releases (e.g. 0.1.5.1).
 # MP-OSC- is the pre-rename asset name, Gesture- the post-rename one.
@@ -108,7 +116,7 @@ class StagedUpdate(NamedTuple):
 # ============================================================================
 def current_version() -> str:
     """The running app's version. Empty string if it can't be determined."""
-    override = os.environ.get('MPOSC_UPDATE_FAKE_VERSION')
+    override = getenv('GESTURE_UPDATE_FAKE_VERSION', 'MPOSC_UPDATE_FAKE_VERSION')
     if override:
         return override
     return docs.app_version()
@@ -145,12 +153,12 @@ def compare_versions(a: str, b: str) -> Optional[int]:
 # BUNDLE / FILESYSTEM PATHS
 # ============================================================================
 def bundle_path() -> Optional[str]:
-    """The running MP-OSC.app directory, or None when not running frozen"""
+    """The running Gesture.app (or MP-OSC.app) directory, or None when not running frozen"""
     if not getattr(sys, 'frozen', False):
         return None
     exe = os.path.realpath(sys.executable)
-    contents = os.path.dirname(os.path.dirname(exe))     # .../MP-OSC.app/Contents
-    app = os.path.dirname(contents)                       # .../MP-OSC.app
+    contents = os.path.dirname(os.path.dirname(exe))     # .../Gesture.app/Contents
+    app = os.path.dirname(contents)                       # .../Gesture.app
     if app.endswith('.app') and os.path.isfile(os.path.join(contents, 'Info.plist')):
         return app
     return None
@@ -158,7 +166,7 @@ def bundle_path() -> Optional[str]:
 
 def _updates_dir() -> str:
     """Writable staging area for downloaded archives, logs and helper scripts"""
-    return os.path.join(os.path.expanduser('~/Library/Application Support'), 'mp-osc', 'updates')
+    return os.path.join(app_support_dir(), 'updates')
 
 
 def _install_log_path() -> str:
@@ -182,7 +190,7 @@ def preflight(min_free_bytes: int = 0) -> Preflight:
     if '/AppTranslocation/' in real:
         return Preflight(
             False, 'translocated',
-            "MP-OSC is running from a temporary, read-only copy. Move MP-OSC.app to your "
+            "Gesture is running from a temporary, read-only copy. Move Gesture.app to your "
             "Applications folder and reopen it, then try again.",
             app,
         )
@@ -193,14 +201,14 @@ def preflight(min_free_bytes: int = 0) -> Preflight:
         st = os.statvfs(parent)
         if st.f_flag & os.ST_RDONLY:
             return Preflight(False, 'read_only_volume',
-                             "MP-OSC is running from a read-only disk image.", app)
+                             "Gesture is running from a read-only disk image.", app)
     except OSError:
         pass
 
     if not os.access(parent, os.W_OK):
         return Preflight(
             False, 'not_writable',
-            f"{parent} is not writable by your account. An administrator can move MP-OSC.app "
+            f"{parent} is not writable by your account. An administrator can move Gesture.app "
             "to a writable location, or you can update it manually.",
             app,
         )
@@ -218,24 +226,24 @@ def preflight(min_free_bytes: int = 0) -> Preflight:
     return Preflight(True, 'ok', '', app)
 
 
-# Preflight codes that mean "MP-OSC is not sitting somewhere it should run
+# Preflight codes that mean "Gesture is not sitting somewhere it should run
 # from long-term" - install_location_warning() below reuses preflight()'s
 # own detection rather than re-implementing it, but rewords the message for
 # someone who just opened the app for the first time rather than someone
 # who clicked Install on an update.
 _BAD_INSTALL_LOCATIONS = {
     'translocated': (
-        "MP-OSC is running from the disk image it was downloaded on, or a temporary "
-        "copy of it. Drag MP-OSC to your Applications folder and open it from there."
+        "Gesture is running from the disk image it was downloaded on, or a temporary "
+        "copy of it. Drag Gesture to your Applications folder and open it from there."
     ),
     'read_only_volume': (
-        "MP-OSC is running from a read-only disk image. Drag MP-OSC to your "
+        "Gesture is running from a read-only disk image. Drag Gesture to your "
         "Applications folder and open it from there."
     ),
     'not_writable': (
-        "MP-OSC is installed somewhere your account can't write to, so it won't be able "
+        "Gesture is installed somewhere your account can't write to, so it won't be able "
         "to install updates. An administrator can fix the folder's permissions, or move "
-        "MP-OSC somewhere your account can write to."
+        "Gesture somewhere your account can write to."
     ),
 }
 
@@ -261,7 +269,10 @@ def cleanup_stale() -> None:
         parent = os.path.dirname(app)
         for prefix in ('.MP-OSC-update-*', '.Gesture-update-*'):
             _sweep_glob(os.path.join(parent, prefix), max_age_seconds=86400, is_dir=True)
-        _sweep_glob(app + '.old-*', max_age_seconds=86400, is_dir=True)
+        # Backups are named after the bundle they replaced, which is still
+        # MP-OSC.app for the update that renamed it to Gesture.app
+        for name in {LEGACY_APP_NAME, APP_NAME, os.path.basename(app)}:
+            _sweep_glob(os.path.join(parent, name + '.old-*'), max_age_seconds=86400, is_dir=True)
 
     updates_dir = _updates_dir()
     if os.path.isdir(updates_dir):
@@ -310,7 +321,7 @@ def last_install_failed() -> Optional[bool]:
 # RELEASE DISCOVERY
 # ============================================================================
 def _repos() -> list:
-    env_repo = os.environ.get('MPOSC_UPDATE_REPO', '')
+    env_repo = getenv('GESTURE_UPDATE_REPO', 'MPOSC_UPDATE_REPO', default='')
     return [env_repo] if env_repo else list(DEFAULT_REPOS)
 
 
@@ -531,7 +542,7 @@ def download_and_install(release: Release, progress_cb: Callable[[dict], None],
     os.replace(part_path, zip_path)
 
     progress_cb({'kind': 'verifying', 'phase': 'extract'})
-    extract_dir = os.path.join(os.path.dirname(pf.app_path), f'.MP-OSC-update-{os.getpid()}')
+    extract_dir = os.path.join(os.path.dirname(pf.app_path), f'.Gesture-update-{os.getpid()}')
     shutil.rmtree(extract_dir, ignore_errors=True)
     os.makedirs(extract_dir, exist_ok=True)
     try:
@@ -557,13 +568,15 @@ def download_and_install(release: Release, progress_cb: Callable[[dict], None],
         raise
 
     install_log = _install_log_path()
+    dest_app = _install_destination(pf.app_path)
     try:
-        script_path = _write_install_script(updates_dir, staged_app, pf.app_path, extract_dir, zip_path)
+        script_path = _write_install_script(updates_dir, staged_app, pf.app_path, extract_dir, zip_path,
+                                            dest_app=dest_app)
     except OSError as e:
         shutil.rmtree(extract_dir, ignore_errors=True)
         raise UpdateError(f"Couldn't prepare the installer: {e}") from e
 
-    return StagedUpdate(script_path=script_path, install_log=install_log, target_app=pf.app_path)
+    return StagedUpdate(script_path=script_path, install_log=install_log, target_app=dest_app)
 
 
 def _fetch_expected_sha256(sha_url: str) -> str:
@@ -571,7 +584,7 @@ def _fetch_expected_sha256(sha_url: str) -> str:
     Fetch the published .sha256 asset and return its checksum, tolerating
     both a bare filename and a path-prefixed one (scripts/release.sh runs
     shasum from the repo root, so the published file may read
-    "<hash>  dist/MP-OSC-<version>-macos-arm64.zip").
+    "<hash>  dist/Gesture-<version>-macos-arm64.zip").
     """
     req = urllib.request.Request(sha_url, headers={'User-Agent': USER_AGENT})
     with urllib.request.urlopen(req, timeout=15, context=ssl_context()) as resp:
@@ -654,15 +667,45 @@ def _verify_staged_app(staged_app: str, expected_version: str, running_app_path:
 # Swap helper - a detached shell script, since this process cannot delete
 # the bundle it is running out of and survive.
 # ----------------------------------------------------------------------------
+def _install_destination(target_app: str) -> str:
+    """
+    Where the new bundle should land: normally in place of the running one,
+    but a pre-rename MP-OSC.app becomes Gesture.app.
+
+    The rename rides along with an ordinary update swap because that's the
+    one moment the old bundle is being replaced anyway. It only happens when
+    nothing called Gesture.app already sits next to it - a user who has
+    both keeps both, and this update replaces the MP-OSC.app it ran from.
+    The install script re-checks just before the move.
+    """
+    parent, name = os.path.split(target_app)
+    if name == LEGACY_APP_NAME:
+        renamed = os.path.join(parent, APP_NAME)
+        if not os.path.lexists(renamed):
+            return renamed
+    return target_app
+
+
 def _write_install_script(updates_dir: str, staged_app: str, target_app: str,
-                          extract_dir: str, zip_path: str) -> str:
+                          extract_dir: str, zip_path: str, dest_app: Optional[str] = None) -> str:
+    """
+    Write the swap-and-relaunch script
+
+    Args:
+        target_app: The running bundle, moved aside and deleted on success
+        dest_app: Where the new bundle goes (default: target_app) - see
+            _install_destination. The old bundle is restored to target_app
+            if the new one can't be put in place.
+    """
+    dest_app = dest_app or target_app
     script_path = os.path.join(updates_dir, f'install-{os.getpid()}.sh')
     script = f"""#!/bin/sh
-# Generated by src/updater.py - swaps in a downloaded, verified MP-OSC.app
+# Generated by src/updater.py - swaps in a downloaded, verified Gesture.app
 # once the running process (PID passed as $1) has exited.
 set -u
 PID="$1"
 TARGET={shlex.quote(target_app)}
+DEST={shlex.quote(dest_app)}
 STAGED={shlex.quote(staged_app)}
 EXTRACT_DIR={shlex.quote(extract_dir)}
 ZIP={shlex.quote(zip_path)}
@@ -678,25 +721,32 @@ while kill -0 "$PID" 2>/dev/null; do
     sleep 0.2
 done
 
+# MP-OSC.app -> Gesture.app rename: only if nothing took that name since
+# the update was staged; otherwise replace the running bundle in place
+if [ "$DEST" != "$TARGET" ] && [ -e "$DEST" -o -L "$DEST" ]; then
+    echo "install: $DEST already exists, updating $TARGET in place"
+    DEST="$TARGET"
+fi
+
 BACKUP="$TARGET.old-$$"
 if ! mv "$TARGET" "$BACKUP"; then
     echo "install: failed to move aside the old bundle" >&2
     exit 4
 fi
 
-if ! mv "$STAGED" "$TARGET" 2>/dev/null; then
-    if ! /usr/bin/ditto "$STAGED" "$TARGET" 2>/dev/null; then
+if ! mv "$STAGED" "$DEST" 2>/dev/null; then
+    if ! /usr/bin/ditto "$STAGED" "$DEST" 2>/dev/null; then
         echo "install: failed to install the new bundle, restoring the old one" >&2
-        rm -rf "$TARGET"
+        rm -rf "$DEST"
         mv "$BACKUP" "$TARGET"
         exit 5
     fi
 fi
 
-/usr/bin/xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null
+/usr/bin/xattr -dr com.apple.quarantine "$DEST" 2>/dev/null
 rm -rf "$BACKUP"
-touch "$TARGET"
-/usr/bin/open "$TARGET"
+touch "$DEST"
+/usr/bin/open "$DEST"
 
 rm -rf "$EXTRACT_DIR" "$ZIP" "$SELF"
 echo "install: done"
