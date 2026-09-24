@@ -156,9 +156,33 @@ def test_json_applies_letterbox_transform_to_normalized_only():
     legacy = dict(LegacyFormatter().pose(0.0, 0, lms, world, transform, 'pose_0'))
     new = dict(JsonFormatter().pose(0.0, 0, lms, world, transform, 'pose_0'))
     for address in ('/pose/raw', '/pose/world'):
-        old_pts = [(d['x'], d['y'], d['z'], d['visibility']) for d in json.loads(legacy[address])['landmarks']]
-        new_pts = [(d['x'], d['y'], d['z'], d['visibility']) for d in json.loads(new[address])['landmarks']]
+        old_pts = [(d['x'], d['y'], d['z']) for d in json.loads(legacy[address])['landmarks']]
+        new_pts = [(d['x'], d['y'], d['z']) for d in json.loads(new[address])['landmarks']]
         assert old_pts == new_pts
+
+
+def test_json_world_landmarks_and_world_bounds_carry_no_visibility():
+    fmt = JsonFormatter()
+    pose = dict(fmt.pose(0.0, 0, fake_landmarks(33, 0), fake_landmarks(33, 1, world=True), None, 'pose_0'))
+    hand = dict(fmt.hand(0.0, 'Left', fake_landmarks(21, 2), fake_landmarks(21, 3, world=True), None, 'hand_0'))
+    for payload in (pose['/pose/world'], hand['/left_hand/world']):
+        entries = json.loads(payload)['landmarks']
+        assert entries and all(set(d) == {'x', 'y', 'z'} for d in entries)
+    for payload in (pose['/pose/world_bounds'], hand['/left_hand/world_bounds']):
+        extremes = {k: v for k, v in json.loads(payload).items() if k != 'person'}
+        assert extremes and all('visibility' not in v for v in extremes.values())
+    # Normalized landmarks and their bounds keep visibility
+    assert all('visibility' in d for d in json.loads(pose['/pose/raw'])['landmarks'])
+    assert all('visibility' in d for d in json.loads(hand['/left_hand/raw'])['landmarks'])
+    assert 'visibility' in json.loads(pose['/pose/raw_bounds'])['max_x']
+
+
+def test_json_pose_world_fits_one_bundle():
+    sender = CaptureSender()
+    emitter = OscEmitter(sender, 'json')
+    emitter.pose(0, fake_landmarks(33, 0), fake_landmarks(33, 1, world=True), None, 'pose_0')
+    world = [d for d in sender.dgrams if any(m.address == '/pose/world' for m in _messages(d))]
+    assert len(world) == 1 and len(world[0]) <= MAX_BUNDLE_BYTES
 
 
 def test_json_multi_person_tags_each_pose():

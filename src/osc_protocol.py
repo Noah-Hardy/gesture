@@ -335,20 +335,30 @@ class LegacyFormatter(OscFormatter):
 # ============================================================================
 # JSON FORMATTER (v2)
 # ============================================================================
-def landmarks_to_v2(landmarks, transform=None):
+def landmarks_to_v2(landmarks, transform=None, visibility=True):
     """
     JSON v2 landmark list: array index is the landmark id, so no per-landmark
-    type/id (#51); visibility only when the landmark actually carries one
+    type/id (#51); visibility only when the landmark actually carries one.
+    visibility=False drops it outright - for world landmarks, where it only
+    repeats the normalized landmark's value.
     """
     out = []
     for lm in landmarks:
         x, y, z = source_xyz(lm, transform)
         d = {"x": round(x, 3), "y": round(y, 3), "z": round(z, 3)}
-        visibility = getattr(lm, "visibility", None)
-        if visibility is not None:
-            d["visibility"] = round(visibility, 3)
+        vis = getattr(lm, "visibility", None) if visibility else None
+        if vis is not None:
+            d["visibility"] = round(vis, 3)
         out.append(d)
     return out
+
+
+def world_bounds_v2(world):
+    """Bounds of world landmarks without the (redundant) visibility on each extreme"""
+    bounds = get_pose_bounds_with_values(world)
+    for extreme in bounds.values():
+        extreme.pop("visibility", None)
+    return bounds
 
 
 @register_formatter
@@ -357,7 +367,9 @@ class JsonFormatter(OscFormatter):
     JSON v2 on the same data addresses as legacy. Pose payloads and pose
     bounds carry a top-level "person" index in place of the pose_0/pose_1
     type strings. Bounds keep their "id" - there it names which landmark is
-    the extreme, which the array position can't tell you.
+    the extreme, which the array position can't tell you. World landmarks
+    and world bounds carry no visibility: it duplicates the normalized
+    landmark's, and dropping it keeps /pose/world inside one bundle.
     """
 
     name = "json"
@@ -370,13 +382,13 @@ class JsonFormatter(OscFormatter):
                 {"timestamp": ts, "person": person, "landmarks": landmarks_to_v2(landmarks, transform)})))
         if world:
             out.append(("/pose/world", compact_json(
-                {"timestamp": ts, "person": person, "landmarks": landmarks_to_v2(world)})))
+                {"timestamp": ts, "person": person, "landmarks": landmarks_to_v2(world, visibility=False)})))
         if landmarks:
             bounds = get_pose_bounds_with_values(landmarks, transform)
             out.append(("/pose/raw_bounds", compact_json({"person": person, **bounds})))
         if world:
             # World landmarks are already in real-world metres - no transform
-            out.append(("/pose/world_bounds", compact_json({"person": person, **get_pose_bounds_with_values(world)})))
+            out.append(("/pose/world_bounds", compact_json({"person": person, **world_bounds_v2(world)})))
         return out
 
     def pose_cleared(self, ts):
@@ -396,11 +408,11 @@ class JsonFormatter(OscFormatter):
                 {"timestamp": ts, "handedness": handedness, "landmarks": landmarks_to_v2(landmarks, transform)})))
         if world:
             out.append((f"/{prefix}/world", compact_json(
-                {"timestamp": ts, "handedness": handedness, "landmarks": landmarks_to_v2(world)})))
+                {"timestamp": ts, "handedness": handedness, "landmarks": landmarks_to_v2(world, visibility=False)})))
         if landmarks:
             out.append((f"/{prefix}/bounds", compact_json(get_pose_bounds_with_values(landmarks, transform))))
         if world:
-            out.append((f"/{prefix}/world_bounds", compact_json(get_pose_bounds_with_values(world))))
+            out.append((f"/{prefix}/world_bounds", compact_json(world_bounds_v2(world))))
         return out
 
     def hand_cleared(self, ts, handedness):
