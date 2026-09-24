@@ -36,7 +36,7 @@ If nothing arrives, double-check the host/port match your receiver, and that no 
 
 ## Save Config
 
-**Save Config** writes your Host, Port, Camera/NDI selection, pose model and FPS cap to `config.json`, so the next time you open MP-OSC these fields are already filled in. **Tracking mode is launch-only** — it applies to the run you're about to start, but is not saved. The log pane confirms this every time you save.
+MP-OSC reopens the way you last used it. Every time you click **Start**, quit, or let an update install, it saves the main window's fields to `config.json`, including the tracking mode. **Save Config** saves those fields straight away, and tells you if the port or camera ID isn't a valid number.
 
 Everything set in the **Settings** window is saved there directly, as soon as you click its own Save button — you don't need to also click the main window's Save Config for those fields.
 
