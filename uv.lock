@@ -138,6 +138,47 @@ wheels = [
 ]
 
 [[package]]
+name = "gesture"
+version = "0.2.1"
+source = { virtual = "." }
+dependencies = [
+    { name = "certifi" },
+    { name = "mediapipe" },
+    { name = "ndi-python" },
+    { name = "numpy" },
+    { name = "opencv-python" },
+    { name = "psutil" },
+    { name = "python-osc" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pyinstaller" },
+]
+lint = [
+    { name = "ruff" },
+]
+test = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "certifi", specifier = ">=2024.2.2" },
+    { name = "mediapipe", specifier = "<=0.10.21" },
+    { name = "ndi-python", specifier = ">=6.3.2" },
+    { name = "numpy", specifier = "<2" },
+    { name = "opencv-python", specifier = ">=4.10" },
+    { name = "psutil", specifier = ">=7.2.1" },
+    { name = "python-osc", specifier = ">=1.9" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pyinstaller", specifier = ">=6.0,<7" }]
+lint = [{ name = "ruff", specifier = ">=0.8" }]
+test = [{ name = "pytest", specifier = ">=8" }]
+
+[[package]]
 name = "iniconfig"
 version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -286,47 +327,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/b4/24/70bd59276883fdd91600ca20040b41efd4902a923283c4d6edcb1de128d2/ml_dtypes-0.5.4-cp311-cp311-win_amd64.whl", hash = "sha256:7c23c54a00ae43edf48d44066a7ec31e05fdc2eee0be2b8b50dd1903a1db94bb", size = 210742, upload-time = "2025-11-17T22:31:44.068Z" },
     { url = "https://files.pythonhosted.org/packages/a0/c9/64230ef14e40aa3f1cb254ef623bf812735e6bec7772848d19131111ac0d/ml_dtypes-0.5.4-cp311-cp311-win_arm64.whl", hash = "sha256:557a31a390b7e9439056644cb80ed0735a6e3e3bb09d67fd5687e4b04238d1de", size = 160709, upload-time = "2025-11-17T22:31:46.557Z" },
 ]
-
-[[package]]
-name = "mp-osc"
-version = "0.2.1"
-source = { virtual = "." }
-dependencies = [
-    { name = "certifi" },
-    { name = "mediapipe" },
-    { name = "ndi-python" },
-    { name = "numpy" },
-    { name = "opencv-python" },
-    { name = "psutil" },
-    { name = "python-osc" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pyinstaller" },
-]
-lint = [
-    { name = "ruff" },
-]
-test = [
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "certifi", specifier = ">=2024.2.2" },
-    { name = "mediapipe", specifier = "<=0.10.21" },
-    { name = "ndi-python", specifier = ">=6.3.2" },
-    { name = "numpy", specifier = "<2" },
-    { name = "opencv-python", specifier = ">=4.10" },
-    { name = "psutil", specifier = ">=7.2.1" },
-    { name = "python-osc", specifier = ">=1.9" },
-]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pyinstaller", specifier = ">=6.0,<7" }]
-lint = [{ name = "ruff", specifier = ">=0.8" }]
-test = [{ name = "pytest", specifier = ">=8" }]
 
 [[package]]
 name = "ndi-python"

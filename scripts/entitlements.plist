@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Hardened runtime entitlements, required for notarizing MP-OSC.
+  Hardened runtime entitlements, required for notarizing Gesture.
 
   Only used when building with a real Developer ID (see scripts/release.sh).
   An ad-hoc build ignores this file.

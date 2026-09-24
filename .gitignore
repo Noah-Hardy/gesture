@@ -183,8 +183,8 @@ cython_debug/
 # macOS app bundle build artifacts
 #   build/ and dist/ are already ignored under "Distribution / packaging" above.
 #   PyInstaller spec files are ignored by the generic *.spec rule above, but
-#   mp-osc.spec is hand-written source and must stay tracked.
-!mp-osc.spec
+#   gesture.spec is hand-written source and must stay tracked.
+!gesture.spec
 
 # Icon generator scratch (scripts/make_icon.py --keep-iconset)
 assets/*.iconset/
