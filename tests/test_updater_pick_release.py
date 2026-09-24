@@ -86,3 +86,15 @@ def test_ignores_non_dict_entries():
     releases = [None, 'garbage', _release('v0.1.6')]
     picked = _pick_release(releases, include_prereleases=True)
     assert picked.tag == 'v0.1.6'
+
+
+def test_accepts_post_rename_gesture_asset():
+    releases = [_release('v0.3.0', asset_name='Gesture-0.3.0-macos-arm64.zip')]
+    picked = _pick_release(releases, include_prereleases=True)
+    assert picked.zip_name == 'Gesture-0.3.0-macos-arm64.zip'
+
+
+def test_picks_newest_across_mp_osc_and_gesture_asset_names():
+    releases = [_release('v0.2.1'), _release('v0.3.0', asset_name='Gesture-0.3.0-macos-arm64.zip')]
+    picked = _pick_release(releases, include_prereleases=True)
+    assert picked.tag == 'v0.3.0'
