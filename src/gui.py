@@ -571,8 +571,7 @@ class LauncherGui:
             parent=self.root,
             title="About Gesture",
             message=title,
-            detail="MediaPipe pose and hand tracking, streamed over OSC.\n"
-                   "Formerly MP-OSC.\n\n"
+            detail="MediaPipe pose and hand tracking, streamed over OSC.\n\n"
                    "https://github.com/Noah-Hardy/gesture",
         )
 

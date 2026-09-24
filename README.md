@@ -1,6 +1,6 @@
 # Gesture
 
-Gesture (formerly MP-OSC) watches a camera or an [NDI](https://ndi.video/) video feed, detects a person's body pose and hand positions in real time with [MediaPipe](https://developers.google.com/mediapipe), and streams the result over [OSC (Open Sound Control)](https://opensoundcontrol.stanford.edu/) to any address on your network. Anything that can receive OSC — TouchDesigner, Max/MSP, Unity, Unreal, Resolume, Ableton — can subscribe to that stream and react to where a person's body and hands are, live.
+Gesture watches a camera or an [NDI](https://ndi.video/) video feed, detects a person's body pose and hand positions in real time with [MediaPipe](https://developers.google.com/mediapipe), and streams the result over [OSC (Open Sound Control)](https://opensoundcontrol.stanford.edu/) to any address on your network. Anything that can receive OSC — TouchDesigner, Max/MSP, Unity, Unreal, Resolume, Ableton — can subscribe to that stream and react to where a person's body and hands are, live.
 
 ## Overview
 
@@ -15,15 +15,11 @@ Gesture (formerly MP-OSC) watches a camera or an [NDI](https://ndi.video/) video
 
 Grab the latest release from the [Releases page](https://github.com/Noah-Hardy/gesture/releases).
 
-Gesture requires an **Apple Silicon Mac running macOS 13 or later**. Intel Macs aren't supported — the NDI library Gesture depends on (`ndi-python`) doesn't publish x86_64 wheels for macOS, so there's no way to build an Intel-compatible bundle.
+Requires an **Apple Silicon Mac running macOS 13 or later**.
 
 ## Install
 
-Open the downloaded `.dmg`, then drag `Gesture.app` into the **Applications** shortcut inside it. Open Gesture from your Applications folder, not from inside the disk image — it works fine there, but the copy on the disk image is read-only, so the in-app updater can't install into it.
-
-Gesture is signed with a Developer ID and notarized by Apple, so it opens with no Gatekeeper warning and no Terminal step.
-
-**Upgrading from 0.2.x?** Let the in-app updater do it. Your settings move from `~/Library/Application Support/mp-osc` to `~/Library/Application Support/Gesture` automatically on first launch, and OSC output doesn't change unless you choose a new format. An install updated from 0.2.1 keeps its old app name for one update and becomes `Gesture.app` on the update after that.
+Open the downloaded `.dmg` and drag `Gesture.app` into **Applications**. It's signed and notarized, so it opens with no Gatekeeper warning.
 
 ## Quick Start
 
@@ -32,7 +28,7 @@ Gesture is signed with a Developer ID and notarized by Apple, so it opens with n
 3. Under **Input**, choose **Camera** or **NDI** and pick a source.
 4. Click **Start**.
 
-A preview window, titled "Gesture Preview — not the OSC output", opens showing the camera feed with detected landmarks drawn over it, and the launcher's log pane fills with startup and status messages. The preview is for your own confirmation only — it isn't what gets sent over OSC. See the in-app **Quick Start** guide (Help menu) for the full walkthrough, including a tour of the Settings window.
+A preview window shows the camera feed with detected landmarks drawn over it. See the in-app **Quick Start** guide (Help menu) for the full walkthrough.
 
 **Tracking mode** decides what gets tracked and sent:
 
@@ -44,7 +40,7 @@ A preview window, titled "Gesture Preview — not the OSC output", opens showing
 
 ## Updating
 
-Gesture checks GitHub for a newer release a few seconds after it opens, and stays silent if you're already current. When a newer version is available, it offers to download it, verify its checksum and code signature, and swap itself in before relaunching automatically — no manual download required, and no partial or broken state if any step fails along the way. See the in-app **Updates** guide for the full flow and what to do if Gesture can't self-update on your machine (e.g. it's still sitting in Downloads).
+Gesture checks for a newer release when it opens and offers to install it and relaunch. See the in-app **Updates** guide for details.
 
 ## What It Sends
 
@@ -56,7 +52,7 @@ Pose, left-hand and right-hand landmarks each get their own OSC addresses, in on
 | `json` | `/pose/raw` with a leaner JSON string (a `person` index, no per-landmark `type`/`id`), sent in OSC bundles |
 | `float` | `/pose/lm/0` … `/pose/lm/32`, each with four float arguments `x y z visibility`, sent in OSC bundles |
 
-`legacy` stays the default for all of 0.3.x, so existing patches keep working untouched; 0.4.0 moves the default to the new format. Every format also sends:
+Every format also sends:
 
 - **World landmarks**: real-world-scale coordinates in metres, alongside the normalized image-space ones.
 - **Bounds**: the extremes of each detection on every axis.

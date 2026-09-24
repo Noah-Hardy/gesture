@@ -1,6 +1,6 @@
 # Welcome
 
-Gesture (formerly MP-OSC) watches a camera or an NDI video feed, detects a person's body pose and hand positions with MediaPipe, and streams the result out as [OSC](https://en.wikipedia.org/wiki/Open_Sound_Control) messages on your local network. Anything that can receive OSC — TouchDesigner, Max/MSP, Unity, Unreal, Resolume, Ableton — can subscribe to that stream and react to where a person's body and hands are, live.
+Gesture watches a camera or an NDI video feed, detects a person's body pose and hand positions with MediaPipe, and streams the result out as [OSC](https://en.wikipedia.org/wiki/Open_Sound_Control) messages on your local network. Anything that can receive OSC — TouchDesigner, Max/MSP, Unity, Unreal, Resolume, Ableton — can subscribe to that stream and react to where a person's body and hands are, live.
 
 This guide is written for the app you're looking at: the launcher window, its checkboxes, and the data it sends. If you're comfortable with the command line and want to run the engine directly or build the app from source, see the **Appendix** at the end.
 
