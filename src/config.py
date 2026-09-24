@@ -29,6 +29,17 @@ def default_config_path() -> str:
 
 
 # ============================================================================
+# OSC PROTOCOLS
+# ============================================================================
+# Valid osc.protocol values (see src/osc_protocol.py). legacy is the frozen
+# 0.2.x wire format and stays the default until 0.4.0; json and float are
+# opt-in. Lives here, not in osc_protocol, so the settings UI and argument
+# parsing can list them without importing python-osc/cv2.
+OSC_PROTOCOLS = ("legacy", "json", "float")
+DEFAULT_OSC_PROTOCOL = "legacy"
+
+
+# ============================================================================
 # CONFIGURATION CLASS
 # ============================================================================
 class Config:
@@ -58,7 +69,8 @@ class Config:
         "osc": {
             "host": "127.0.0.1",
             "port": 1234,
-            "queue_size": MIN_OSC_QUEUE_SIZE
+            "queue_size": MIN_OSC_QUEUE_SIZE,
+            "protocol": DEFAULT_OSC_PROTOCOL  # legacy (0.2.x format), json or float
         },
         "camera": {
             "device_id": 0,
@@ -193,6 +205,12 @@ class Config:
         except (TypeError, ValueError):
             queue_size = self.MIN_OSC_QUEUE_SIZE
         config['osc']['queue_size'] = max(self.MIN_OSC_QUEUE_SIZE, queue_size)
+
+        # An unknown osc.protocol (typo, or a value from a newer build)
+        # falls back to the default rather than failing at engine start.
+        protocol = config['osc'].get('protocol', DEFAULT_OSC_PROTOCOL)
+        protocol = protocol.strip().lower() if isinstance(protocol, str) else ''
+        config['osc']['protocol'] = protocol if protocol in OSC_PROTOCOLS else DEFAULT_OSC_PROTOCOL
 
         # A saved window_title exactly matching a previous release's
         # default is a config that never customized it - pick up the

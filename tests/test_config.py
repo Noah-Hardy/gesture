@@ -21,6 +21,27 @@ def test_missing_file_falls_back_to_defaults(config_path):
     assert cfg.get('camera', 'buffer_size') == 1
 
 
+def test_protocol_defaults_to_legacy(config_path):
+    # Legacy (the frozen 0.2.x wire format) stays the default until 0.4.0
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'protocol') == 'legacy'
+
+
+def test_sanitize_normalizes_known_protocol(config_path):
+    with open(config_path, 'w') as f:
+        json.dump({'osc': {'protocol': ' JSON '}}, f)
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'protocol') == 'json'
+
+
+@pytest.mark.parametrize('bad', ['udp-carrier-pigeon', 42, None, ''])
+def test_sanitize_clamps_unknown_protocol_to_legacy(config_path, bad):
+    with open(config_path, 'w') as f:
+        json.dump({'osc': {'protocol': bad}}, f)
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'protocol') == 'legacy'
+
+
 def test_include_prereleases_defaults_to_false(config_path):
     # Stable users should not be offered pre-release builds unless they
     # opt in - see Settings -> General -> Include pre-release builds.
