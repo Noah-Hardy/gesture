@@ -18,7 +18,7 @@ Whatever the format, pose and hand data stay on the same address families (`/pos
 
 In `json` and `float` mode, each processed frame's messages are packed into **OSC bundles** of at most 1400 bytes. 1400 bytes fits inside a standard 1500-byte network packet with room to spare, so a bundle never has to be split into IP fragments along the way. A frame that doesn't fit in one bundle is split across several, in order. Every bundle uses the "immediately" timetag.
 
-Your receiver has to accept OSC bundles. TouchDesigner, Max's `[udpreceive]`, Isadora, Resolume, python-osc and the common Unity OSC packages all unpack bundles on their own, so each message inside arrives exactly as if it had been sent alone. If a receiver only understands bare messages, stay on `legacy`, which never bundles.
+Your receiver has to accept OSC bundles. TouchDesigner, Max's `[udpreceive]`, Isadora, python-osc and the common Unity OSC packages unpack bundles on their own, so each message inside arrives exactly as if it had been sent alone. If a receiver only understands bare messages, stay on `legacy`, which never bundles.
 
 ## Large JSON payloads and fragmentation
 
