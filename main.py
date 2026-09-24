@@ -20,6 +20,7 @@ from src import ThreadedOSCSender, TasksPoseProcessor, LegacyPoseProcessor, get_
 from src import TasksHandProcessor, LegacyHandProcessor
 from src import TasksHolisticProcessor
 from src import NDICapture, list_ndi_sources, NDI_AVAILABLE
+from src.runtime import ParentWatch, install_sigterm_handler
 
 
 # ============================================================================
@@ -312,7 +313,7 @@ def show_preview(image, window_title, mirror):
 # ============================================================================
 def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
                  display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
-                 frame_interval=0, reassert_dock_policy=None):
+                 frame_interval=0, reassert_dock_policy=None, parent_watch=None):
     """
     Helper function to run the legacy processing loop
     Handles both single and combined processor modes
@@ -322,6 +323,8 @@ def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
         reassert_dock_policy: Optional callable (macOS, launcher-spawned only)
             that re-applies the Accessory Dock policy after HighGUI's first
             window creation resets it. None elsewhere.
+        parent_watch: Optional ParentWatch - the loop stops cleanly once
+            the launcher that spawned it is gone (#34)
 
     Returns:
         One of the EXIT_* constants indicating why the loop ended, so run()
@@ -335,6 +338,11 @@ def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
     exit_reason = EXIT_OK
 
     while cap.isOpened():
+        # Launcher force-quit or crashed - don't keep holding the camera
+        if parent_watch is not None and parent_watch.parent_gone():
+            print("🛑 Launcher is gone - stopping")
+            break
+
         # Frame rate limiting
         if frame_interval > 0:
             current_time = time.time()
@@ -432,10 +440,15 @@ def run(args, config):
     # their first cv2.waitKey() following the first cv2.imshow(). Lazily
     # imported and gated the same way as set_accessory_policy() so CLI/
     # non-GUI runs never touch libobjc.
+    launched_from_gui = bool(os.environ.get('MPOSC_LAUNCHED_FROM_GUI'))
     reassert_dock_policy = None
-    if os.environ.get('MPOSC_LAUNCHED_FROM_GUI'):
+    if launched_from_gui:
         from src.macos_app import reassert_accessory_policy
         reassert_dock_policy = reassert_accessory_policy
+
+    # Recorded now, while the launcher is certainly still our parent - the
+    # loops poll it so a force-quit launcher can't orphan the engine (#34)
+    parent_watch = ParentWatch(enabled=launched_from_gui)
 
     # ------------------------------------------------------------------------
     # Initialize OSC communication
@@ -694,6 +707,11 @@ def run(args, config):
             mirror_preview = display_config.get('mirror_preview', False)
             
             while cap.isOpened():
+                # Launcher force-quit or crashed - don't keep holding the camera
+                if parent_watch.parent_gone():
+                    print("🛑 Launcher is gone - stopping")
+                    break
+
                 # Frame rate limiting - sleep to maintain target fps
                 if frame_interval > 0:
                     current_time = time.time()
@@ -770,17 +788,17 @@ def run(args, config):
                 with pose_ctx as pose, hand_ctx as hand:
                     exit_reason = _legacy_loop(cap, pose_processor, pose, hand_processor, hand,
                                 display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
-                                frame_interval, reassert_dock_policy)
+                                frame_interval, reassert_dock_policy, parent_watch)
             elif pose_ctx:
                 with pose_ctx as pose:
                     exit_reason = _legacy_loop(cap, pose_processor, pose, None, None,
                                 display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
-                                frame_interval, reassert_dock_policy)
+                                frame_interval, reassert_dock_policy, parent_watch)
             elif hand_ctx:
                 with hand_ctx as hand:
                     exit_reason = _legacy_loop(cap, None, None, hand_processor, hand,
                                 display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
-                                frame_interval, reassert_dock_policy)
+                                frame_interval, reassert_dock_policy, parent_watch)
 
     except KeyboardInterrupt:
         # This is how the launcher stops the engine cleanly (it sends SIGINT
@@ -838,6 +856,10 @@ def main(argv=None):
         Process exit code (0 on success)
     """
     args = parse_args(argv)
+
+    # SIGTERM (the launcher's escalation, or a plain `kill`) unwinds through
+    # run()'s cleanup like a SIGINT Stop instead of dying mid-frame
+    install_sigterm_handler()
 
     # When the launcher spawns us, drop out of the Dock before any window
     # exists so the engine doesn't get a second identical Dock tile.
