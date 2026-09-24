@@ -59,6 +59,25 @@ def test_sanitize_repairs_invalid_buffer_size(config_path):
     assert cfg.get('camera', 'buffer_size') == 1
 
 
+def test_ndi_bandwidth_defaults_to_lowest(config_path):
+    cfg = Config(config_path)
+    assert cfg.get('camera', 'ndi_bandwidth') == 'lowest'
+
+
+def test_sanitize_repairs_unknown_ndi_bandwidth(config_path):
+    with open(config_path, 'w') as f:
+        json.dump({'camera': {'ndi_bandwidth': 'ultra'}}, f)
+    cfg = Config(config_path)
+    assert cfg.get('camera', 'ndi_bandwidth') == 'lowest'
+
+
+def test_sanitize_keeps_highest_ndi_bandwidth(config_path):
+    with open(config_path, 'w') as f:
+        json.dump({'camera': {'ndi_bandwidth': 'highest'}}, f)
+    cfg = Config(config_path)
+    assert cfg.get('camera', 'ndi_bandwidth') == 'highest'
+
+
 def test_sanitize_repairs_non_numeric_buffer_size(config_path):
     with open(config_path, 'w') as f:
         json.dump({'camera': {'buffer_size': 'not a number'}}, f)

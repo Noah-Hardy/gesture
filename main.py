@@ -231,7 +231,8 @@ def setup_camera(config, use_ndi=False, ndi_source=None, warmup=True):
 
         print("🎬 Setting up NDI capture...")
         try:
-            cap = NDICapture(source_name=ndi_source)
+            cap = NDICapture(source_name=ndi_source,
+                             bandwidth=camera_config.get('ndi_bandwidth', 'lowest'))
         except Exception as e:
             print(f"❌ NDI setup failed: {e}")
             print("   Check that ndi-python and the NDI runtime are installed correctly")
@@ -309,6 +310,11 @@ def reopen_capture(config, old_cap, use_ndi=False, ndi_source=None):
         The capture to read from next - may be None, which the wrapper
         treats as one more failed read and retries after its backoff
     """
+    # NDI: rebuild the receiver through the retained finder instead of
+    # re-initializing NDI and waiting out a full discovery (#31)
+    if hasattr(old_cap, 'reconnect'):
+        old_cap.reconnect()
+        return old_cap
     if old_cap is not None:
         try:
             old_cap.release()

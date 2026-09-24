@@ -70,6 +70,7 @@ class Config:
             "processing_height": 480,
             "use_ndi": False,
             "ndi_source": "",
+            "ndi_bandwidth": "lowest",  # NDI receive stream: "lowest" (sender's ~640x360 proxy - plenty for tracking) or "highest"
             "reconnect_timeout": 30  # Seconds a lost camera/NDI source may take to come back before the engine gives up (0 = never)
         },
         "mediapipe": {
@@ -194,6 +195,12 @@ class Config:
         except (TypeError, ValueError):
             queue_size = self.MIN_OSC_QUEUE_SIZE
         config['osc']['queue_size'] = max(self.MIN_OSC_QUEUE_SIZE, queue_size)
+
+        # camera.ndi_bandwidth is a two-value enum; anything else (a typo in
+        # a hand-edited config) falls back to the default rather than
+        # reaching the NDI SDK
+        if config['camera'].get('ndi_bandwidth') not in ('lowest', 'highest'):
+            config['camera']['ndi_bandwidth'] = self.DEFAULT_CONFIG['camera']['ndi_bandwidth']
 
         # A saved window_title exactly matching a previous release's
         # default is a config that never customized it - pick up the
