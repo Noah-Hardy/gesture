@@ -322,17 +322,17 @@ class Config:
         """
         # Environment variable to config path mappings
         # Each key lists the names checked, first set wins: the Gesture
-        # name, then the pre-rename MP_OSC_* one it replaced
+        # name, then the pre-rename MP_* one it replaced
         env_mappings = {
             ("GESTURE_OSC_HOST", "MP_OSC_HOST"): ("osc", "host"),
             ("GESTURE_OSC_PORT", "MP_OSC_PORT"): ("osc", "port"),
-            ("MP_CAMERA_ID",): ("camera", "device_id"),
-            ("MP_CAMERA_WIDTH",): ("camera", "width"),
-            ("MP_CAMERA_HEIGHT",): ("camera", "height"),
-            ("MP_SHOW_FPS",): ("performance", "show_fps"),
-            ("MP_MIRROR_PREVIEW",): ("display", "mirror_preview"),
-            ("MP_MIN_DETECTION_CONFIDENCE",): ("mediapipe", "min_detection_confidence"),
-            ("MP_MIN_TRACKING_CONFIDENCE",): ("mediapipe", "min_tracking_confidence")
+            ("GESTURE_CAMERA_ID", "MP_CAMERA_ID"): ("camera", "device_id"),
+            ("GESTURE_CAMERA_WIDTH", "MP_CAMERA_WIDTH"): ("camera", "width"),
+            ("GESTURE_CAMERA_HEIGHT", "MP_CAMERA_HEIGHT"): ("camera", "height"),
+            ("GESTURE_SHOW_FPS", "MP_SHOW_FPS"): ("performance", "show_fps"),
+            ("GESTURE_MIRROR_PREVIEW", "MP_MIRROR_PREVIEW"): ("display", "mirror_preview"),
+            ("GESTURE_MIN_DETECTION_CONFIDENCE", "MP_MIN_DETECTION_CONFIDENCE"): ("mediapipe", "min_detection_confidence"),
+            ("GESTURE_MIN_TRACKING_CONFIDENCE", "MP_MIN_TRACKING_CONFIDENCE"): ("mediapipe", "min_tracking_confidence")
         }
         
         for env_names, (section, key) in env_mappings.items():

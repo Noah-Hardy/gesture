@@ -58,13 +58,15 @@ Most keys are editable in the **Settings** window. OSC host and port, tracking m
 
 | Variable | Key |
 |---|---|
-| `GESTURE_OSC_HOST` (or `MP_OSC_HOST`) | `osc.host` |
-| `GESTURE_OSC_PORT` (or `MP_OSC_PORT`) | `osc.port` |
-| `MP_CAMERA_ID` | `camera.device_id` |
-| `MP_CAMERA_WIDTH`, `MP_CAMERA_HEIGHT` | `camera.width`, `camera.height` |
-| `MP_SHOW_FPS` | `performance.show_fps` |
-| `MP_MIRROR_PREVIEW` | `display.mirror_preview` |
-| `MP_MIN_DETECTION_CONFIDENCE`, `MP_MIN_TRACKING_CONFIDENCE` | `mediapipe.min_detection_confidence`, `mediapipe.min_tracking_confidence` |
+| `GESTURE_OSC_HOST` | `osc.host` |
+| `GESTURE_OSC_PORT` | `osc.port` |
+| `GESTURE_CAMERA_ID` | `camera.device_id` |
+| `GESTURE_CAMERA_WIDTH`, `GESTURE_CAMERA_HEIGHT` | `camera.width`, `camera.height` |
+| `GESTURE_SHOW_FPS` | `performance.show_fps` |
+| `GESTURE_MIRROR_PREVIEW` | `display.mirror_preview` |
+| `GESTURE_MIN_DETECTION_CONFIDENCE`, `GESTURE_MIN_TRACKING_CONFIDENCE` | `mediapipe.min_detection_confidence`, `mediapipe.min_tracking_confidence` |
+
+The pre-rename names (the same names with an `MP_` prefix in place of `GESTURE_`) are still accepted. When both are set, the `GESTURE_` name takes precedence.
 
 ## Shutdown
 
