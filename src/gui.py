@@ -147,8 +147,7 @@ class LauncherGui:
     # ------------------------------------------------------------------------
     def _init_variables(self) -> None:
         """Create tk variables seeded from the configuration file"""
-        # Mode has no config key - GUI-local default
-        self.var_mode = tk.StringVar(value='all')
+        self.var_mode = tk.StringVar()
 
         # Input
         self.var_source = tk.StringVar()
@@ -195,6 +194,9 @@ class LauncherGui:
         values that would overwrite what Settings just wrote.
         """
         cfg = self.config
+
+        mode = cfg.get('ui', 'mode', 'all')
+        self.var_mode.set(mode if mode in MODES else 'all')
 
         use_ndi = bool(cfg.get('camera', 'use_ndi', False)) and NDI_AVAILABLE
         self.var_source.set('ndi' if use_ndi else 'camera')
@@ -723,6 +725,7 @@ class LauncherGui:
         The swap script waits for THIS process to exit before moving the new
         bundle into place, so spawning it has to be the last thing we do.
         """
+        self._persist_last_used()
         if self.is_running():
             self._stop_engine()
         self._await_install_shutdown(staged, time.monotonic())
@@ -933,6 +936,10 @@ class LauncherGui:
             self._set_status("❌ Invalid OSC port (must be 0-65535)")
             self._append_log("❌ Invalid OSC port - engine not started")
             return
+
+        # Reopen in the state the engine was last started with, even if
+        # Save Config was never clicked (#81).
+        self._persist_last_used()
 
         cmd = self._build_command()
 
@@ -1170,45 +1177,71 @@ class LauncherGui:
     # ------------------------------------------------------------------------
     # Config persistence
     # ------------------------------------------------------------------------
+    def _form_problems(self) -> List[str]:
+        """Fields Save Config refuses to write, as user-facing messages"""
+        problems = []
+        port = self._int_or_none(self.var_port.get())
+        if port is None or not valid_port(port):
+            problems.append("Invalid OSC port (must be 0-65535)")
+        if self._int_or_none(self.var_camera.get()) is None:
+            problems.append("Invalid camera device ID")
+        return problems
+
+    def _apply_form_to_config(self) -> None:
+        """
+        Copy the form into self.config (runtime only - callers save()).
+        A field that doesn't parse keeps its previous config value, so an
+        automatic save never replaces a good port or camera with garbage.
+        """
+        host = self.var_host.get().strip()
+        if host:
+            self.config.set('osc', 'host', host)
+        port = self._int_or_none(self.var_port.get())
+        if port is not None and valid_port(port):
+            self.config.set('osc', 'port', port)
+        camera = self._int_or_none(self.var_camera.get())
+        if camera is not None:
+            self.config.set('camera', 'device_id', camera)
+
+        fps_cap = self._int_or_none(self.var_fps_cap.get())
+        if fps_cap is None:
+            fps_cap = 0  # blank means uncapped
+
+        if self.var_mode.get() in MODES:
+            self.config.set('ui', 'mode', self.var_mode.get())
+        self.config.set('camera', 'use_ndi', self.var_source.get() == 'ndi')
+        self.config.set('camera', 'ndi_source', self.var_ndi_source.get().strip())
+        self.config.set('mediapipe', 'pose_model_type', self.var_pose_model.get())
+        self.config.set('performance', 'target_fps', fps_cap)
+        self.config.set('performance', 'show_fps', bool(self.var_show_fps.get()))
+        self.config.set('performance', 'force_cpu', bool(self.var_force_cpu.get()))
+        self.config.set('performance', 'force_gpu', bool(self.var_force_gpu.get()))
+        self.config.set('performance', 'force_legacy', bool(self.var_force_legacy.get()))
+        self.config.set('performance', 'no_holistic', bool(self.var_no_holistic.get()))
+        self.config.set('display', 'mirror_preview', bool(self.var_mirror.get()))
+        self.config.set('display', 'show_window', bool(self.var_show_preview.get()))
+
+    def _persist_last_used(self) -> None:
+        """Silently save the form so the next launch reopens in this state"""
+        try:
+            self._apply_form_to_config()
+            self.config.save()
+        except Exception:
+            pass
+
     def _save_config(self) -> None:
         """
         Write the form fields that have config keys back to config.json
         Config.set is runtime-only, so save() is what persists them
         """
+        problems = self._form_problems()
+        if problems:
+            self._set_status("❌ " + problems[0])
+            self._append_log("❌ {} - config not saved".format(problems[0]))
+            return
+
         try:
-            port = self._int_or_none(self.var_port.get())
-            if port is None or not valid_port(port):
-                self._set_status("❌ Invalid OSC port (must be 0-65535)")
-                self._append_log("❌ Invalid OSC port - config not saved")
-                return
-
-            camera = self._int_or_none(self.var_camera.get())
-            if camera is None:
-                self._set_status("❌ Invalid camera device ID")
-                self._append_log("❌ Invalid camera device ID - config not saved")
-                return
-
-            fps_cap = self._int_or_none(self.var_fps_cap.get())
-            if fps_cap is None:
-                fps_cap = 0  # blank means uncapped
-
-            ndi_source = self.var_ndi_source.get().strip()
-
-            self.config.set('osc', 'host', self.var_host.get().strip())
-            self.config.set('osc', 'port', port)
-            self.config.set('camera', 'device_id', camera)
-            self.config.set('camera', 'use_ndi', self.var_source.get() == 'ndi')
-            self.config.set('camera', 'ndi_source', ndi_source)
-            self.config.set('mediapipe', 'pose_model_type', self.var_pose_model.get())
-            self.config.set('performance', 'target_fps', fps_cap)
-            self.config.set('performance', 'show_fps', bool(self.var_show_fps.get()))
-            self.config.set('performance', 'force_cpu', bool(self.var_force_cpu.get()))
-            self.config.set('performance', 'force_gpu', bool(self.var_force_gpu.get()))
-            self.config.set('performance', 'force_legacy', bool(self.var_force_legacy.get()))
-            self.config.set('performance', 'no_holistic', bool(self.var_no_holistic.get()))
-            self.config.set('display', 'mirror_preview', bool(self.var_mirror.get()))
-            self.config.set('display', 'show_window', bool(self.var_show_preview.get()))
-
+            self._apply_form_to_config()
             self.config.save()
         except Exception as e:
             self._set_status("❌ Failed to save config: {}".format(e))
@@ -1217,14 +1250,13 @@ class LauncherGui:
 
         self._set_status("💾 Configuration saved to {}".format(self.config.config_file))
         self._append_log("💾 Configuration saved to {}".format(self.config.config_file))
-        self._append_log("   (tracking mode is launch-only and is not stored - "
-                         "see mp-osc → Settings… for everything else)")
 
     # ------------------------------------------------------------------------
     # Window close
     # ------------------------------------------------------------------------
     def _on_close(self) -> None:
         """Ask the engine to stop, then close once it is gone"""
+        self._persist_last_used()
         if self.is_running():
             self._stop_engine()
             self._await_shutdown(time.monotonic())

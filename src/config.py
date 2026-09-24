@@ -125,6 +125,7 @@ class Config:
             "rate_limited_until": 0       # Epoch seconds; checks are suppressed until this passes
         },
         "ui": {
+            "mode": "all",  # Last-used tracking mode (pose, hand or all) - the launcher reopens with it
             "input_section_open": True,
             "osc_section_open": True,
             "model_section_open": False,
