@@ -4,9 +4,10 @@ with fixed fake MediaPipe results and records every OSC datagram they emit,
 byte for byte.
 
 The fixture file (tests/fixtures/osc_golden.json) was captured from the
-0.2.x send code before the 0.3.0 protocol refactor. The legacy protocol
-must keep reproducing it exactly - test_osc_protocol.py replays these
-scenarios and compares bytes.
+0.2.1 send code (processors calling ThreadedOSCSender.send_message directly)
+before the 0.3.0 protocol refactor. The legacy protocol must keep
+reproducing it exactly - test_osc_protocol.py replays these scenarios and
+compares bytes.
 
 Regenerate ONLY when the legacy wire format is meant to change (it isn't -
 legacy is frozen): `uv run python -m tests.golden_harness --write`
@@ -19,7 +20,6 @@ from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
-from pythonosc.osc_message_builder import OscMessageBuilder
 
 FIXTURE_PATH = os.path.join(os.path.dirname(__file__), 'fixtures', 'osc_golden.json')
 
@@ -103,27 +103,11 @@ def legacy_hand_result(hands):
 # ============================================================================
 # CAPTURE
 # ============================================================================
-def message_dgram(address, value):
-    """Build a datagram exactly the way SimpleUDPClient.send_message does"""
-    builder = OscMessageBuilder(address=address)
-    if value is None:
-        pass
-    elif not isinstance(value, (list, tuple)):
-        builder.add_arg(value)
-    else:
-        for v in value:
-            builder.add_arg(v)
-    return builder.build().dgram
-
-
 class CaptureSender:
     """Synchronous stand-in for ThreadedOSCSender that records datagrams"""
 
     def __init__(self):
         self.dgrams = []
-
-    def send_message(self, address, value):
-        self.dgrams.append(message_dgram(address, value))
 
     def send_packet(self, packet):
         self.dgrams.append(packet.dgram)
@@ -132,13 +116,9 @@ class CaptureSender:
         return {'sent': len(self.dgrams), 'dropped': 0, 'queued': 0}
 
 
-def _make_output(sender):
-    """What the processors take as their first argument: the raw sender
-    before the 0.3.0 refactor, a legacy OscEmitter after it"""
-    try:
-        from src.osc_protocol import OscEmitter
-    except ImportError:
-        return sender
+def legacy_emitter(sender):
+    """Default output factory: what main.py builds for osc.protocol = legacy"""
+    from src.osc_protocol import OscEmitter
     return OscEmitter(sender, 'legacy')
 
 
@@ -155,7 +135,7 @@ def _frame(letterbox):
     return np.zeros((720, 1280, 3), np.uint8) if letterbox else np.zeros((480, 640, 3), np.uint8)
 
 
-def _run_tasks(processor_cls, steps, letterbox, output_factory=_make_output):
+def _run_tasks(processor_cls, steps, letterbox, output_factory=legacy_emitter):
     """
     steps: list of ('result', r) - callback delivers r, then a frame runs
                     ('stale',)    - no fresh result, queue not backed up
@@ -179,7 +159,7 @@ def _run_tasks(processor_cls, steps, letterbox, output_factory=_make_output):
     return frames
 
 
-def _run_legacy(processor_cls, results, letterbox, output_factory=_make_output):
+def _run_legacy(processor_cls, results, letterbox, output_factory=legacy_emitter):
     sender = CaptureSender()
     proc = _no_draw(processor_cls(output_factory(sender), config=None))
     frames = []
@@ -245,7 +225,7 @@ def scenarios():
     }
 
 
-def capture(output_factory=_make_output):
+def capture(output_factory=legacy_emitter):
     """Run every scenario with time pinned; name -> per-frame datagram lists"""
     with mock.patch('time.time', return_value=FIXED_TIME):
         return {name: run(output_factory) for name, run in scenarios().items()}
