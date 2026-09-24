@@ -68,3 +68,120 @@ class ParentWatch:
             return False
         self._next_check = now + self.CHECK_INTERVAL
         return os.getppid() != self.parent_pid
+
+
+# ============================================================================
+# CAPTURE RECONNECT
+# ============================================================================
+class ReconnectingCapture:
+    """
+    Wraps a cv2.VideoCapture / NDICapture with backoff and reopen on loss
+
+    A failed read used to `continue` straight into the next read with no
+    sleep - spinning a core at 100% - and then kill the session after a
+    fixed failure count (#32). Now consecutive failures back off from
+    MIN_BACKOFF to MAX_BACKOFF, every REOPEN_AFTER failures the capture is
+    reopened, and only a streak lasting past `timeout` seconds gives up.
+
+    read() never blocks for longer than one IDLE_SLICE while waiting out a
+    backoff - it returns (False, None) instead - so the processing loop keeps
+    iterating (and anything at its top, like the heartbeat, keeps running)
+    for the whole outage. Check `gave_up` after a failed read.
+    """
+
+    MIN_BACKOFF = 0.1   # Seconds before the first retry
+    MAX_BACKOFF = 2.0   # Backoff ceiling
+    IDLE_SLICE = 0.25   # Longest single sleep inside read()
+    REOPEN_AFTER = 5    # Consecutive failures between reopen attempts
+
+    def __init__(self, cap, reopen, timeout, clock=time.monotonic, sleep=time.sleep):
+        """
+        Args:
+            cap: The opened capture
+            reopen: Callable(old_cap) -> new capture or None. Responsible
+                for releasing old_cap if it replaces it
+            timeout: Seconds a failure streak may last before giving up
+                (0 or less = retry forever)
+            clock, sleep: Injectable for tests
+        """
+        self.cap = cap
+        self._reopen = reopen
+        self.timeout = timeout
+        self._clock = clock
+        self._sleep = sleep
+        self.failures = 0
+        self.gave_up = False
+        self._streak_started = None
+        self._retry_at = 0.0
+        self._backoff = self.MIN_BACKOFF
+
+    # ------------------------------------------------------------------------
+    # OpenCV-compatible surface
+    # ------------------------------------------------------------------------
+
+    def isOpened(self):
+        return self.cap is not None and self.cap.isOpened()
+
+    def getBackendName(self):
+        return self.cap.getBackendName()
+
+    def get(self, prop_id):
+        return self.cap.get(prop_id) if self.cap is not None else 0.0
+
+    def release(self):
+        if self.cap is not None:
+            self.cap.release()
+
+    def read(self):
+        """
+        Read a frame, handling backoff/reopen on failure
+
+        Returns:
+            (ret, frame) like cv2.VideoCapture.read(). After a False, check
+            `gave_up` to tell "still recovering" from "lost for good".
+        """
+        now = self._clock()
+        if now < self._retry_at:
+            self._sleep(min(self._retry_at - now, self.IDLE_SLICE))
+            return False, None
+
+        ret, frame = (False, None)
+        if self.isOpened():
+            ret, frame = self.cap.read()
+        if ret:
+            if self.failures:
+                print(f"✅ Capture recovered after {self.failures} failed read(s)")
+            self.failures = 0
+            self._streak_started = None
+            self._backoff = self.MIN_BACKOFF
+            return ret, frame
+
+        self._on_failure()
+        return False, None
+
+    # ------------------------------------------------------------------------
+    # Failure handling
+    # ------------------------------------------------------------------------
+
+    def _on_failure(self):
+        now = self._clock()
+        self.failures += 1
+        if self._streak_started is None:
+            self._streak_started = now
+            print("⚠️  Capture stopped delivering frames - retrying")
+
+        if self.timeout > 0 and now - self._streak_started >= self.timeout:
+            print(f"❌ Capture lost for {now - self._streak_started:.0f}s "
+                  f"({self.failures} failed reads) - giving up")
+            self.gave_up = True
+            return
+
+        if self.failures % self.REOPEN_AFTER == 0:
+            print(f"🔄 Reopening capture (attempt {self.failures // self.REOPEN_AFTER})")
+            try:
+                self.cap = self._reopen(self.cap)
+            except Exception as e:
+                print(f"⚠️  Reopen failed: {e}")
+
+        self._retry_at = self._clock() + self._backoff
+        self._backoff = min(self._backoff * 2, self.MAX_BACKOFF)

@@ -20,7 +20,7 @@ from src import ThreadedOSCSender, TasksPoseProcessor, LegacyPoseProcessor, get_
 from src import TasksHandProcessor, LegacyHandProcessor
 from src import TasksHolisticProcessor
 from src import NDICapture, list_ndi_sources, NDI_AVAILABLE
-from src.runtime import ParentWatch, install_sigterm_handler
+from src.runtime import ParentWatch, ReconnectingCapture, install_sigterm_handler
 
 
 # ============================================================================
@@ -39,7 +39,7 @@ IS_APPLE_SILICON = platform.system() == "Darwin" and platform.machine() == "arm6
 # processing loop itself ended*, so the launcher can tell a clean stop from
 # a real failure instead of treating every nonzero code the same way.
 EXIT_OK = 0                # Clean stop: user Stop (SIGINT), 'q', window closed
-EXIT_CAPTURE_LOST = 2      # Consecutive frame-read failures tripped the loop's guard
+EXIT_CAPTURE_LOST = 2      # Capture stayed lost past camera.reconnect_timeout
 EXIT_CRASH = 3             # Unhandled exception inside the processing loop
 
 
@@ -193,7 +193,7 @@ def print_platform_info():
 # ============================================================================
 # CAMERA/NDI CAPTURE SETUP
 # ============================================================================
-def setup_camera(config, use_ndi=False, ndi_source=None):
+def setup_camera(config, use_ndi=False, ndi_source=None, warmup=True):
     """
     Initialize video capture from camera or NDI source
     
@@ -201,6 +201,9 @@ def setup_camera(config, use_ndi=False, ndi_source=None):
         config: Configuration object with camera settings
         use_ndi: Boolean to use NDI instead of camera
         ndi_source: Name of NDI source to connect to
+        warmup: Wait up to 3s for the webcam's first frame. Reopens during
+            a reconnect skip it so the processing loop keeps iterating -
+            ReconnectingCapture's backoff covers the slow start instead
         
     Returns:
         cv2.VideoCapture or NDICapture object when a capture was opened.
@@ -263,6 +266,9 @@ def setup_camera(config, use_ndi=False, ndi_source=None):
     print(f"📷 Camera setup: Device {camera_config['device_id']}, "
           f"{camera_config['width']}x{camera_config['height']} @ {camera_config['fps']}fps")
     
+    if not warmup:
+        return cap
+
     # ------------------------------------------------------------------------
     # Wait for camera initialization (important for virtual cameras)
     # ------------------------------------------------------------------------
@@ -286,6 +292,29 @@ def setup_camera(config, use_ndi=False, ndi_source=None):
         print("⚠️  Camera may be slow to start - continuing anyway")
     
     return cap
+
+
+def reopen_capture(config, old_cap, use_ndi=False, ndi_source=None):
+    """
+    Replace a capture that stopped delivering frames (ReconnectingCapture's
+    reopen hook, #32)
+
+    Args:
+        config: Configuration object with camera settings
+        old_cap: The failing capture (may be None after a failed reopen)
+        use_ndi, ndi_source: The same values the session was opened with,
+            so an NDI session never falls back to the webcam
+
+    Returns:
+        The capture to read from next - may be None, which the wrapper
+        treats as one more failed read and retries after its backoff
+    """
+    if old_cap is not None:
+        try:
+            old_cap.release()
+        except Exception:
+            pass
+    return setup_camera(config, use_ndi=use_ndi, ndi_source=ndi_source, warmup=False)
 
 
 # ============================================================================
@@ -312,17 +341,19 @@ def show_preview(image, window_title, mirror):
 # LEGACY PROCESSING LOOP HELPER
 # ============================================================================
 def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
-                 display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
+                 display_config, window_title, show_fps, tracking_mode,
                  frame_interval=0, reassert_dock_policy=None, parent_watch=None):
     """
     Helper function to run the legacy processing loop
     Handles both single and combined processor modes
 
     Args:
-        frame_interval: Minimum time between frames (0 = uncapped)
+        cap: ReconnectingCapture - a failed read is retried with backoff
+            and only ends the loop once cap.gave_up is set
         reassert_dock_policy: Optional callable (macOS, launcher-spawned only)
             that re-applies the Accessory Dock policy after HighGUI's first
             window creation resets it. None elsewhere.
+        frame_interval: Minimum time between frames (0 = uncapped)
         parent_watch: Optional ParentWatch - the loop stops cleanly once
             the launcher that spawned it is gone (#34)
 
@@ -332,12 +363,13 @@ def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
         processors are active) can report the real reason instead of
         assuming every exit was a clean one.
     """
-    consecutive_failures = 0
     last_frame_time = time.time()
     mirror_preview = display_config.get('mirror_preview', False)
     exit_reason = EXIT_OK
 
-    while cap.isOpened():
+    # Not `while cap.isOpened()`: during a reconnect the capture can be
+    # closed for a while, and the loop has to keep iterating through it
+    while True:
         # Launcher force-quit or crashed - don't keep holding the camera
         if parent_watch is not None and parent_watch.parent_gone():
             print("🛑 Launcher is gone - stopping")
@@ -351,16 +383,15 @@ def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
                 time.sleep(frame_interval - elapsed)
             last_frame_time = time.time()
         
+        # A failed read returns immediately (after at most a short backoff
+        # slice) so this loop - and anything at its top - keeps running
+        # while the capture reconnects
         ret, frame = cap.read()
         if not ret:
-            consecutive_failures += 1
-            if consecutive_failures >= max_consecutive_failures:
-                print(f"❌ Too many consecutive frame failures ({consecutive_failures})")
+            if cap.gave_up:
                 exit_reason = EXIT_CAPTURE_LOST
                 break
             continue
-
-        consecutive_failures = 0
 
         try:
             # Each processor's inference always reads the clean source
@@ -682,14 +713,15 @@ def run(args, config):
     # unhandled crash, instead of always reporting success.
     exit_reason = EXIT_OK
     try:
-        # NDI may have gaps between frames - allow more failures
-        consecutive_failures = 0
-        try:
-            # OpenCV raises if the capture never opened, so treat that as non-NDI
-            is_ndi = cap.getBackendName() == "NDI"
-        except Exception:
-            is_ndi = False
-        max_consecutive_failures = 100 if is_ndi else 30  # NDI: ~5s, Camera: ~1s
+        # Failed reads back off and reopen instead of busy-spinning, and
+        # only a loss lasting camera.reconnect_timeout seconds ends the
+        # session (#32). Rebinding `cap` means the cleanup below releases
+        # whichever capture is current after any reopen.
+        cap = ReconnectingCapture(
+            cap,
+            reopen=lambda old_cap: reopen_capture(config, old_cap, args.ndi, args.ndi_source),
+            timeout=config.get('camera', 'reconnect_timeout', 30),
+        )
 
         if not cap.isOpened():
             print("❌ Video capture is not open - nothing to process")
@@ -706,7 +738,8 @@ def run(args, config):
             last_frame_time = time.time()
             mirror_preview = display_config.get('mirror_preview', False)
             
-            while cap.isOpened():
+            # Not `while cap.isOpened()` - see _legacy_loop
+            while True:
                 # Launcher force-quit or crashed - don't keep holding the camera
                 if parent_watch.parent_gone():
                     print("🛑 Launcher is gone - stopping")
@@ -721,16 +754,13 @@ def run(args, config):
                         time.sleep(sleep_time)
                     last_frame_time = time.time()
                 
+                # Returns promptly during a reconnect - see _legacy_loop
                 ret, frame = cap.read()
                 if not ret:
-                    consecutive_failures += 1
-                    if consecutive_failures >= max_consecutive_failures:
-                        print(f"❌ Too many consecutive frame failures ({consecutive_failures})")
+                    if cap.gave_up:
                         exit_reason = EXIT_CAPTURE_LOST
                         break
                     continue
-
-                consecutive_failures = 0
 
                 try:
                     timestamp_counter += 1
@@ -787,17 +817,17 @@ def run(args, config):
             if pose_ctx and hand_ctx:
                 with pose_ctx as pose, hand_ctx as hand:
                     exit_reason = _legacy_loop(cap, pose_processor, pose, hand_processor, hand,
-                                display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
+                                display_config, window_title, show_fps, tracking_mode,
                                 frame_interval, reassert_dock_policy, parent_watch)
             elif pose_ctx:
                 with pose_ctx as pose:
                     exit_reason = _legacy_loop(cap, pose_processor, pose, None, None,
-                                display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
+                                display_config, window_title, show_fps, tracking_mode,
                                 frame_interval, reassert_dock_policy, parent_watch)
             elif hand_ctx:
                 with hand_ctx as hand:
                     exit_reason = _legacy_loop(cap, None, None, hand_processor, hand,
-                                display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
+                                display_config, window_title, show_fps, tracking_mode,
                                 frame_interval, reassert_dock_policy, parent_watch)
 
     except KeyboardInterrupt:

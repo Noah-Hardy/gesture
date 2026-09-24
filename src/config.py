@@ -69,7 +69,8 @@ class Config:
             "processing_width": 640,
             "processing_height": 480,
             "use_ndi": False,
-            "ndi_source": ""
+            "ndi_source": "",
+            "reconnect_timeout": 30  # Seconds a lost camera/NDI source may take to come back before the engine gives up (0 = never)
         },
         "mediapipe": {
             "model_complexity": 0,
