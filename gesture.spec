@@ -1,8 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec for the MP-OSC macOS app bundle.
+PyInstaller spec for the Gesture macOS app bundle.
 
-Produces a onedir bundle at dist/MP-OSC.app. Onedir is required, not onefile:
+Produces a onedir bundle at dist/Gesture.app. Onedir is required, not onefile:
 the launcher GUI relaunches this same frozen executable as a subprocess with
 CLI arguments, and a onefile build would re-extract the ~500MB payload on every
 launch instead of sharing one sys._MEIPASS directory.
@@ -36,8 +36,10 @@ VERSION = _project_version()
 # Signing identity for a distributable build. Unset means an ad-hoc signature,
 # which runs on this machine but is rejected by Gatekeeper anywhere else.
 # scripts/release.sh sets both of these when a Developer ID is available.
-CODESIGN_IDENTITY = os.environ.get('MPOSC_CODESIGN_IDENTITY') or None
-ENTITLEMENTS = os.environ.get('MPOSC_ENTITLEMENTS') or None
+# The MPOSC_* names are the pre-rename spellings, still honoured.
+CODESIGN_IDENTITY = (os.environ.get('GESTURE_CODESIGN_IDENTITY')
+                     or os.environ.get('MPOSC_CODESIGN_IDENTITY') or None)
+ENTITLEMENTS = os.environ.get('GESTURE_ENTITLEMENTS') or os.environ.get('MPOSC_ENTITLEMENTS') or None
 
 # MediaPipe ships its graph assets (.binarypb) and baked-in models (.tflite) as
 # package data. They are loaded by path at runtime, so they must be collected.
@@ -64,9 +66,9 @@ datas += [('src/tasks', 'src/tasks')]
 
 # Operator documentation, resolved at runtime via sys._MEIPASS/docs (see
 # src.docs.docs_dir). Markdown is the shipped form; the browser HTML is
-# rendered on demand into ~/Library/Application Support/mp-osc/docs, because
+# rendered on demand into ~/Library/Application Support/Gesture/docs, because
 # nothing may be written inside the signed bundle.
-_ICON = 'assets/MP-OSC.icns'
+_ICON = 'assets/Gesture.icns'
 if not os.path.exists(_ICON):
     raise SystemExit(
         f'Missing app icon: {_ICON}\nGenerate it with: uv run python scripts/make_icon.py'
@@ -145,7 +147,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='mp-osc',
+    name='gesture',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -165,19 +167,24 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='mp-osc',
+    name='gesture',
 )
 
 app = BUNDLE(
     coll,
-    name='MP-OSC.app',
+    name='Gesture.app',
     icon=_ICON,
+    # Deliberately still the pre-rename identifier: 0.2.1's updater only
+    # accepts an update signed with exactly this one (src/updater.py
+    # BUNDLE_ID), and it also keeps the camera permission macOS granted
     bundle_identifier='net.hardymail.mp-osc',
     info_plist={
+        'CFBundleName': 'Gesture',
+        'CFBundleDisplayName': 'Gesture',
         'NSCameraUsageDescription':
-            'MP-OSC uses the camera for pose and hand tracking.',
+            'Gesture uses the camera for pose and hand tracking.',
         'NSLocalNetworkUsageDescription':
-            'MP-OSC discovers NDI video sources and sends OSC data on the local network.',
+            'Gesture discovers NDI video sources and sends OSC data on the local network.',
         'NSBonjourServices': ['_ndi._tcp.'],
         # ndi-python 6.x ships macosx_13_0_arm64 wheels, so 13.0 is the real floor.
         'LSMinimumSystemVersion': '13.0',

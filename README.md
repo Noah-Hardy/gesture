@@ -1,83 +1,82 @@
-# MP-OSC
+# Gesture
 
-MP-OSC watches a camera or an [NDI](https://ndi.video/) video feed, detects a person's body pose and hand positions in real time with [MediaPipe](https://developers.google.com/mediapipe), and streams the result over [OSC (Open Sound Control)](https://opensoundcontrol.stanford.edu/) to any address on your network. Anything that can receive OSC — TouchDesigner, Max/MSP, Unity, Unreal, Resolume, Ableton — can subscribe to that stream and react to where a person's body and hands are, live.
+Gesture tracks body pose and hand landmarks from a camera or [NDI](https://ndi.video/) video feed using [MediaPipe](https://developers.google.com/mediapipe), and sends the results over [OSC](https://opensoundcontrol.stanford.edu/) in real time. Any OSC-capable application, such as TouchDesigner, Max/MSP, Unity, Unreal, Resolume or Ableton, can receive the stream.
 
-## Overview
+## Features
 
-- **Real-time pose and hand tracking**, using MediaPipe's Tasks API with an automatic fallback to its legacy Solutions API if the modern one fails to initialize.
-- **Camera or NDI input** — capture from a local webcam, or receive video over the network from an NDI source (a switcher, another Mac, OBS with the NDI plugin, etc).
-- **Compact JSON over OSC**, on dedicated channels for pose and each hand, plus bounds channels reporting the min/max extremes of each detection.
-- **Landmark visualization** in a live preview window, purely for your own confirmation — it's not part of what gets sent over the network.
-- **A native macOS app**: a dark-themed launcher, a full tabbed Settings window covering everything from tracking thresholds to preview styling, and a self-updater — no Python, no terminal, no dependencies to install.
-- **A command-line interface** underneath it all — the app builds a command line from its own form and runs the exact same engine, so nothing behaves differently between the GUI and the CLI.
+- Real-time pose and hand tracking with the MediaPipe Tasks API, with automatic fallback to the Solutions API.
+- Camera or NDI input.
+- Three OSC output formats: `legacy` (JSON strings, the default), `json` (compact bundled JSON) and `float` (one numeric message per landmark, for receivers such as Isadora). Bounds, status, debounced tracking and a 1 Hz heartbeat are sent in every format.
+- A preview window with landmark overlay.
+- A native macOS launcher with a Settings window and built-in updater.
+- A command-line interface that runs the same engine as the launcher.
 
-## Download
+## Requirements
 
-Grab the latest release from the [Releases page](https://github.com/Noah-Hardy/mp-osc/releases).
+Apple Silicon Mac running macOS 13 or later.
 
-MP-OSC requires an **Apple Silicon Mac running macOS 13 or later**. Intel Macs aren't supported — the NDI library MP-OSC depends on (`ndi-python`) doesn't publish x86_64 wheels for macOS, so there's no way to build an Intel-compatible bundle.
+## Installation
 
-## Install
+Download the latest `.dmg` from the [Releases page](https://github.com/Noah-Hardy/gesture/releases), open it, and drag `Gesture.app` into **Applications**. The app is signed and notarized.
 
-Open the downloaded `.dmg`, then drag `MP-OSC.app` into the **Applications** shortcut inside it. Open MP-OSC from your Applications folder, not from inside the disk image — it works fine there, but the copy on the disk image is read-only, so the in-app updater can't install into it.
+## Quick start
 
-MP-OSC is signed with a Developer ID and notarized by Apple, so it opens with no Gatekeeper warning and no Terminal step.
-
-## Quick Start
-
-1. Open MP-OSC.
-2. Under **OSC Output**, set the **Host** (defaults to `127.0.0.1` — leave it alone if the receiver runs on the same Mac) and **Port** your receiving software is listening on.
-3. Under **Input**, choose **Camera** or **NDI** and pick a source.
+1. Open Gesture.
+2. Under **OSC Output**, set **Host** (default `127.0.0.1`, for a receiver on the same Mac) and **Port** to match the receiver.
+3. Under **Input**, select **Camera** or **NDI** and a source.
 4. Click **Start**.
 
-A preview window, titled "MP-OSC Preview — not the OSC output", opens showing the camera feed with detected landmarks drawn over it, and the launcher's log pane fills with startup and status messages. The preview is for your own confirmation only — it isn't what gets sent over OSC. See the in-app **Quick Start** guide (Help menu) for the full walkthrough, including a tour of the Settings window.
-
-**Tracking mode** decides what gets tracked and sent:
+**Tracking mode** selects what is tracked:
 
 | Mode | Tracks |
 |---|---|
-| `pose` | Body pose only |
-| `hand` | Both hands only |
-| `all` | Pose and both hands together (the default) |
+| `pose` | Body pose |
+| `hand` | Both hands |
+| `all` | Body pose and both hands (default) |
 
-## Updating
+The in-app **Quick Start** guide (**Help** menu) covers this in detail.
 
-MP-OSC checks GitHub for a newer release a few seconds after it opens, and stays silent if you're already current. When a newer version is available, it offers to download it, verify its checksum and code signature, and swap itself in before relaunching automatically — no manual download required, and no partial or broken state if any step fails along the way. See the in-app **Updates** guide for the full flow and what to do if MP-OSC can't self-update on your machine (e.g. it's still sitting in Downloads).
+## Updates
 
-## What It Sends
+Gesture checks for new releases at launch and can install them in place. See the in-app **Updates** guide.
 
-Every OSC message is a single string argument containing compact JSON, not separate float/int arguments — for example:
+## OSC output
 
-```
-/pose/raw   "{\"timestamp\":1720000000.123,\"landmarks\":[...]}"
-```
+Pose, left-hand and right-hand landmarks are sent on separate addresses, in the format selected under **Settings → Advanced → OSC → Output format** or with `--osc-protocol`:
 
-Pose, left-hand, and right-hand landmarks each get their own address, alongside a few other channel types:
+| Format | Pose encoding |
+|---|---|
+| `legacy` (default) | `/pose/raw` with one JSON string argument |
+| `json` | `/pose/raw` with compact JSON (a `person` index; no per-landmark `type` or `id`), in OSC bundles |
+| `float` | `/pose/lm/0` to `/pose/lm/32`, each with float arguments `x y z visibility`, in OSC bundles |
 
-- **Raw and world landmarks** — normalized image-space coordinates, and separately, real-world-scale coordinates.
-- **Bounds** — the min/max landmark extremes for each detection, one message per axis pair.
-- **Status** — how many poses/hands the most recently finished detection found, sent on every processed frame.
+All formats also send:
 
-See the in-app **OSC Address Reference** for every address and exact payload shape, and **TouchDesigner, Max, Unity** for patterns specific to those three receivers.
+- **World landmarks**: coordinates in metres, alongside normalized image coordinates.
+- **Bounds**: the extent of each detection on each axis.
+- **Status and tracking**: the per-frame and debounced counts of detected poses and hands.
+- **Heartbeat**: engine FPS and send-queue counters, once per second.
+
+The in-app guides **OSC Output**, **OSC Address Reference** and **TouchDesigner, Max, Unity, Isadora** cover format selection, every address and payload, and receiver setup.
 
 ## Configuration
 
-Most settings live in the app itself: OSC host/port, tracking mode, pose model and FPS cap in the main window, and everything else in **mp-osc → Settings…**, split across four tabs:
+The launcher holds OSC host and port, tracking mode, pose model and FPS cap. **Gesture → Settings…** contains the remaining options:
 
-- **General** — the update checker, and shortcuts to `config.json`.
-- **Tracking** — pose and hand detection thresholds, smoothing, and how many of each to track.
-- **Preview** — whether the preview window shows, mirroring, and landmark/connection colors and sizes.
-- **Advanced** — camera capture settings, performance and garbage-collection tuning, the OSC send queue size, and launch-time backend toggles (Force CPU/GPU, legacy API (deprecated), holistic on/off).
+- **General**: update checks and access to `config.json`.
+- **Tracking**: detection thresholds, smoothing, and the number of poses and hands.
+- **Preview**: preview visibility, mirroring and landmark styling.
+- **Advanced**: camera capture, performance, OSC queue size and output format, and backend options.
 
-Whatever remains reachable only through `config.json`, and the full list of every key the app understands, is documented in the in-app **Appendix: CLI & config.json**, which also covers running MP-OSC from the command line with flags and environment variables.
+The in-app **Appendix: CLI & config.json** documents every configuration key, command-line flag and environment variable.
 
 ## Troubleshooting
 
-The in-app **Troubleshooting** guide (Help menu) is keyed to the exact messages MP-OSC prints to its log pane, so it's usually the fastest way to figure out what a given warning or error actually means.
+The in-app **Troubleshooting** guide explains the messages shown in the log pane.
 
 ## License
 
-This project is based on MediaPipe and is licensed under the Apache License 2.0.
+Based on MediaPipe. Licensed under the Apache License 2.0.
 
 ---
 #### Author:

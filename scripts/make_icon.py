@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MP-OSC Icon Generator
+Gesture Icon Generator
 
 Draws a "landmark constellation" glyph -- a simplified stick-figure skeleton
 in the app's own landmark/connection colors on a dark rounded-square backdrop
@@ -11,7 +11,7 @@ one master, with per-size stroke/node overrides, so it stays legible at 16px.
 
 Usage:
     uv run python scripts/make_icon.py
-    uv run python scripts/make_icon.py --out assets/MP-OSC.icns --png assets/MP-OSC.png
+    uv run python scripts/make_icon.py --out assets/Gesture.icns --png assets/Gesture.png
     uv run python scripts/make_icon.py --keep-iconset /tmp/preview.iconset
     uv run python scripts/make_icon.py --check
 """
@@ -230,16 +230,16 @@ def build_icns(iconset_dir, out_path):
 # ENTRY POINT
 # ============================================================================
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Generate the MP-OSC application icon')
-    parser.add_argument('--out', default='assets/MP-OSC.icns', help='Output .icns path')
-    parser.add_argument('--png', default='assets/MP-OSC.png', help='Output 1024px PNG master path')
+    parser = argparse.ArgumentParser(description='Generate the Gesture application icon')
+    parser.add_argument('--out', default='assets/Gesture.icns', help='Output .icns path')
+    parser.add_argument('--png', default='assets/Gesture.png', help='Output 1024px PNG master path')
     parser.add_argument('--keep-iconset', default=None,
                         help='Also keep the generated .iconset directory at this path')
     parser.add_argument('--check', action='store_true',
                         help='Advisory only: compare a fresh render against the existing .icns')
     args = parser.parse_args(argv)
 
-    tmp_dir = args.keep_iconset or tempfile.mkdtemp(prefix='mposc-iconset-')
+    tmp_dir = args.keep_iconset or tempfile.mkdtemp(prefix='gesture-iconset-')
     try:
         write_iconset(tmp_dir)
         build_icns(tmp_dir, args.out)

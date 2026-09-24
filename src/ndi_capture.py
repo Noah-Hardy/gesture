@@ -21,6 +21,54 @@ except ImportError:
 
 
 # ============================================================================
+# SOURCE SELECTION
+# ============================================================================
+# camera.ndi_bandwidth values. "lowest" asks the sender for its proxy
+# stream (~640x360) - the engine letterboxes every frame down to the
+# processing size anyway, so fully decoding 1080p only to shrink it is
+# wasted work. "highest" is the full-resolution program stream.
+NDI_BANDWIDTHS = ('lowest', 'highest')
+DEFAULT_NDI_BANDWIDTH = 'lowest'
+
+
+def select_ndi_source(sources, wanted):
+    """
+    Pick the NDI source to connect to
+
+    Match order: exact name (case-insensitive), then a substring that
+    matches exactly one source. An ambiguous or missing name matches
+    nothing - the old "substring, else sources[0]" rule could silently
+    connect to the wrong machine ("Studio" matching "Studio-2"), which
+    in a show is worse than failing loudly.
+
+    Args:
+        sources: Discovered NDI sources (anything with .ndi_name)
+        wanted: Configured source name, or empty/None for "first found"
+
+    Returns:
+        (source or None, reason) - reason is a one-line explanation
+        for the log when no source was chosen
+    """
+    if not sources:
+        return None, "no NDI sources found"
+    if not wanted:
+        return sources[0], ""
+
+    wanted_lower = wanted.lower()
+    for source in sources:
+        if source.ndi_name.lower() == wanted_lower:
+            return source, ""
+
+    partial = [s for s in sources if wanted_lower in s.ndi_name.lower()]
+    if len(partial) == 1:
+        return partial[0], ""
+    if partial:
+        names = ", ".join(s.ndi_name for s in partial)
+        return None, f"'{wanted}' matches more than one source ({names}) - use the full name"
+    return None, f"no source named '{wanted}'"
+
+
+# ============================================================================
 # NDI CAPTURE CLASS
 # ============================================================================
 class NDICapture:
@@ -30,20 +78,23 @@ class NDICapture:
     Provides lower latency than using NDI virtual cameras
     """
     
-    def __init__(self, source_name=None, timeout_ms=5000):
+    def __init__(self, source_name=None, timeout_ms=5000, bandwidth=DEFAULT_NDI_BANDWIDTH):
         """
         Initialize NDI capture
         
         Args:
             source_name: Name of NDI source to connect to (e.g., "MY-PC (OBS)").
-                        If None, connects to first available source.
+                        If None, connects to first available source. See
+                        select_ndi_source for how the name is matched.
             timeout_ms: Timeout for finding sources and receiving frames (milliseconds)
+            bandwidth: "lowest" (proxy stream, default) or "highest" - see NDI_BANDWIDTHS
         """
         if not NDI_AVAILABLE:
             raise RuntimeError("NDI library not available")
         
         self.source_name = source_name
         self.timeout_ms = timeout_ms
+        self.bandwidth = bandwidth if bandwidth in NDI_BANDWIDTHS else DEFAULT_NDI_BANDWIDTH
         self.receiver = None
         self.finder = None
         self.connected_source = None
@@ -88,36 +139,16 @@ class NDICapture:
         for i, source in enumerate(sources):
             print(f"   [{i}] {source.ndi_name}")
         
-        # Select source
-        selected_source = None
-        if self.source_name:
-            # Find by name
-            for source in sources:
-                if self.source_name.lower() in source.ndi_name.lower():
-                    selected_source = source
-                    break
-            if not selected_source:
-                print(f"⚠️  Source '{self.source_name}' not found, using first available")
-                selected_source = sources[0]
-        else:
-            selected_source = sources[0]
+        # Select source - never silently falls back to a different one
+        selected_source, reason = select_ndi_source(sources, self.source_name)
+        if selected_source is None:
+            print(f"❌ {reason}")
+            return
+        if not self.source_name and len(sources) > 1:
+            print("⚠️  No NDI source name configured - using the first one found")
         
         print(f"✅ Connecting to: {selected_source.ndi_name}")
-        
-        # Create receiver
-        recv_settings = ndi.RecvCreateV3()
-        recv_settings.source_to_connect_to = selected_source
-        recv_settings.color_format = ndi.RECV_COLOR_FORMAT_BGRX_BGRA  # OpenCV-compatible
-        recv_settings.bandwidth = ndi.RECV_BANDWIDTH_HIGHEST
-        
-        self.receiver = ndi.recv_create_v3(recv_settings)
-        if self.receiver is None:
-            raise RuntimeError("Failed to create NDI receiver")
-        
-        # Connect
-        ndi.recv_connect(self.receiver, selected_source)
-        self.connected_source = selected_source
-        self._is_opened = True
+        self._open_receiver(selected_source)
         
         # Get initial frame to determine resolution
         print("⏳ Waiting for first frame...")
@@ -136,6 +167,59 @@ class NDICapture:
                 ndi.recv_free_metadata(self.receiver, metadata)
         else:
             print("⚠️  Could not determine resolution from first frame")
+
+    def _open_receiver(self, source):
+        """Create a receiver for `source` and mark the capture open"""
+        recv_settings = ndi.RecvCreateV3()
+        recv_settings.source_to_connect_to = source
+        recv_settings.color_format = ndi.RECV_COLOR_FORMAT_BGRX_BGRA  # OpenCV-compatible
+        recv_settings.bandwidth = (ndi.RECV_BANDWIDTH_HIGHEST if self.bandwidth == 'highest'
+                                   else ndi.RECV_BANDWIDTH_LOWEST)
+        
+        self.receiver = ndi.recv_create_v3(recv_settings)
+        if self.receiver is None:
+            raise RuntimeError("Failed to create NDI receiver")
+        
+        # Connect
+        ndi.recv_connect(self.receiver, source)
+        self.connected_source = source
+        self._is_opened = True
+
+    def reconnect(self):
+        """
+        Rebuild the receiver after the sender went away (#31)
+
+        Senders dropping and coming back is normal in production (an OBS
+        restart, a laptop sleeping). Re-finds the source through the
+        retained finder - no NDI re-initialize, no 5s discovery wait - so
+        ReconnectingCapture can call this every few failed reads without
+        stalling the processing loop. Reconnects to the source it was
+        connected to, even when no name was configured.
+
+        Returns:
+            True if a receiver is connected again
+        """
+        if self.receiver is not None:
+            ndi.recv_destroy(self.receiver)
+            self.receiver = None
+        self._is_opened = False
+
+        if self.finder is None:
+            self.finder = ndi.find_create_v2()
+            if self.finder is None:
+                return False
+
+        ndi.find_wait_for_sources(self.finder, 100)
+        sources = ndi.find_get_current_sources(self.finder)
+        wanted = self.connected_source.ndi_name if self.connected_source is not None else self.source_name
+        source, reason = select_ndi_source(sources, wanted)
+        if source is None:
+            print(f"⚠️  NDI reconnect: {reason}")
+            return False
+
+        print(f"🔄 NDI reconnecting to: {source.ndi_name}")
+        self._open_receiver(source)
+        return True
     
     # ------------------------------------------------------------------------
     # OpenCV-compatible public methods
@@ -156,8 +240,11 @@ class NDICapture:
         if not self._is_opened or self.receiver is None:
             return False, None
         
-        # Try multiple times with shorter timeout for better responsiveness
-        for _ in range(20):  # Try up to 20 times with 50ms each = 1s total
+        # Try multiple times with shorter timeout for better responsiveness.
+        # Capped at ~0.5s (was 1s) so a dead sender costs the processing
+        # loop half a second per read, not a full second, while
+        # ReconnectingCapture works on getting it back
+        for _ in range(10):  # Try up to 10 times with 50ms each = 0.5s total
             frame_type, video, audio, metadata = ndi.recv_capture_v2(self.receiver, 50)
             
             if frame_type == ndi.FRAME_TYPE_VIDEO:

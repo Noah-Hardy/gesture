@@ -1,33 +1,40 @@
 # Camera & NDI
 
-## Webcam
+## Camera
 
-Pick **📷 Camera** and set **Device ID** — `0` is almost always your Mac's built-in camera or the first camera macOS finds; try `1`, `2`, etc. if you have more than one connected.
+Select **Camera** and set **Device ID**. `0` is normally the built-in camera or the first camera detected; additional cameras use `1`, `2` and so on.
 
-The first time MP-OSC accesses the camera, macOS will prompt for camera permission. If you accidentally denied it, re-enable it under **System Settings → Privacy & Security → Camera**, then restart MP-OSC.
+macOS requests camera permission on first use. If permission was denied, enable it under **System Settings → Privacy & Security → Camera** and restart Gesture.
 
 ## NDI
 
-Pick **🎥 NDI** to receive video over the network from an NDI sender (a switcher, another Mac running an NDI source app, OBS with the NDI plugin, etc.) instead of a local camera. Click **Refresh** to search the network for available sources — this takes a few seconds — then choose one from the dropdown.
+Select **NDI** to receive video from an NDI sender, such as a video switcher, another computer or OBS with the NDI plugin. Click **Refresh** to discover sources (this takes a few seconds), then select one.
 
-A few behaviors worth knowing:
+Source matching:
 
-- Matching a source by name is a **case-insensitive substring match**, not an exact match. Typing `switcher` will match a source literally named `Switcher-1 (Program)`.
-- If the name you've saved doesn't match anything currently on the network, MP-OSC connects to the first available source instead, rather than failing outright.
-- If no NDI sources are found at all after searching, MP-OSC falls back to the webcam automatically.
+- Names are case-insensitive. An exact match takes precedence.
+- A partial name is accepted only if it matches exactly one source. For example, `switcher` selects `Switcher-1 (Program)` only if no other source name contains "switcher".
+- If the name matches no source, or more than one, the engine exits with an error. It does not fall back to a different source or to the camera.
+- If no name is set, the first source found is used.
 
-NDI and the OSC coordinates it produces don't have a fixed relationship to real-world size — see **Processing resolution**, below, for why that matters.
+**NDI bandwidth** (**Settings → Advanced → Camera**, `camera.ndi_bandwidth`) selects the received stream. `lowest` (the default) requests the sender's proxy stream, about 640×360, which is sufficient for tracking and uses less network bandwidth. `highest` requests full resolution.
+
+## Source loss and reconnection
+
+If frames stop arriving, the engine retries with a delay that increases from 0.1 to 2 seconds, and reopens the source after every 5 failed reads. The log shows `Capture stopped delivering frames - retrying`, followed by `Capture recovered` when frames resume. The OSC heartbeat continues during this time.
+
+The engine exits after **Reconnect timeout** (**Settings → Advanced → Camera**, `camera.reconnect_timeout`, default 30 seconds). A value of `0` retries indefinitely, which is suitable for unattended installations.
 
 ## Show preview window
 
-**🖼️ Show preview window**, under **Input**, controls whether the separate confirmation window opens at all — titled **"MP-OSC Preview — not the OSC output"** so it's never mistaken for the data feed itself. It's on by default; uncheck it to run without the window (headless use, or if it's distracting). This mirrors **Mirror preview**, below, in also being a launcher checkbox that always overrides the saved `config.json` value for the run about to start (also available in **Settings → Preview**, and as `--preview`/`--no-preview` on the command line).
+**Show preview window**, under **Input**, controls whether the preview window opens. It is also available in **Settings → Preview** and as `--preview` / `--no-preview`. The launcher checkbox overrides the saved value for each run.
 
 ## Mirror preview
 
-**🪞 Mirror preview window** flips the preview horizontally, so a webcam feed looks like a mirror (your right hand appears on the right side of the screen) rather than a video call (your right hand appears on the left). This is a **display-only** setting — it does not change any OSC data. Landmark coordinates and every value MP-OSC sends over the network are computed before the mirror flip and are completely unaffected by this checkbox.
+**Mirror preview window** flips the preview horizontally. It affects the display only; landmark coordinates are computed from the unflipped frame.
 
 ## Processing resolution
 
-Internally, every incoming frame — from a camera or from NDI — is resized to a fixed **processing resolution** before MediaPipe looks at it, and that resized frame is also what appears in the preview window. This is a `config.json` setting (`camera.processing_width` / `camera.processing_height`, default 640×480) rather than something in the launcher form.
+Each frame is resized to the processing resolution before tracking. The preview shows this resized frame. Set it in **Settings → Advanced → Camera** (`camera.processing_width` and `camera.processing_height`, default 640×480). Smaller sizes run faster; larger sizes detect smaller or more distant people.
 
-**This resize does not preserve aspect ratio.** If your camera or NDI source has a different aspect ratio than the configured processing resolution (for example, a 16:9 source resized into a 4:3 processing size), the image — and the body it's tracking — will be stretched or squashed. If you're seeing landmark positions that seem subtly off, or people that look unnaturally wide or narrow in the preview, check that the processing resolution's aspect ratio matches your actual source. See the **Appendix** for how to change it.
+The aspect ratio is preserved. A source with a different aspect ratio, such as 16:9 into 4:3, is scaled and padded rather than stretched, and all normalized coordinates are mapped back to the source frame. Normalized x and y therefore always span the full source image, from 0 to 1.

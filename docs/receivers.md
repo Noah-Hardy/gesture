@@ -1,21 +1,68 @@
-# TouchDesigner, Max, Unity
+# TouchDesigner, Max, Unity, Isadora
 
-General patterns for wiring up the three most common receivers. In every case you're listening for UDP/OSC on the **Port** configured in MP-OSC's OSC Output section, on the same machine (`127.0.0.1`) or over the network (the receiving machine's actual IP).
+Configure the receiver to listen for OSC over UDP on the port set in Gesture's **OSC Output** section (default 1234).
+
+The approach depends on the output format (**Settings → Advanced → OSC → Output format**; see **OSC Output**):
+
+- **`float`**: each landmark has its own address with float arguments. Suitable for receivers that bind addresses to numeric values. Recommended for Isadora and lossy networks.
+- **`legacy`** (default) and **`json`**: one JSON string per channel, parsed in the receiver.
+
+`json` and `float` are sent as OSC bundles. All receivers below unpack bundles automatically.
 
 ## TouchDesigner
 
-Add an **OSC In DAT** or **OSC In CHOP**, set its network port to match MP-OSC's, and turn it on. Because every MP-OSC message is a single JSON string argument rather than separate float arguments, an **OSC In DAT** (which gives you the raw string per row) paired with a `json.loads()` call in a Script/Text DAT, or TouchDesigner's built-in `op('oscin1').JSONtoDicts()`-style helpers, is a more direct fit than an OSC In CHOP expecting numeric channels straight off the wire.
+**float:** add an **OSC In CHOP** on Gesture's port. Each address produces one channel per argument: x, y, z and, for pose, visibility. Use a **Select CHOP** with a pattern such as `pose/lm/*` or `left_hand/*` to select landmarks.
 
-Route on the OSC address (e.g. `/pose/raw`, `/left_hand/raw`) with a Select or Filter DAT, then parse the JSON payload to pull out the `landmarks` array. See the **OSC Address Reference** for exact field names per channel, and **Landmark Reference** below for what each numeric index in a pose or hand landmark list corresponds to physically.
+**legacy / json:** use an **OSC In DAT**, which lists each message's address and string argument per row. Filter by address (`/pose/raw`, `/left_hand/raw` and so on) and parse the argument with `json.loads()` in a Script DAT or DAT Execute callback. Field names for each format are in the **OSC Address Reference**.
 
-## Max/MSP (and Max for Live)
+## Max/MSP and Max for Live
 
-Max's `[udpreceive]` object listening on the configured port gets you the raw OSC packets; `[OSC-route]` (from the CNMAT OSC library, commonly bundled with Max) or a plain `[route]` on the address pattern splits them by channel. Since the payload is a JSON string rather than a list of floats, feed it to `[js]` (a small script calling `JSON.parse`) or the `[jit.string2json]`-style JSON-to-dict object available in recent Max versions, rather than expecting `[unpack]` to work directly on OSC arguments.
+`[udpreceive 1234]` receives OSC messages and unpacks bundles.
+
+**float:** route by address and unpack the arguments, for example `[route /pose/lm/0]` → `[unpack f f f f]` for the nose's x, y, z and visibility. CNMAT `[OSC-route]` also supports wildcards (`/pose/lm/*`).
+
+**legacy / json:** `[route /pose/raw]` → `[prepend parse]` → `[dict]` converts the JSON string to a dictionary. Extract landmarks with `[dict.unpack landmarks:]`, or with `[js]` and `JSON.parse`.
 
 ## Unity
 
-`extOSC` and similar community OSC packages give you a `Bind` call per address (e.g. `/pose/raw`) that fires a callback with the raw `OscMessage`. Because the argument is one string, call `.StringValue` on it and deserialize with `JsonUtility.FromJson<T>()` against a small `[Serializable]` class matching the payload shape shown in the **OSC Address Reference** — or a general-purpose JSON library if you'd rather not hand-write a class per channel.
+OSC packages such as extOSC provide a per-address `Bind` call that invokes a callback with the incoming `OSCMessage`.
 
-## A practical note for all three
+**float:** bind each required address, for example `/pose/lm/15` for the left wrist, and read x, y and z from `message.Values[0].FloatValue`, `[1]` and `[2]`. Alternatively, bind `/pose/lm/*` and parse the index from the address.
 
-Every payload's numeric coordinates are normalized (roughly 0–1 across the frame, see **Landmark Reference**), not pixels — so before mapping to a screen position or 3D scene, multiply by your target's actual width/height (and, for world landmarks, treat the values as real-world meters relative to the body's center rather than screen space). And regardless of receiver, remember that `status: 0` on `/mp/status` or `/hand/status` fires on ordinary stale-result frames, not only when someone leaves — debounce it if you're using it to drive a "person present" toggle. See **OSC Output** for why.
+**legacy / json:** read the string argument (`message.Values[0].StringValue`) and deserialize it with `JsonUtility.FromJson<T>()` into a `[Serializable]` class matching the payload in the **OSC Address Reference**, or with a general-purpose JSON library.
+
+## Isadora
+
+Isadora maps OSC addresses to numeric values and cannot parse JSON strings directly. Use `float`.
+
+1. In Gesture, set **Output format** to `float` and set **Port** to Isadora's OSC input port (default 1234). Click **Start**.
+2. In Isadora, open **Communications → Stream Setup**, enable OSC on that port, and click **Auto-Detect Input**. Addresses such as `/pose/lm/0`, `/pose/lm/15` and `/gesture/pose/tracking` appear while a person is in frame. Assign channel numbers to the required addresses.
+3. Add an **OSC Listener** actor for each address, set to its assigned channel. The output carries the address's values: x, y, z and visibility for pose landmarks; x, y and z for hand landmarks. Depending on the Isadora version, multiple arguments appear either as a list or as one stream entry per argument. Use a **Limit-Scale Value** actor to map the 0–1 range to stage coordinates.
+4. Use `/gesture/pose/tracking` (greater than 0 when a person is present) to control effect visibility. Landmark values retain their last position when tracking is lost.
+
+Common indices: 0 nose, 15 and 16 wrists, 23 and 24 hips (see **Landmark indices** in the **OSC Address Reference**). Normalized x and y range from 0 at the left and top of the frame to 1 at the right and bottom. `/pose/bounds` gives the body's extent as six floats (min x, max x, min y, max y, min z, max z).
+
+### JSON formats in Isadora
+
+If `legacy` or `json` is required, for example because another receiver on the same stream expects JSON, use Isadora's **JavaScript** actor:
+
+1. Bind an OSC Listener to `/pose/raw` and connect its output to a JavaScript actor with one text input and three outputs.
+2. Use the following script, which outputs x, y and z of landmark 15 (left wrist). Change `n` to select another landmark.
+
+```
+function main() {
+    var n = 15;
+    var payload = JSON.parse(arguments[0]);
+    if (!payload.landmarks || payload.landmarks.length <= n) {
+        return [0, 0, 0];
+    }
+    var lm = payload.landmarks[n];
+    return [lm.x, lm.y, lm.z];
+}
+```
+
+The script works with both `legacy` and `json`, as both list landmarks in index order. Because `/pose/raw` exceeds one network packet in both formats, frames can be lost on Wi-Fi or busy networks. `float` is not affected.
+
+## Coordinates and presence
+
+Normalized coordinates range from approximately 0 to 1 across the frame; scale by the target's width and height. World landmarks are in metres with the origin at the hips. For presence detection, use the tracking channel (`/gesture/pose/tracking`, or `/mp/tracking` in `legacy`) rather than status, which reads `0` on intermediate frames. See **OSC Output**.

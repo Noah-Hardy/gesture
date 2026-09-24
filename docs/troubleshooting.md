@@ -1,66 +1,70 @@
 # Troubleshooting
 
-The tracking engine's console output streams directly into the launcher's log pane, so the messages below are exactly what you'll see there. Find the message, read what it means.
+The engine's output appears in the launcher's log pane. Messages are listed below by category.
 
 ## Camera and NDI
 
 | Message | Meaning |
 |---|---|
-| `❌ Video capture is not open - nothing to process` | The chosen camera device ID doesn't exist, or NDI never connected and there was no camera to fall back to. Check the device ID, or on macOS confirm camera access under **System Settings → Privacy & Security → Camera**. |
-| `⚠️ Camera may be slow to start - continuing anyway` | The camera didn't produce a frame within about 3 seconds of opening. Often harmless (some cameras are just slow to wake up); if tracking never starts, the camera may be in use by another app. |
-| `❌ Too many consecutive frame failures` | The camera or NDI source stopped delivering frames mid-session — often a cable, USB, or network dropout. Tracking stops; restart it once the source is back. |
-| `❌ NDI requested but ndi-python not installed` | This build doesn't have NDI support available. NDI is optional; camera input still works. |
-| `❌ NDI capture failed to open, falling back to camera...` | NDI setup failed for some reason (see the next line in the log for the specific error) and MP-OSC switched to the webcam instead. |
-| `⚠️ Source '...' not found, using first available` | The saved NDI source name didn't match anything currently on the network (matching is a substring search — see **Camera & NDI**), so MP-OSC connected to whatever NDI source it found first instead. |
-| `⚠️ Resolution differs from config` | Your camera's actual resolution doesn't match what's requested. Frames are resized to the configured processing resolution regardless — see **Processing resolution** in **Camera & NDI** for why that can distort the image. |
+| `Video capture is not open - nothing to process` | The camera device ID does not exist, or NDI did not connect. Check the device ID and camera permission (**System Settings → Privacy & Security → Camera**). |
+| `Camera may be slow to start - continuing anyway` | No frame arrived within about 3 seconds of opening the camera. Usually harmless. If tracking does not start, another application may be using the camera. |
+| `Capture stopped delivering frames - retrying` | The source stopped delivering frames. The engine retries and periodically reopens the source; `Capture recovered` follows on success. See **Camera & NDI**. |
+| `Capture lost for ...s (... failed reads) - giving up` | The source did not recover within **Reconnect timeout** (default 30 s). Restore the source and click **Start**, or set the timeout to `0` to retry indefinitely. |
+| `NDI requested but ndi-python not installed` | This build has no NDI support. Camera input is unaffected. |
+| `NDI source unavailable - not falling back to webcam` | NDI did not connect. The preceding line gives the reason: `no NDI sources found`, `no source named '...'`, or `'...' matches more than one source` (use the full name). See **Camera & NDI**. |
+| `NDI setup failed` | The NDI library failed to initialize; the error follows. Check that the NDI runtime is installed. |
+| `Launcher is gone - stopping` | The launcher exited or crashed, and the engine stopped to release the camera. |
+| `Resolution differs from config` | The camera's actual resolution differs from the requested resolution. Frames are still scaled to the processing resolution with the aspect ratio preserved; see **Processing resolution** in **Camera & NDI**. |
 
 ## Startup and model loading
 
 | Message | Meaning |
 |---|---|
-| `📥 Downloading pose model...` / `📥 Downloading hand model...` / `📥 Downloading holistic model...` | First-time setup: MP-OSC fetches the MediaPipe model files it needs. Requires an internet connection once; models are cached afterward. The packaged macOS app ships all models already downloaded, so this should only appear when running from source. |
-| `❌ Failed to download model` | The one-time model download failed — check your internet connection and try again. |
-| `❌ Model file not available` / `❌ Hand model file not available` / `❌ Holistic model file not available` | The model file MP-OSC needs isn't present and couldn't be fetched. Tracking can't start without it. |
-| `🛑 Cannot initialize pose processing backend` / `hand processing backend` / `any processing backend` | Every available detection backend failed to initialize (both the modern and legacy MediaPipe APIs). Tracking cannot start; check the lines above this one in the log for the underlying reason. |
+| `Downloading pose model...` / `hand model...` / `holistic model...` | A model file is being downloaded. This requires an internet connection once; models are cached afterwards. The packaged app includes all models, so this appears only when running from source. |
+| `Failed to download model` | The model download failed. Check the internet connection and retry. |
+| `Model file not available` / `Hand model file not available` / `Holistic model file not available` | A required model file is missing and could not be downloaded. Tracking cannot start. |
+| `Cannot initialize pose processing backend` / `hand processing backend` / `any processing backend` | Both the Tasks and legacy MediaPipe APIs failed to initialize. The preceding log lines give the cause. |
 
-## Delegate (CPU/GPU) selection
-
-| Message | Meaning |
-|---|---|
-| `🍎 Apple Silicon detected: Using CPU delegate` | Expected and correct — GPU acceleration is intentionally disabled on Apple Silicon due to a known MediaPipe memory leak. Not an error. |
-| `⚠️ GPU delegate failed during initialization` | GPU setup failed and MP-OSC is falling back to CPU automatically. Tracking continues, typically just slower. |
-| `❌ CPU delegate also failed` | Both GPU and CPU setup failed for this component. That component (pose or hand) won't be available this run. |
-
-## During tracking (recoverable — tracking continues)
+## Delegate selection
 
 | Message | Meaning |
 |---|---|
-| `⚠️ Tasks frame processing error` / `⚠️ Legacy frame processing error` / `⚠️ Hand frame processing error` / `⚠️ Holistic frame processing error` | A single frame failed to process. MP-OSC logs it and continues with the next frame. Occasional occurrences are usually harmless; if this repeats every frame, tracking has effectively stalled and needs a restart. |
-| `OSC send error` | A network send failed (destination unreachable, etc). The message is counted as dropped and tracking continues — check that your OSC host/port are correct and reachable. |
+| `Apple Silicon detected: Using CPU delegate` | Expected. The GPU delegate is disabled on Apple Silicon because of a MediaPipe memory leak. |
+| `GPU delegate failed during initialization` | GPU initialization failed; Gesture uses the CPU instead. |
+| `CPU delegate also failed` | Both delegates failed for this component (pose or hand), which is unavailable for this run. |
 
-## Config
+## During tracking
+
+These errors are recoverable; tracking continues.
 
 | Message | Meaning |
 |---|---|
-| `⚠️ Failed to load config file` | `config.json` exists but couldn't be parsed (often a JSON syntax error from manual editing) — MP-OSC falls back to defaults for this run. Fix the file or use **💾 Save Config** to overwrite it with a valid one. |
-| `❌ Invalid OSC port` / `❌ Invalid camera device ID` | **💾 Save Config** refused to save because one of those fields isn't a valid number. Fix the field and save again. |
+| `Tasks frame processing error` / `Legacy frame processing error` / `Hand frame processing error` / `Holistic frame processing error` | One frame failed to process and was skipped. Occasional occurrences are harmless. If it repeats on every frame, restart the engine. |
+| `OSC send error` | A send failed, for example because the destination is unreachable. The packet is counted as dropped. Check the OSC host and port. |
 
-## Updating
+## Configuration
 
-If a download or install fails partway — a lost connection, a checksum mismatch, a signature that doesn't verify — MP-OSC shows the error, and the version you already have keeps running untouched; nothing is lost, and there's nothing to clean up by hand. See the **Updates** guide for the exact steps an install goes through.
+| Message | Meaning |
+|---|---|
+| `Failed to load config file` | `config.json` could not be parsed, typically because of a JSON syntax error. Defaults are used for this run. Correct the file, or click **Save Config** to overwrite it. |
+| `Invalid OSC port` / `Invalid camera device ID` | **Save Config** rejected a non-numeric value. Correct the field and save again. |
 
-If you're offline, or MP-OSC can't self-update on this machine (it's still in `~/Downloads`, or installed somewhere your account can't write to), use **Help → Check for Updates…** once you're back online and in a writable location, or download the new version manually from the project's GitHub Releases page (**Help → Project on GitHub**).
+## Updates
 
-## Data arrives but is incomplete
+If a download or installation fails, Gesture reports the error and the installed version is unchanged. See **Updates**.
 
-Some OSC channels come through fine — usually `/mp/status`, `/hand/status`, and the small `*_bounds` channels — while the larger landmark channels (`/pose/raw`, `/left_hand/raw`, `/right_hand/raw`, and the `*/world` variants) arrive rarely or not at all. This has no single console message; it shows up as a gap between what your receiver logs and what MP-OSC's own `Sent` count (Show FPS) says it transmitted. Three causes, in the order to check them:
+If Gesture cannot update itself (for example, it is running from `~/Downloads` or from a location the user cannot write to), move it to **Applications** and use **Help → Check for Updates…**, or download the release manually from **Help → Project on GitHub**.
 
-- **Outgoing send queue too small.** `all` mode sends 14 messages per frame; older configs could have a queue depth (`osc.queue_size`) too small to hold even one frame's worth, so any brief stall in the sender thread dropped landmark channels every frame. Fixed as of 0.1.8 — the default and the enforced floor are both 32, and older saved configs are migrated automatically the first time you launch a 0.1.8 build. Confirm with **Show FPS**: `Dropped` should stay flat under normal load; if it's still climbing, check your `osc.queue_size` in **Settings → Advanced**.
-- **MTU fragmentation.** A full pose's landmark JSON can exceed a single network packet's size, and not every receiver reassembles fragmented UDP OSC payloads correctly. Planned for 0.3.0 (see the OSC protocol overhaul).
-- **JSON-vs-numeric payload format.** MP-OSC sends one JSON string argument per message; a receiver expecting separate float/int OSC arguments (some patches in Isadora, TouchDesigner's OSC In CHOP, and Resolume in particular) can silently fail to parse it as anything at all. A native-float output mode is planned for 0.3.0.
+## Incomplete data
 
-Until the 0.3.0 protocol work lands, if you're still seeing gaps after confirming the queue isn't the cause: switching **Tracking mode** to `pose` or `hand` instead of `all` cuts the per-frame message count roughly in half, which reduces exposure to both the fragmentation and parsing issues even though it doesn't fix them outright.
+Status and bounds channels arrive, but landmark channels (`/pose/raw`, `/left_hand/raw`, `/right_hand/raw` and the world variants) arrive intermittently or not at all. No log message indicates this; compare the receiver's log with the `Sent` count in the stats line (**Show FPS**). Check the following in order:
 
-## If none of this matches what you're seeing
+- **Send queue drops.** With **Show FPS** enabled, `Dropped` should remain constant under normal load. If it rises, increase `osc.queue_size` in **Settings → Advanced** (minimum 32).
+- **IP fragmentation.** In `legacy`, a full pose's landmark JSON (about 2.5 KB) exceeds one network packet and is fragmented; the loss of any fragment discards the message, and some receivers do not reassemble fragments. In `json`, `/pose/raw` (about 1.76 KB) is still fragmented. Use `float` (**Settings → Advanced → OSC → Output format**), in which every bundle fits in one packet. The receiver must accept OSC bundles. See **OSC Output**.
+- **Payload type.** `legacy` and `json` send a JSON string argument. Receivers that expect numeric arguments, such as Isadora, TouchDesigner's OSC In CHOP and Resolume, cannot use it. Use `float`; see **TouchDesigner, Max, Unity, Isadora**.
 
-Copy the exact message from the log pane and check the **OSC Address Reference** and **Appendix** for anything more specific to the feature involved, or consult the project's GitHub page from the **Help** menu.
+When a JSON format is required, setting **Tracking mode** to `pose` or `hand` instead of `all` approximately halves the messages per frame. This reduces, but does not eliminate, both problems.
+
+## Other issues
+
+Note the exact log message and consult the **OSC Address Reference** and **Appendix**, or the project page (**Help → Project on GitHub**).

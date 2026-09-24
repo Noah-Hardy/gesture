@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MediaPipe OSC - Application Entry Point
+Gesture - Application Entry Point
 
 Dispatches between two ways of running the app:
   - With command line arguments: runs the tracking engine (same as main.py)

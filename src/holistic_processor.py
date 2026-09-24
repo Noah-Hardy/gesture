@@ -11,12 +11,9 @@ Used for 'all' mode to halve inference work vs separate pose + hand landmarkers
 # ============================================================================
 import os
 import time
-import cv2
-import numpy as np
 import mediapipe as mp
 from mediapipe.framework.formats import landmark_pb2
 
-from .pose_utils import get_pose_bounds_with_values, process_landmarks_to_dict, compact_json, letterbox_frame, LetterboxTransform
 from .model_downloader import download_holistic_model
 from .pose_processor import PoseProcessor
 
@@ -115,19 +112,19 @@ class TasksHolisticProcessor(PoseProcessor):
     Publishes on the same OSC channels as the separate pose/hand processors
     """
 
-    def __init__(self, osc_sender, show_fps=False, config=None, force_cpu=False, force_gpu=False, is_apple_silicon=None):
+    def __init__(self, osc, show_fps=False, config=None, force_cpu=False, force_gpu=False, is_apple_silicon=None):
         """
         Initialize Tasks holistic processor
 
         Args:
-            osc_sender: ThreadedOSCSender instance
+            osc: OscEmitter instance
             show_fps: Boolean to enable FPS display
             config: Configuration object
             force_cpu: Force CPU delegate even if GPU available
             force_gpu: Force GPU delegate (WARNING: memory leak on Apple Silicon)
             is_apple_silicon: Override Apple Silicon detection
         """
-        super().__init__(osc_sender, show_fps, config)
+        super().__init__(osc, show_fps, config)
         self.force_cpu = force_cpu
         self.force_gpu = force_gpu
         from .pose_processor import IS_APPLE_SILICON
@@ -163,56 +160,6 @@ class TasksHolisticProcessor(PoseProcessor):
         )
 
     # ------------------------------------------------------------------------
-    # OSC hand data transmission (same channels as HandProcessor)
-    # ------------------------------------------------------------------------
-
-    def send_hand_data(self, hand_landmarks, hand_world_landmarks, handedness, timestamp):
-        """Send hand data via OSC (single hand)"""
-        hand_prefix = "left_hand" if handedness.lower() == "left" else "right_hand"
-
-        if hand_landmarks:
-            osc_payload = {
-                "timestamp": timestamp,
-                "handedness": handedness,
-                "landmarks": hand_landmarks
-            }
-            self.osc_sender.send_message(f"/{hand_prefix}/raw", compact_json(osc_payload))
-
-        if hand_world_landmarks:
-            world_payload = {
-                "timestamp": timestamp,
-                "handedness": handedness,
-                "landmarks": hand_world_landmarks
-            }
-            self.osc_sender.send_message(f"/{hand_prefix}/world", compact_json(world_payload))
-
-    def send_hand_bounds_data(self, landmarks, world_landmarks, handedness, transform=None):
-        """Send bounding box data via OSC (single hand)"""
-        hand_prefix = "left_hand" if handedness.lower() == "left" else "right_hand"
-
-        if landmarks:
-            bounds = get_pose_bounds_with_values(landmarks, transform)
-            self.osc_sender.send_message(f"/{hand_prefix}/bounds", compact_json(bounds))
-
-        if world_landmarks:
-            # World landmarks are already in real-world metres - no transform
-            world_bounds = get_pose_bounds_with_values(world_landmarks)
-            self.osc_sender.send_message(f"/{hand_prefix}/world_bounds", compact_json(world_bounds))
-
-    def send_empty_single_hand_data(self, handedness, timestamp):
-        """Send empty data for one hand to clear stale data on receiving machine"""
-        hand_prefix = "left_hand" if handedness.lower() == "left" else "right_hand"
-        empty_payload = {
-            "timestamp": timestamp,
-            "handedness": handedness,
-            "landmarks": []
-        }
-        self.osc_sender.send_message(f"/{hand_prefix}/raw", compact_json(empty_payload))
-        self.osc_sender.send_message(f"/{hand_prefix}/world", compact_json(empty_payload))
-        self.osc_sender.send_message(f"/{hand_prefix}/bounds", compact_json({}))
-        self.osc_sender.send_message(f"/{hand_prefix}/world_bounds", compact_json({}))
-
-    # ------------------------------------------------------------------------
     # Async result callback
     # ------------------------------------------------------------------------
 
@@ -226,8 +173,7 @@ class TasksHolisticProcessor(PoseProcessor):
             self.results = result
             self._has_fresh_results = True
             self.pending_frames = max(0, self.pending_frames - 1)
-        # Explicitly don't store output_image - it's not needed and causes memory leaks
-        del output_image
+        # output_image is deliberately not stored - only the result is needed
 
     # ------------------------------------------------------------------------
     # Setup
@@ -366,28 +312,14 @@ class TasksHolisticProcessor(PoseProcessor):
             if frame is None or frame.size == 0:
                 return frame
 
-            # Always resize frame for consistent display, regardless of processing
-            proc_width = self._proc_width
-            proc_height = self._proc_height
-
-            h, w = frame.shape[:2]
-            if w != proc_width or h != proc_height:
-                # Letterbox instead of stretching: preserves the source aspect
-                # ratio (padding with black bars) so normalized coordinates
-                # sent over OSC stay correct relative to the true source frame
-                image, letterbox_transform = letterbox_frame(frame, proc_width, proc_height, self._resize_buffer)
-                if letterbox_transform.pad_x == 0 and letterbox_transform.pad_y == 0:
-                    # No padding needed - image is the reusable resize buffer
-                    self._resize_buffer = image
-                self._letterbox_transform = letterbox_transform
-            else:
-                image = frame
-                self._letterbox_transform = LetterboxTransform(1.0, 0, 0, proc_width, proc_height, proc_width, proc_height)
+            # Letterbox to the processing size (aspect-preserving, so OSC
+            # coordinates stay correct relative to the source frame)
+            image, self._letterbox_transform = self._frame_prep.letterbox(frame)
 
             # `image` is the inference input ONLY - always the clean,
             # letterboxed frame, never annotated. `target` is what gets
             # drawn into and returned.
-            target = draw_target if draw_target is not None else (image.copy() if image is self._resize_buffer else image)
+            target = draw_target if draw_target is not None else self._frame_prep.drawable(image)
 
             # Check if MediaPipe's async queue is backing up - skip frame if too many pending
             if self.pending_frames >= self.max_pending_frames:
@@ -407,28 +339,16 @@ class TasksHolisticProcessor(PoseProcessor):
                 # not "nothing detected"; sending status would misrepresent one or the other
                 return target
 
-            # Convert to RGB for MediaPipe using pre-allocated buffer
-            if (self._rgb_buffer is None or
-                self._rgb_buffer.shape[0] != image.shape[0] or
-                self._rgb_buffer.shape[1] != image.shape[1]):
-                self._rgb_buffer = np.empty((image.shape[0], image.shape[1], 3), dtype=np.uint8)
-
-            cv2.cvtColor(image, cv2.COLOR_BGR2RGB, dst=self._rgb_buffer)
-            rgb_frame = self._rgb_buffer
-
             # On Apple Silicon with GPU, use SRGBA format for Metal compatibility
             if self.is_apple_silicon and self.use_gpu:
-                rgba_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2RGBA)
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGBA, data=rgba_frame)
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGBA, data=self._frame_prep.rgba())
             else:
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=self._frame_prep.rgb())
 
             # Process with MediaPipe Tasks (async)
             landmarker.detect_async(mp_image, timestamp_counter)
             with self._results_lock:
                 self.pending_frames += 1
-
-            del mp_image
 
             timestamp = time.time()
 
@@ -452,30 +372,19 @@ class TasksHolisticProcessor(PoseProcessor):
                 pose_detected = bool(fresh_results.pose_landmarks)
                 if pose_detected:
                     self._last_detection_state = True
-                    pose_landmarks = process_landmarks_to_dict(fresh_results.pose_landmarks, "pose_0", transform)
-                    # World landmarks are already real-world metres - no transform
-                    pose_world_landmarks = []
-                    if fresh_results.pose_world_landmarks:
-                        pose_world_landmarks = process_landmarks_to_dict(fresh_results.pose_world_landmarks, "pose_world_0")
-
-                    self.send_pose_data(pose_landmarks, pose_world_landmarks, timestamp)
-                    self.send_bounds_data(
-                        fresh_results.pose_landmarks,
-                        fresh_results.pose_world_landmarks if pose_world_landmarks else None,
-                        transform
-                    )
-                    self.osc_sender.send_message("/mp/status", compact_json({"status": 1}))
+                    # World landmarks are already real-world metres - the
+                    # emitter never applies the letterbox transform to them
+                    self.osc.pose(0, fresh_results.pose_landmarks, fresh_results.pose_world_landmarks or None,
+                                  transform, "pose_0", ts=timestamp)
+                    self.osc.pose_status(1)
 
                     self._draw_landmarks(target, fresh_results.pose_landmarks)
-
-                    del pose_landmarks
-                    del pose_world_landmarks
                 else:
                     # Always send status message so receivers know program is running
-                    self.osc_sender.send_message("/mp/status", compact_json({"status": 0}))
+                    self.osc.pose_status(0)
                     # Only send empty data once when transitioning from detected to not detected
                     if self._last_detection_state:
-                        self.send_empty_data(timestamp)
+                        self.osc.pose_cleared(ts=timestamp)
                         self._last_detection_state = False
 
                 # ------------------------------------------------------------
@@ -491,26 +400,17 @@ class TasksHolisticProcessor(PoseProcessor):
                     if hand_lms:
                         hand_count += 1
                         setattr(self, last_state_attr, True)
-                        hand_landmarks = process_landmarks_to_dict(hand_lms, f"hand_{handedness.lower()}", transform)
-                        # World landmarks are already real-world metres - no transform
-                        hand_world_landmarks = None
-                        if hand_world_lms:
-                            hand_world_landmarks = process_landmarks_to_dict(hand_world_lms, f"hand_world_{handedness.lower()}")
-
-                        self.send_hand_data(hand_landmarks, hand_world_landmarks, handedness, timestamp)
-                        self.send_hand_bounds_data(hand_lms, hand_world_lms if hand_world_landmarks else None, handedness, transform)
+                        self.osc.hand(handedness, hand_lms, hand_world_lms or None, transform,
+                                      f"hand_{handedness.lower()}", ts=timestamp)
 
                         self._draw_hand_landmarks(target, hand_lms, handedness)
-
-                        del hand_landmarks
-                        del hand_world_landmarks
                     else:
                         # Only send empty data once when this hand transitions to not detected
                         if getattr(self, last_state_attr):
-                            self.send_empty_single_hand_data(handedness, timestamp)
+                            self.osc.hand_cleared(handedness, ts=timestamp)
                             setattr(self, last_state_attr, False)
 
-                self.osc_sender.send_message("/hand/status", compact_json({"status": hand_count}))
+                self.osc.hand_status(hand_count)
             elif self._display_results is not None:
                 # We have results but they're stale (already processed), just draw landmarks
                 if self._display_results.pose_landmarks:
@@ -520,17 +420,12 @@ class TasksHolisticProcessor(PoseProcessor):
                 if self._display_results.right_hand_landmarks:
                     self._draw_hand_landmarks(target, self._display_results.right_hand_landmarks, "Right")
                 # No fresh detection this frame - status 0 signals no actively tracked person
-                self.osc_sender.send_message("/mp/status", compact_json({"status": 0}))
-                self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
+                self.osc.pose_status(0)
+                self.osc.hand_status(0)
             else:
                 # No results yet - still send status so receivers know program is running
-                self.osc_sender.send_message("/mp/status", compact_json({"status": 0}))
-                self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
-
-            # Clear intermediate frames to free memory
-            del rgb_frame
-            if 'rgba_frame' in locals():
-                del rgba_frame
+                self.osc.pose_status(0)
+                self.osc.hand_status(0)
 
             self.update_fps(backend_name)
             return target

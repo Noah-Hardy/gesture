@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MediaPipe OSC Source Package
+Gesture Source Package
 Main package initialization and exports
 """
 
@@ -19,6 +19,7 @@ import importlib
 _EXPORTS = {
     # OSC Communication
     'ThreadedOSCSender': 'osc_sender',
+    'OscEmitter': 'osc_protocol',
 
     # Pose Utilities
     'get_pose_bounds_with_values': 'pose_utils',

@@ -1,33 +1,31 @@
 # Settings
 
-**mp-osc → Settings…** (⌘,) opens a separate window with four tabs, covering everything the main launcher's three collapsible sections don't. Every field is bound to a real `config.json` key (the exact key names are in the **Appendix**) and is only written to disk when you click **Save**, at the bottom of the window — closing the window or switching tabs without saving discards your changes. **Restore Defaults**, next to Save, resets every field on every tab back to its built-in default; like everything else, that's only written to `config.json` once you then click Save.
+**Gesture → Settings…** (⌘,) opens a window with four tabs covering options not shown in the launcher. Each field maps to a `config.json` key (listed in the **Appendix**). Changes are written only when **Save** is clicked; closing the window discards them. **Restore Defaults** resets every field on every tab, and also takes effect only on **Save**.
 
 ## General
 
-Controls for the self-updater (see the **Updates** guide for what these actually do):
-
-- **Check for updates on launch** and **Include pre-release builds** — the two toggles that shape the silent launch check.
-- A **Last checked** label and a **Check Now** button, for triggering an immediate check without waiting.
-
-Below that, two shortcuts to the config file itself: **Open config.json** (in your default text editor) and **Reveal config.json in Finder** — useful if you want to edit a key this window doesn't expose, or just confirm what got saved.
+- **Check for updates on launch** and **Include pre-release builds**: control the launch update check. See **Updates**.
+- **Last checked** and **Check Now**: the time of the last check, and an immediate check.
+- **Open config.json** and **Reveal config.json in Finder**: access to the configuration file, for keys this window does not expose.
 
 ## Tracking
 
-Detection thresholds for both pose and hands — the numbers that trade false positives against missed detections. For pose: **Model** (lite/full/heavy), **Number of poses**, three confidence thresholds (**detection**, **tracking**, **pose presence**), and **Smooth landmarks**. For hands: **Number of hands** and its own three confidence thresholds (**detection**, **presence**, **tracking**).
+Detection settings for pose and hands.
 
-You'll typically only touch this tab if tracking feels jittery (try raising a tracking-confidence threshold, or enabling landmark smoothing) or too eager to lose a detection in less-than-ideal lighting (try lowering a detection-confidence threshold).
+- **Pose**: **Model** (lite, full or heavy), **Number of poses**, the **detection**, **tracking** and **pose presence** confidence thresholds, and **Smooth landmarks**.
+- **Hands**: **Number of hands**, and the **detection**, **presence** and **tracking** confidence thresholds.
+
+To reduce jitter, raise the tracking confidence or enable landmark smoothing. To reduce lost detections in poor lighting, lower the detection confidence.
 
 ## Preview
 
-Everything about the on-screen preview window: whether it shows at all, whether it's mirrored, its title, and how landmarks are drawn on top of the video — separate color pickers for landmark and connection color (click a swatch to open the system color picker), plus thickness and radius fields for each. None of this affects the OSC data sent over the network — it's purely how the confirmation window on your screen looks.
+Preview window visibility, mirroring, title, and landmark drawing: landmark and connection colours, thickness and radius. These settings do not affect OSC output.
 
 ## Advanced
 
-The tab for tuning that goes beyond a typical session:
+- **Camera**: capture width, height, FPS and buffer size. **Processing width** and **Processing height** set the frame size passed to MediaPipe, the main quality and speed trade-off. **Reconnect timeout** sets how long a lost source may take to recover before the engine exits (0 means never). **NDI bandwidth** selects `lowest` (proxy stream) or `highest`. See **Camera & NDI**.
+- **Performance**: FPS cap, the FPS/stats log line, **Enable garbage collection**, and **Max pending frames** (1 gives the lowest latency). Disabling garbage collection gives the most consistent frame timing, but memory use can grow over long sessions. See **Models & Performance**.
+- **OSC**: send queue size (the number of packets held before the oldest is dropped), and **Output format**: `legacy` (default), `json` or `float`. See **OSC Output**.
+- **Backend**: **Force CPU delegate**, **Force GPU delegate**, **Force legacy MediaPipe API** (deprecated), and **No holistic** (in `all` mode, use separate pose and hand models instead of the combined holistic model). The GPU delegate leaks memory on Apple Silicon and is not recommended for long sessions.
 
-- **Camera** — raw capture width, height, FPS and buffer size (distinct from the processing resolution frames get resized to before MediaPipe sees them — see **Camera & NDI**).
-- **Performance** — target FPS cap, the Show FPS/stats line, and garbage-collection tuning (enable/interval) for trading smoother frame timing against memory use on long sessions.
-- **OSC** — the outgoing send queue size, i.e. how many messages can back up before the oldest are dropped (see **OSC Output**).
-- **Backend**, explicitly labeled "applies on next Start" since these are launch-time only and can't change while the engine is running: **Force CPU delegate**, **Force GPU delegate** (with a memory-leak warning right on the checkbox — Apple Silicon's GPU delegate is known to leak memory, so this isn't a default to leave on), **Force legacy MediaPipe API** (deprecated — will be removed in a future release), and **No holistic** (use separate pose and hand models in `all` mode instead of the combined holistic model). These four used to be checkboxes in the main launcher window; they moved here because most sessions never touch them.
-
-See the **Appendix** for the exact `config.json` key each field maps to, and **Models & Performance** for what the Backend toggles actually change under the hood.
+Output format and Backend changes apply at the next **Start**.

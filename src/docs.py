@@ -24,6 +24,8 @@ import webbrowser
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple
 
+from src.config import app_support_dir
+
 
 # ============================================================================
 # TOPICS
@@ -44,7 +46,7 @@ TOPICS: Tuple[Topic, ...] = (
     Topic('updates', 'Updates', 'Guide', 'updates.md'),
     Topic('input-sources', 'Camera & NDI', 'Guide', 'input-sources.md'),
     Topic('osc-output', 'OSC Output', 'Guide', 'osc-output.md'),
-    Topic('receivers', 'TouchDesigner, Max, Unity', 'Guide', 'receivers.md'),
+    Topic('receivers', 'TouchDesigner, Max, Unity, Isadora', 'Guide', 'receivers.md'),
     Topic('models-performance', 'Models & Performance', 'Guide', 'models-performance.md'),
     Topic('troubleshooting', 'Troubleshooting', 'Guide', 'troubleshooting.md'),
     Topic('osc-reference', 'OSC Address Reference', 'Reference', 'osc-reference.md'),
@@ -576,14 +578,14 @@ def render_site(topics: Tuple[Topic, ...] = TOPICS) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MP-OSC Documentation</title>
+<title>Gesture Documentation</title>
 <style>{_HTML_STYLE}</style>
 </head>
 <body>
 <div class="layout">
 <nav>{''.join(nav_parts)}</nav>
 <main>{''.join(section_parts)}
-<footer>MP-OSC{version_str} &middot; generated documentation, not stored in the app bundle.</footer>
+<footer>Gesture{version_str} &middot; generated documentation, not stored in the app bundle.</footer>
 </main>
 </div>
 </body>
@@ -598,17 +600,17 @@ def _writable_docs_dir() -> str:
     """Directory the rendered HTML can be written into
 
     The bundle is read-only and code-signed; nothing may be written inside
-    it. Application Support mirrors the precedent in src/config.py
-    default_config_path.
+    it. Lives in the app's Application Support folder (see
+    src.config.app_support_dir).
     """
-    d = os.path.join(os.path.expanduser('~/Library/Application Support'), 'mp-osc', 'docs')
+    d = os.path.join(app_support_dir(), 'docs')
     os.makedirs(d, exist_ok=True)
     return d
 
 
 def html_output_path() -> str:
     """Path the rendered documentation HTML is written to"""
-    return os.path.join(_writable_docs_dir(), 'MP-OSC-Documentation.html')
+    return os.path.join(_writable_docs_dir(), 'Gesture-Documentation.html')
 
 
 def write_site(path: Optional[str] = None) -> str:

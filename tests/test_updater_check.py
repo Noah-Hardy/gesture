@@ -42,7 +42,7 @@ class FakeResponse:
 
 
 def _release_payload(tag='v0.9.9', prerelease=False):
-    name = f'MP-OSC-{tag.lstrip("v")}-macos-arm64.zip'
+    name = f'Gesture-{tag.lstrip("v")}-macos-arm64.zip'
     return {
         'tag_name': tag, 'name': tag, 'body': '', 'html_url': 'https://example',
         'prerelease': prerelease, 'draft': False,
@@ -58,7 +58,7 @@ def fake_current_version(monkeypatch):
     # current_version() reads docs.app_version() by default; pin it so
     # every test compares against a known baseline regardless of the
     # checked-out pyproject.toml version.
-    monkeypatch.setenv('MPOSC_UPDATE_FAKE_VERSION', '0.1.0')
+    monkeypatch.setenv('GESTURE_UPDATE_FAKE_VERSION', '0.1.0')
 
 
 def test_returns_available_for_a_newer_release(monkeypatch):
@@ -145,7 +145,7 @@ def test_skipped_version_is_still_offered_on_manual_check(monkeypatch):
 
 
 def test_missing_current_version_errors(monkeypatch):
-    monkeypatch.setenv('MPOSC_UPDATE_FAKE_VERSION', '')
+    monkeypatch.setenv('GESTURE_UPDATE_FAKE_VERSION', '')
     monkeypatch.setattr('src.updater.docs.app_version', lambda: '')
     result = check_for_update(FakeConfig(), manual=True)
     assert result.kind == 'error'
@@ -170,6 +170,7 @@ def test_malformed_json_response_is_an_error_on_manual_check(monkeypatch):
 
 def test_falls_back_to_old_repo_name_when_new_one_404s(monkeypatch):
     # Before the mp-osc -> gesture rename, the gesture repo does not exist yet.
+    monkeypatch.delenv('GESTURE_UPDATE_REPO', raising=False)
     monkeypatch.delenv('MPOSC_UPDATE_REPO', raising=False)
     urls = []
 
@@ -185,6 +186,7 @@ def test_falls_back_to_old_repo_name_when_new_one_404s(monkeypatch):
 
 
 def test_new_repo_name_answers_without_touching_old_one(monkeypatch):
+    monkeypatch.delenv('GESTURE_UPDATE_REPO', raising=False)
     monkeypatch.delenv('MPOSC_UPDATE_REPO', raising=False)
     urls = []
 
@@ -197,6 +199,7 @@ def test_new_repo_name_answers_without_touching_old_one(monkeypatch):
 
 
 def test_non_404_error_on_new_repo_does_not_fall_back(monkeypatch):
+    monkeypatch.delenv('GESTURE_UPDATE_REPO', raising=False)
     monkeypatch.delenv('MPOSC_UPDATE_REPO', raising=False)
     urls = []
 
@@ -209,6 +212,7 @@ def test_non_404_error_on_new_repo_does_not_fall_back(monkeypatch):
 
 
 def test_404_on_every_repo_is_an_error_on_manual_check(monkeypatch):
+    monkeypatch.delenv('GESTURE_UPDATE_REPO', raising=False)
     monkeypatch.delenv('MPOSC_UPDATE_REPO', raising=False)
 
     def fake(req, *a, **k):
@@ -216,3 +220,25 @@ def test_404_on_every_repo_is_an_error_on_manual_check(monkeypatch):
     monkeypatch.setattr('src.updater.urllib.request.urlopen', fake)
     result = check_for_update(FakeConfig(), manual=True)
     assert result.kind == 'error' and '404' in result.message
+
+
+def test_legacy_fake_version_env_name_still_works(monkeypatch):
+    from src.updater import current_version
+    monkeypatch.delenv('GESTURE_UPDATE_FAKE_VERSION', raising=False)
+    monkeypatch.setenv('MPOSC_UPDATE_FAKE_VERSION', '0.0.7')
+    assert current_version() == '0.0.7'
+
+
+@pytest.mark.parametrize('env_name', ['GESTURE_UPDATE_REPO', 'MPOSC_UPDATE_REPO'])
+def test_update_repo_override_under_either_name(monkeypatch, env_name):
+    monkeypatch.delenv('GESTURE_UPDATE_REPO', raising=False)
+    monkeypatch.delenv('MPOSC_UPDATE_REPO', raising=False)
+    monkeypatch.setenv(env_name, 'someone/fork')
+    urls = []
+
+    def fake(req, *a, **k):
+        urls.append(req.full_url)
+        return FakeResponse([_release_payload('v0.9.9')])
+    monkeypatch.setattr('src.updater.urllib.request.urlopen', fake)
+    check_for_update(FakeConfig(), manual=True)
+    assert urls == ['https://api.github.com/repos/someone/fork/releases?per_page=10']
