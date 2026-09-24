@@ -15,8 +15,10 @@ Protocols (config key osc.protocol):
     json   - JSON v2: no per-landmark type/id, top-level "person" on pose
              payloads, null visibility omitted, /gesture/* native-int
              status, per-frame bundles of at most MAX_BUNDLE_BYTES.
-    float  - native OSC floats per landmark (FloatFormatter - see the
-             ADDING A FORMATTER note below).
+    float  - native OSC floats, one message per landmark
+             (/pose/lm/<n> x y z vis, /left_hand/lm/<n> x y z, 6-float
+             bounds), /gesture/* status, per-frame bundles. See
+             FloatFormatter for the full address map.
 """
 
 # ============================================================================
@@ -426,6 +428,116 @@ class JsonFormatter(OscFormatter):
                 (f"/{prefix}/bounds", compact_json({})),
                 (f"/{prefix}/world_bounds", compact_json({})),
             ]
+        return out
+
+
+# ============================================================================
+# FLOAT FORMATTER (native OSC floats, #52)
+# ============================================================================
+def _bounds6(points):
+    """(min_x, max_x, min_y, max_y, min_z, max_z) of a list of (x, y, z)"""
+    xs, ys, zs = zip(*points)
+    return [float(min(xs)), float(max(xs)), float(min(ys)), float(max(ys)), float(min(zs)), float(max(zs))]
+
+
+# Sent on a bounds address when that pose/hand is lost - "nothing here"
+_ZERO_BOUNDS = [0.0] * 6
+
+
+@register_formatter
+class FloatFormatter(OscFormatter):
+    """
+    One OSC message per landmark with plain float args - what Isadora,
+    TouchDesigner's OSC In CHOP and other numeric-channel receivers bind to.
+
+    Pose (landmark n = MediaPipe index 0-32):
+        /pose/lm/<n>            x y z visibility   normalized, source frame
+        /pose/world/lm/<n>      x y z              metres, hip-centred
+        /pose/bounds            min_x max_x min_y max_y min_z max_z
+        /pose/world_bounds      min_x max_x min_y max_y min_z max_z
+    Person 0 always uses the addresses above, so single-person patches keep
+    working when a second person walks in. Person p >= 1 inserts its index:
+    /pose/<p>/lm/<n>, /pose/<p>/world/lm/<n>, /pose/<p>/bounds, ...
+
+    Hands (landmark n = 0-20, prefix left_hand or right_hand):
+        /<prefix>/lm/<n>        x y z
+        /<prefix>/world/lm/<n>  x y z
+        /<prefix>/bounds, /<prefix>/world_bounds   (same 6-float order)
+
+    Clears: when a pose or hand is lost, its bounds and world_bounds are sent
+    as six 0.0s (every person index seen since the last clear, for pose).
+    Landmark addresses keep their last values - use the /gesture/*/tracking
+    count (or all-zero bounds) to know whether they're live.
+    """
+
+    name = "float"
+    bundled = True
+
+    def __init__(self):
+        self._persons_seen = set()  # pose person indices sent since the last pose clear
+
+    @staticmethod
+    def pose_prefix(person):
+        """/pose for person 0 (and single-person), /pose/<p> for later people"""
+        return "/pose" if not person else f"/pose/{int(person)}"
+
+    @staticmethod
+    def _landmarks(prefix, landmarks, transform=None, visibility=False):
+        out = []
+        points = []
+        for n, lm in enumerate(landmarks):
+            x, y, z = source_xyz(lm, transform)
+            points.append((x, y, z))
+            args = [float(x), float(y), float(z)]
+            if visibility:
+                args.append(float(getattr(lm, "visibility", None) or 0.0))
+            out.append((f"{prefix}/lm/{n}", args))
+        return out, points
+
+    def pose(self, ts, person, landmarks, world, transform, legacy_type):
+        prefix = self.pose_prefix(person)
+        self._persons_seen.add(int(person or 0))
+        out = []
+        bounds = []
+        if landmarks:
+            msgs, points = self._landmarks(prefix, landmarks, transform, visibility=True)
+            out += msgs
+            bounds.append((f"{prefix}/bounds", _bounds6(points)))
+        if world:
+            # World landmarks are already in real-world metres - no transform
+            msgs, points = self._landmarks(f"{prefix}/world", world)
+            out += msgs
+            bounds.append((f"{prefix}/world_bounds", _bounds6(points)))
+        return out + bounds
+
+    def pose_cleared(self, ts):
+        persons = sorted(self._persons_seen | {0})
+        self._persons_seen.clear()
+        out = []
+        for person in persons:
+            prefix = self.pose_prefix(person)
+            out += [(f"{prefix}/bounds", list(_ZERO_BOUNDS)), (f"{prefix}/world_bounds", list(_ZERO_BOUNDS))]
+        return out
+
+    def hand(self, ts, handedness, landmarks, world, transform, legacy_type):
+        prefix = "/" + hand_prefix(handedness)
+        out = []
+        bounds = []
+        if landmarks:
+            msgs, points = self._landmarks(prefix, landmarks, transform)
+            out += msgs
+            bounds.append((f"{prefix}/bounds", _bounds6(points)))
+        if world:
+            msgs, points = self._landmarks(f"{prefix}/world", world)
+            out += msgs
+            bounds.append((f"{prefix}/world_bounds", _bounds6(points)))
+        return out + bounds
+
+    def hand_cleared(self, ts, handedness):
+        out = []
+        for label in (("Left", "Right") if handedness is None else (handedness,)):
+            prefix = "/" + hand_prefix(label)
+            out += [(f"{prefix}/bounds", list(_ZERO_BOUNDS)), (f"{prefix}/world_bounds", list(_ZERO_BOUNDS))]
         return out
 
 

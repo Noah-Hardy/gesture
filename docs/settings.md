@@ -1,6 +1,6 @@
 # Settings
 
-**mp-osc → Settings…** (⌘,) opens a separate window with four tabs, covering everything the main launcher's three collapsible sections don't. Every field is bound to a real `config.json` key (the exact key names are in the **Appendix**) and is only written to disk when you click **Save**, at the bottom of the window — closing the window or switching tabs without saving discards your changes. **Restore Defaults**, next to Save, resets every field on every tab back to its built-in default; like everything else, that's only written to `config.json` once you then click Save.
+**Gesture → Settings…** (⌘,) opens a separate window with four tabs, covering everything the main launcher's three collapsible sections don't. Every field is bound to a real `config.json` key (the exact key names are in the **Appendix**) and is only written to disk when you click **Save**, at the bottom of the window — closing the window or switching tabs without saving discards your changes. **Restore Defaults**, next to Save, resets every field on every tab back to its built-in default; like everything else, that's only written to `config.json` once you then click Save.
 
 ## General
 
@@ -25,9 +25,9 @@ Everything about the on-screen preview window: whether it shows at all, whether 
 
 The tab for tuning that goes beyond a typical session:
 
-- **Camera** — raw capture width, height, FPS and buffer size (distinct from the processing resolution frames get resized to before MediaPipe sees them — see **Camera & NDI**).
-- **Performance** — target FPS cap, the Show FPS/stats line, and garbage-collection tuning (enable/interval) for trading smoother frame timing against memory use on long sessions.
-- **OSC** — the outgoing send queue size, i.e. how many messages can back up before the oldest are dropped (see **OSC Output**).
+- **Camera** — raw capture width, height, FPS and buffer size; the **processing width and height** frames get resized to before MediaPipe sees them (the main quality/speed trade-off); **Reconnect timeout**, how long a lost camera or NDI source may take to come back before the engine gives up (0 = never); and **NDI bandwidth** (`lowest` proxy stream or `highest`). See **Camera & NDI**.
+- **Performance** — target FPS cap, the Show FPS/stats line, **Enable garbage collection** (off gives the smoothest frame timing, but memory can grow over long sessions), and **Max pending frames** (1 = lowest latency). See **Models & Performance**.
+- **OSC** — the outgoing send queue size, i.e. how many packets can back up before the oldest are dropped, and the **Output format**: `legacy` (the 0.2.x JSON, and the default until 0.4.0), `json` or `float`. The format applies the next time you click Start. See **OSC Output** for how to choose.
 - **Backend**, explicitly labeled "applies on next Start" since these are launch-time only and can't change while the engine is running: **Force CPU delegate**, **Force GPU delegate** (with a memory-leak warning right on the checkbox — Apple Silicon's GPU delegate is known to leak memory, so this isn't a default to leave on), **Force legacy MediaPipe API** (deprecated — will be removed in a future release), and **No holistic** (use separate pose and hand models in `all` mode instead of the combined holistic model). These four used to be checkboxes in the main launcher window; they moved here because most sessions never touch them.
 
 See the **Appendix** for the exact `config.json` key each field maps to, and **Models & Performance** for what the Backend toggles actually change under the hood.

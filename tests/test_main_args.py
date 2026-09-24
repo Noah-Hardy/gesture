@@ -50,3 +50,31 @@ def test_apply_config_overrides_applies_preview(tmp_path):
     args = parse_args(['--preview', 'pose'])
     apply_config_overrides(args, config)
     assert config.get('display', 'show_window') is True
+
+
+# ============================================================================
+# --osc-protocol (0.3.0)
+# ============================================================================
+def test_osc_protocol_defaults_to_none():
+    assert parse_args(['pose']).osc_protocol is None
+
+
+@pytest.mark.parametrize('protocol', ['legacy', 'json', 'float'])
+def test_osc_protocol_overrides_config(tmp_path, protocol):
+    config = Config(str(tmp_path / 'config.json'))
+    config.set('osc', 'protocol', 'json' if protocol != 'json' else 'legacy')
+    apply_config_overrides(parse_args(['--osc-protocol', protocol, 'pose']), config)
+    assert config.get('osc', 'protocol') == protocol
+
+
+def test_osc_protocol_absent_leaves_config_alone(tmp_path):
+    config = Config(str(tmp_path / 'config.json'))
+    assert config.get('osc', 'protocol') == 'legacy'
+    config.set('osc', 'protocol', 'float')
+    apply_config_overrides(parse_args(['pose']), config)
+    assert config.get('osc', 'protocol') == 'float'
+
+
+def test_osc_protocol_rejects_unknown_values():
+    with pytest.raises(SystemExit):
+        parse_args(['--osc-protocol', 'xml', 'pose'])

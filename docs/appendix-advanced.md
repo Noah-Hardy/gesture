@@ -1,6 +1,6 @@
 # Appendix: CLI & config.json
 
-This appendix is for running MP-OSC without the launcher window — from the command line, or building the app from source. Everything above this page describes the launcher; nothing here is required to use it.
+This appendix is for running Gesture without the launcher window — from the command line, or building the app from source. Everything above this page describes the launcher; nothing here is required to use it.
 
 ## Precedence
 
@@ -18,9 +18,10 @@ The positional `mode` argument is required and selects `pose`, `hand`, or `all` 
 |---|---|
 | `--host HOST` | OSC destination host (overrides `config.json`) |
 | `--port PORT` | OSC destination port (overrides `config.json`) |
+| `--osc-protocol {legacy,json,float}` | OSC output format (overrides `config.json`; default `legacy`) — see **OSC Output** |
 | `--camera N` | Camera device ID (overrides `config.json`) |
 | `--ndi` | Use NDI input instead of the camera |
-| `--ndi-source NAME` | NDI source name to connect to (substring match) |
+| `--ndi-source NAME` | NDI source name to connect to (case-insensitive; a partial name must match exactly one source) |
 | `--list-ndi` | List available NDI sources on the network and exit |
 | `--pose-model {lite,full,heavy}` | Pose model accuracy/speed tradeoff |
 | `--fps-cap N` | Cap the frame rate (0 or omitted = uncapped) |
@@ -39,21 +40,25 @@ Run `python main.py --help` for the authoritative, always-current list.
 
 ## config.json
 
-The **Settings** window now exposes almost everything in this file directly — Tracking, Preview and Advanced between them cover most sections below. Only OSC host/port, tracking mode, pose model and FPS cap stay in the main launcher window; a small handful of things (like `camera.processing_width`/`processing_height`) exist only as raw config keys, with no field anywhere in the UI. Key sections:
+The **Settings** window now exposes almost everything in this file directly — Tracking, Preview and Advanced between them cover most sections below. Only OSC host/port, tracking mode, pose model and FPS cap stay in the main launcher window; a small handful of things (like `osc.tracking_hold`) exist only as raw config keys, with no field anywhere in the UI. Key sections:
 
 | Section | Notable keys |
 |---|---|
-| `osc` | `host`, `port`, `queue_size` (outgoing message queue depth before drops begin — see **OSC Output**) |
-| `camera` | `device_id`, `width`/`height` (capture resolution), `processing_width`/`processing_height` (see **Processing resolution** in **Camera & NDI** — not exposed in Settings), `use_ndi`, `ndi_source` |
+| `osc` | `host`, `port`, `queue_size` (outgoing packet queue depth before drops begin — see **OSC Output**), `protocol` (`legacy`, `json` or `float`; an unknown value falls back to `legacy`), `tracking_hold` (optional; seconds the tracking channels hold a count, default 0.3) |
+| `camera` | `device_id`, `width`/`height` (capture resolution), `processing_width`/`processing_height` (see **Processing resolution** in **Camera & NDI**), `use_ndi`, `ndi_source`, `ndi_bandwidth` (`lowest` or `highest`, default `lowest`), `reconnect_timeout` (seconds a lost camera/NDI source may take to come back before the engine gives up, default 30, `0` = never) |
 | `mediapipe` | `pose_model_type`, `num_poses` (Tasks API only; `>1` disables the combined holistic model in `all` mode), detection/tracking confidence thresholds, `model_complexity`/`enable_segmentation`/`smooth_landmarks` (**Legacy API only** — see `--force-legacy`; dead weight once the legacy path is removed in a future release) |
 | `hand` | `num_hands`, confidence thresholds, left/right landmark and connection colors used in the preview, `model_complexity` (**Legacy API only** — same future removal as above) |
-| `performance` | `target_fps`, `show_fps`, `gc_enabled`/`gc_interval` (see **Models & Performance**) |
+| `performance` | `target_fps`, `show_fps`, `gc_enabled`, `max_pending_frames` (default 1, minimum 1) (see **Models & Performance**) |
 | `display` | `show_window`, `window_title`, `mirror_preview`, landmark/connection colors and stroke sizes used in the preview |
 | `updates` | Update-checker state — see the **Updates** guide |
 
-`config.json` is not part of the repository or the app bundle — it's written the first time you save something from the launcher or Settings, at `~/Library/Application Support/mp-osc/config.json` in the packaged app (or `config.json` in the working directory when running from source). A fresh clone or a fresh install has no config file at all until then; every key falls back to the built-in default shown in `src/config.py`'s `DEFAULT_CONFIG`, which matches this appendix.
+`config.json` is not part of the repository or the app bundle — it's written the first time you save something from the launcher or Settings, at `~/Library/Application Support/Gesture/config.json` in the packaged app (moved there automatically from the pre-rename `mp-osc` folder) (or `config.json` in the working directory when running from source). A fresh clone or a fresh install has no config file at all until then; every key falls back to the built-in default shown in `src/config.py`'s `DEFAULT_CONFIG`, which matches this appendix.
 
-Environment variable overrides exist for a handful of the most common settings: `MP_OSC_HOST`, `MP_OSC_PORT`, `MP_CAMERA_ID`, `MP_CAMERA_WIDTH`, `MP_CAMERA_HEIGHT`, `MP_SHOW_FPS`, `MP_MIRROR_PREVIEW`, `MP_MIN_DETECTION_CONFIDENCE`, `MP_MIN_TRACKING_CONFIDENCE`.
+Environment variable overrides exist for a handful of the most common settings: `GESTURE_OSC_HOST`, `GESTURE_OSC_PORT` (the pre-rename `MP_OSC_HOST`/`MP_OSC_PORT` still work), `MP_CAMERA_ID`, `MP_CAMERA_WIDTH`, `MP_CAMERA_HEIGHT`, `MP_SHOW_FPS`, `MP_MIRROR_PREVIEW`, `MP_MIN_DETECTION_CONFIDENCE`, `MP_MIN_TRACKING_CONFIDENCE`.
+
+## Stopping the engine
+
+The engine stops cleanly on `q` in the preview window, Ctrl-C, or a `SIGTERM`: it sends the OSC clears described in **OSC Output** and flushes the send queue before exiting. When the launcher started it, the engine also watches for the launcher and stops within about a second if the launcher goes away, even if the launcher crashed or was force-quit, so an orphaned engine never keeps holding the camera.
 
 ## Running from source
 
@@ -71,4 +76,4 @@ The launcher window itself is `uv run python app.py` with no arguments — the s
 ./scripts/build_app.sh
 ```
 
-Downloads every landmarker model, then produces an ad-hoc-signed `dist/MP-OSC.app`. Distributing that build to another machine requires either clearing the quarantine flag by hand (`xattr -dr com.apple.quarantine`) or, for a build that opens with no extra steps, a paid Apple Developer ID certificate and notarization — see `scripts/release.sh` and `docs/BUILDING.md` for the full signing and notarization process.
+Downloads every landmarker model, then produces an ad-hoc-signed `dist/Gesture.app`. Distributing that build to another machine requires either clearing the quarantine flag by hand (`xattr -dr com.apple.quarantine`) or, for a build that opens with no extra steps, a paid Apple Developer ID certificate and notarization — see `scripts/release.sh` and `docs/BUILDING.md` for the full signing and notarization process.
