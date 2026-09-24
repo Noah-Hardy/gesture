@@ -45,13 +45,18 @@ from src.net import ssl_context
 # ============================================================================
 # CONSTANTS
 # ============================================================================
-DEFAULT_REPO = "Noah-Hardy/mp-osc"
+# Checked in order; a 404 moves on to the next. The repo is being renamed
+# mp-osc -> gesture, and this list lets one build work on both sides of it.
+# Once renamed, GitHub redirects the old name, but that redirect dies if an
+# mp-osc repo is ever re-created, so don't rely on it alone.
+DEFAULT_REPOS = ["Noah-Hardy/gesture", "Noah-Hardy/mp-osc"]
 GITHUB_API = "https://api.github.com"
 USER_AGENT = "MP-OSC-Updater"
 BUNDLE_ID = "net.hardymail.mp-osc"
 
 # The optional 4th component is for hotfix releases (e.g. 0.1.5.1).
-_ASSET_RE = re.compile(r'^MP-OSC-(\d+\.\d+\.\d+(?:\.\d+)?)-macos-arm64\.zip$')
+# MP-OSC- is the pre-rename asset name, Gesture- the post-rename one.
+_ASSET_RE = re.compile(r'^(?:MP-OSC|Gesture)-(\d+\.\d+\.\d+(?:\.\d+)?)-macos-arm64\.zip$')
 
 # spctl lives in /usr/sbin, not /usr/bin like codesign and ditto.
 _SPCTL = '/usr/sbin/spctl'
@@ -254,14 +259,16 @@ def cleanup_stale() -> None:
     app = bundle_path()
     if app:
         parent = os.path.dirname(app)
-        _sweep_glob(os.path.join(parent, '.MP-OSC-update-*'), max_age_seconds=86400, is_dir=True)
+        for prefix in ('.MP-OSC-update-*', '.Gesture-update-*'):
+            _sweep_glob(os.path.join(parent, prefix), max_age_seconds=86400, is_dir=True)
         _sweep_glob(app + '.old-*', max_age_seconds=86400, is_dir=True)
 
     updates_dir = _updates_dir()
     if os.path.isdir(updates_dir):
         _sweep_glob(os.path.join(updates_dir, '*.part'), max_age_seconds=0, is_dir=False)
         _sweep_glob(os.path.join(updates_dir, 'install-*.sh'), max_age_seconds=86400, is_dir=False)
-        _sweep_glob(os.path.join(updates_dir, 'MP-OSC-*.zip'), max_age_seconds=86400, is_dir=False)
+        for prefix in ('MP-OSC-*.zip', 'Gesture-*.zip'):
+            _sweep_glob(os.path.join(updates_dir, prefix), max_age_seconds=86400, is_dir=False)
 
 
 def _sweep_glob(pattern: str, max_age_seconds: float, is_dir: bool) -> None:
@@ -302,8 +309,27 @@ def last_install_failed() -> Optional[bool]:
 # ============================================================================
 # RELEASE DISCOVERY
 # ============================================================================
-def _repo() -> str:
-    return os.environ.get('MPOSC_UPDATE_REPO', DEFAULT_REPO)
+def _repos() -> list:
+    env_repo = os.environ.get('MPOSC_UPDATE_REPO', '')
+    return [env_repo] if env_repo else list(DEFAULT_REPOS)
+
+
+def _open_releases(headers: dict, timeout: int):
+    """
+    urlopen the releases list of the first repo in _repos() that exists. Only
+    a 404 falls through to the next name; any other outcome (success, 304,
+    rate limit, network error) is the answer, so the ETag and rate-limit
+    handling in check_for_update stay single-path.
+    """
+    repos = _repos()
+    for i, repo in enumerate(repos):
+        url = f"{GITHUB_API}/repos/{repo}/releases?per_page=10"
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            return urllib.request.urlopen(req, timeout=timeout, context=ssl_context())
+        except urllib.error.HTTPError as e:
+            if e.code != 404 or i == len(repos) - 1:
+                raise
 
 
 def check_for_update(config, manual: bool = False, timeout: int = 10) -> CheckResult:
@@ -352,11 +378,8 @@ def check_for_update(config, manual: bool = False, timeout: int = 10) -> CheckRe
     if etag:
         headers['If-None-Match'] = etag
 
-    url = f"{GITHUB_API}/repos/{_repo()}/releases?per_page=10"
-    req = urllib.request.Request(url, headers=headers)
-
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as resp:
+        with _open_releases(headers, timeout) as resp:
             new_etag = resp.headers.get('ETag', '') or ''
             data = json.loads(resp.read(1_000_000).decode('utf-8'))
     except urllib.error.HTTPError as e:
@@ -521,7 +544,7 @@ def download_and_install(release: Release, progress_cb: Callable[[dict], None],
     staged_app = _find_app(extract_dir)
     if staged_app is None:
         shutil.rmtree(extract_dir, ignore_errors=True)
-        raise UpdateError("The downloaded update did not contain MP-OSC.app.")
+        raise UpdateError("The downloaded update did not contain an app.")
 
     progress_cb({'kind': 'verifying', 'phase': 'signature'})
     try:

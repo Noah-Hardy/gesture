@@ -166,3 +166,53 @@ def test_malformed_json_response_is_an_error_on_manual_check(monkeypatch):
     monkeypatch.setattr('src.updater.urllib.request.urlopen', lambda *a, **k: BadResponse([]))
     result = check_for_update(FakeConfig(), manual=True)
     assert result.kind == 'error'
+
+
+def test_falls_back_to_old_repo_name_when_new_one_404s(monkeypatch):
+    # Before the mp-osc -> gesture rename, the gesture repo does not exist yet.
+    monkeypatch.delenv('MPOSC_UPDATE_REPO', raising=False)
+    urls = []
+
+    def fake(req, *a, **k):
+        urls.append(req.full_url)
+        if '/Noah-Hardy/gesture/' in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 404, 'Not Found', {}, io.BytesIO())
+        return FakeResponse([_release_payload('v0.9.9')])
+    monkeypatch.setattr('src.updater.urllib.request.urlopen', fake)
+    result = check_for_update(FakeConfig(), manual=True)
+    assert result.kind == 'available'
+    assert len(urls) == 2 and '/Noah-Hardy/mp-osc/' in urls[1]
+
+
+def test_new_repo_name_answers_without_touching_old_one(monkeypatch):
+    monkeypatch.delenv('MPOSC_UPDATE_REPO', raising=False)
+    urls = []
+
+    def fake(req, *a, **k):
+        urls.append(req.full_url)
+        return FakeResponse([_release_payload('v0.9.9')])
+    monkeypatch.setattr('src.updater.urllib.request.urlopen', fake)
+    assert check_for_update(FakeConfig(), manual=True).kind == 'available'
+    assert len(urls) == 1 and '/Noah-Hardy/gesture/' in urls[0]
+
+
+def test_non_404_error_on_new_repo_does_not_fall_back(monkeypatch):
+    monkeypatch.delenv('MPOSC_UPDATE_REPO', raising=False)
+    urls = []
+
+    def fake(req, *a, **k):
+        urls.append(req.full_url)
+        raise urllib.error.HTTPError(req.full_url, 304, 'Not Modified', {}, io.BytesIO())
+    monkeypatch.setattr('src.updater.urllib.request.urlopen', fake)
+    assert check_for_update(FakeConfig()).kind == 'none'
+    assert len(urls) == 1
+
+
+def test_404_on_every_repo_is_an_error_on_manual_check(monkeypatch):
+    monkeypatch.delenv('MPOSC_UPDATE_REPO', raising=False)
+
+    def fake(req, *a, **k):
+        raise urllib.error.HTTPError(req.full_url, 404, 'Not Found', {}, io.BytesIO())
+    monkeypatch.setattr('src.updater.urllib.request.urlopen', fake)
+    result = check_for_update(FakeConfig(), manual=True)
+    assert result.kind == 'error' and '404' in result.message
