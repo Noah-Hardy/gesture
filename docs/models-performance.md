@@ -35,13 +35,13 @@ MediaPipe's detector runs asynchronously from frame capture, and only one frame 
 
 ## Force CPU / Force GPU delegate
 
-By default, MP-OSC picks a delegate automatically: **Apple Silicon Macs always use CPU**, because MediaPipe's GPU delegate has a known memory leak on Apple Silicon. **Force CPU**, **Force GPU** and **Force Legacy** live in **Settings → Advanced**, labeled "applies on next Start" since they're launch-time only — they take effect the next time you click Start, not while the engine is already running. Force CPU and Force Legacy are saved to `config.json`; Force GPU is not (it's mutually exclusive with Force CPU and carries its own memory-leak warning right on the checkbox — use it deliberately, not as a default).
+By default, Gesture picks a delegate automatically: **Apple Silicon Macs always use CPU**, because MediaPipe's GPU delegate has a known memory leak on Apple Silicon. **Force CPU**, **Force GPU** and **Force Legacy** live in **Settings → Advanced**, labeled "applies on next Start" since they're launch-time only — they take effect the next time you click Start, not while the engine is already running. Force CPU and Force Legacy are saved to `config.json`; Force GPU is not (it's mutually exclusive with Force CPU and carries its own memory-leak warning right on the checkbox — use it deliberately, not as a default).
 
 ## Force Legacy
 
 **Deprecated:** `--force-legacy` will be removed in a future release once the legacy MediaPipe Solutions API is deleted.
 
-**Force Legacy** switches from MediaPipe's modern "Tasks" API to its older synchronous API. This disables GPU acceleration entirely, limits pose detection to a single person, and disables the combined holistic model in `all` mode (falling back to two separate legacy models). It exists as a compatibility fallback — MP-OSC already falls back to it automatically if the modern API fails to initialize — and normally shouldn't need to be checked by hand.
+**Force Legacy** switches from MediaPipe's modern "Tasks" API to its older synchronous API. This disables GPU acceleration entirely, limits pose detection to a single person, and disables the combined holistic model in `all` mode (falling back to two separate legacy models). It exists as a compatibility fallback — Gesture already falls back to it automatically if the modern API fails to initialize — and normally shouldn't need to be checked by hand.
 
 The `mediapipe.model_complexity`, `mediapipe.enable_segmentation`, `mediapipe.smooth_landmarks`, and `hand.model_complexity` config keys are read only by the legacy processors — they have no effect on the default Tasks path and will become dead weight once the legacy path is removed in a future release.
 

@@ -46,7 +46,7 @@ TOPICS: Tuple[Topic, ...] = (
     Topic('updates', 'Updates', 'Guide', 'updates.md'),
     Topic('input-sources', 'Camera & NDI', 'Guide', 'input-sources.md'),
     Topic('osc-output', 'OSC Output', 'Guide', 'osc-output.md'),
-    Topic('receivers', 'TouchDesigner, Max, Unity', 'Guide', 'receivers.md'),
+    Topic('receivers', 'TouchDesigner, Max, Unity, Isadora', 'Guide', 'receivers.md'),
     Topic('models-performance', 'Models & Performance', 'Guide', 'models-performance.md'),
     Topic('troubleshooting', 'Troubleshooting', 'Guide', 'troubleshooting.md'),
     Topic('osc-reference', 'OSC Address Reference', 'Reference', 'osc-reference.md'),

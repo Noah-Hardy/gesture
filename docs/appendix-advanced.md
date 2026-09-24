@@ -1,6 +1,6 @@
 # Appendix: CLI & config.json
 
-This appendix is for running MP-OSC without the launcher window — from the command line, or building the app from source. Everything above this page describes the launcher; nothing here is required to use it.
+This appendix is for running Gesture without the launcher window — from the command line, or building the app from source. Everything above this page describes the launcher; nothing here is required to use it.
 
 ## Precedence
 
@@ -18,6 +18,7 @@ The positional `mode` argument is required and selects `pose`, `hand`, or `all` 
 |---|---|
 | `--host HOST` | OSC destination host (overrides `config.json`) |
 | `--port PORT` | OSC destination port (overrides `config.json`) |
+| `--osc-protocol {legacy,json,float}` | OSC output format (overrides `config.json`; default `legacy`) — see **OSC Output** |
 | `--camera N` | Camera device ID (overrides `config.json`) |
 | `--ndi` | Use NDI input instead of the camera |
 | `--ndi-source NAME` | NDI source name to connect to (substring match) |
@@ -43,7 +44,7 @@ The **Settings** window now exposes almost everything in this file directly — 
 
 | Section | Notable keys |
 |---|---|
-| `osc` | `host`, `port`, `queue_size` (outgoing message queue depth before drops begin — see **OSC Output**) |
+| `osc` | `host`, `port`, `queue_size` (outgoing packet queue depth before drops begin — see **OSC Output**), `protocol` (`legacy`, `json` or `float`; an unknown value falls back to `legacy`), `tracking_hold` (optional; seconds the tracking channels hold a count, default 0.3) |
 | `camera` | `device_id`, `width`/`height` (capture resolution), `processing_width`/`processing_height` (see **Processing resolution** in **Camera & NDI** — not exposed in Settings), `use_ndi`, `ndi_source` |
 | `mediapipe` | `pose_model_type`, `num_poses` (Tasks API only; `>1` disables the combined holistic model in `all` mode), detection/tracking confidence thresholds, `model_complexity`/`enable_segmentation`/`smooth_landmarks` (**Legacy API only** — see `--force-legacy`; dead weight once the legacy path is removed in a future release) |
 | `hand` | `num_hands`, confidence thresholds, left/right landmark and connection colors used in the preview, `model_complexity` (**Legacy API only** — same future removal as above) |
@@ -51,7 +52,7 @@ The **Settings** window now exposes almost everything in this file directly — 
 | `display` | `show_window`, `window_title`, `mirror_preview`, landmark/connection colors and stroke sizes used in the preview |
 | `updates` | Update-checker state — see the **Updates** guide |
 
-`config.json` is not part of the repository or the app bundle — it's written the first time you save something from the launcher or Settings, at `~/Library/Application Support/mp-osc/config.json` in the packaged app (or `config.json` in the working directory when running from source). A fresh clone or a fresh install has no config file at all until then; every key falls back to the built-in default shown in `src/config.py`'s `DEFAULT_CONFIG`, which matches this appendix.
+`config.json` is not part of the repository or the app bundle — it's written the first time you save something from the launcher or Settings, at `~/Library/Application Support/Gesture/config.json` in the packaged app (or `config.json` in the working directory when running from source). A fresh clone or a fresh install has no config file at all until then; every key falls back to the built-in default shown in `src/config.py`'s `DEFAULT_CONFIG`, which matches this appendix.
 
 Environment variable overrides exist for a handful of the most common settings: `MP_OSC_HOST`, `MP_OSC_PORT`, `MP_CAMERA_ID`, `MP_CAMERA_WIDTH`, `MP_CAMERA_HEIGHT`, `MP_SHOW_FPS`, `MP_MIRROR_PREVIEW`, `MP_MIN_DETECTION_CONFIDENCE`, `MP_MIN_TRACKING_CONFIDENCE`.
 
@@ -71,4 +72,4 @@ The launcher window itself is `uv run python app.py` with no arguments — the s
 ./scripts/build_app.sh
 ```
 
-Downloads every landmarker model, then produces an ad-hoc-signed `dist/MP-OSC.app`. Distributing that build to another machine requires either clearing the quarantine flag by hand (`xattr -dr com.apple.quarantine`) or, for a build that opens with no extra steps, a paid Apple Developer ID certificate and notarization — see `scripts/release.sh` and `docs/BUILDING.md` for the full signing and notarization process.
+Downloads every landmarker model, then produces an ad-hoc-signed `dist/Gesture.app`. Distributing that build to another machine requires either clearing the quarantine flag by hand (`xattr -dr com.apple.quarantine`) or, for a build that opens with no extra steps, a paid Apple Developer ID certificate and notarization — see `scripts/release.sh` and `docs/BUILDING.md` for the full signing and notarization process.
