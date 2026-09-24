@@ -18,7 +18,7 @@ import numpy as np
 import mediapipe as mp
 from mediapipe.framework.formats import landmark_pb2
 
-from .pose_utils import get_pose_bounds_with_values, process_landmarks_to_dict, compact_json, letterbox_frame, LetterboxTransform
+from .pose_utils import letterbox_frame, LetterboxTransform
 from .model_downloader import download_pose_model
 
 # Optional psutil import for memory monitoring
@@ -37,16 +37,16 @@ IS_APPLE_SILICON = platform.system() == "Darwin" and platform.machine() == "arm6
 class PoseProcessor:
     """Base class for pose processing with common functionality"""
     
-    def __init__(self, osc_sender, show_fps=False, config=None):
+    def __init__(self, osc, show_fps=False, config=None):
         """
         Initialize pose processor
         
         Args:
-            osc_sender: ThreadedOSCSender instance for network communication
+            osc: OscEmitter - every OSC message goes out through it
             show_fps: Boolean to enable FPS display
             config: Configuration object
         """
-        self.osc_sender = osc_sender
+        self.osc = osc
         self.show_fps = show_fps
         self.config = config
         self.fps_counter = 0
@@ -102,103 +102,6 @@ class PoseProcessor:
         )
     
     # ------------------------------------------------------------------------
-    # OSC data transmission methods
-    # ------------------------------------------------------------------------
-    
-    def send_pose_data(self, pose_landmarks, pose_world_landmarks, timestamp):
-        """Send pose data via OSC (single pose)"""
-        if pose_landmarks:
-            osc_payload = {
-                "timestamp": timestamp,
-                "landmarks": pose_landmarks
-            }
-            self.osc_sender.send_message("/pose/raw", compact_json(osc_payload))
-        
-        if pose_world_landmarks:
-            world_payload = {
-                "timestamp": timestamp,
-                "landmarks": pose_world_landmarks
-            }
-            self.osc_sender.send_message("/pose/world", compact_json(world_payload))
-    
-    def send_bounds_data(self, landmarks, world_landmarks, transform=None):
-        """Send bounding box data via OSC (single pose)"""
-        if landmarks:
-            bounds = get_pose_bounds_with_values(landmarks, transform)
-            self.osc_sender.send_message("/pose/raw_bounds", compact_json(bounds))
-
-        if world_landmarks:
-            # World landmarks are already in real-world metres - no transform
-            world_bounds = get_pose_bounds_with_values(world_landmarks)
-            self.osc_sender.send_message("/pose/world_bounds", compact_json(world_bounds))
-    
-    def send_empty_data(self, timestamp):
-        """Send empty data to clear stale data on receiving machine"""
-        empty_payload = {
-            "timestamp": timestamp,
-            "landmarks": []
-        }
-        self.osc_sender.send_message("/pose/raw", compact_json(empty_payload))
-        self.osc_sender.send_message("/pose/raw_bounds", compact_json({}))
-        self.osc_sender.send_message("/pose/world", compact_json(empty_payload))
-        self.osc_sender.send_message("/pose/world_bounds", compact_json({}))
-        self.osc_sender.send_message("/mp/status", compact_json({"status": 0}))
-    
-    def send_multiple_pose_data(self, all_pose_landmarks, all_pose_world_landmarks, timestamp):
-        """Send data for multiple detected poses via OSC"""
-        if all_pose_landmarks:
-            multi_pose_payload = {
-                "timestamp": timestamp,
-                "poses": all_pose_landmarks,
-                "count": len(all_pose_landmarks)
-            }
-            self.osc_sender.send_message("/pose/multi_raw", compact_json(multi_pose_payload))
-            # Individual messages removed to prevent memory leak
-        
-        if all_pose_world_landmarks:
-            multi_world_payload = {
-                "timestamp": timestamp,
-                "poses": all_pose_world_landmarks,
-                "count": len(all_pose_world_landmarks)
-            }
-            self.osc_sender.send_message("/pose/multi_world", compact_json(multi_world_payload))
-            # Individual messages removed to prevent memory leak
-    
-    def send_multiple_bounds_data(self, all_landmarks, all_world_landmarks, transform=None):
-        """Send bounds data for multiple poses via OSC"""
-        if all_landmarks:
-            all_bounds = []
-            for landmarks in all_landmarks:
-                bounds = get_pose_bounds_with_values(landmarks, transform)
-                all_bounds.append(bounds)
-            # Individual messages removed to prevent memory leak
-            
-            # Send combined bounds data only
-            multi_bounds_payload = {
-                "poses": all_bounds,
-                "count": len(all_bounds)
-            }
-            self.osc_sender.send_message("/pose/multi_raw_bounds", compact_json(multi_bounds_payload))
-            # Clear temporary list
-            del all_bounds
-        
-        if all_world_landmarks:
-            all_world_bounds = []
-            for world_landmarks in all_world_landmarks:
-                world_bounds = get_pose_bounds_with_values(world_landmarks)
-                all_world_bounds.append(world_bounds)
-            # Individual messages removed to prevent memory leak
-            
-            # Send combined world bounds data only
-            multi_world_bounds_payload = {
-                "poses": all_world_bounds,
-                "count": len(all_world_bounds)
-            }
-            self.osc_sender.send_message("/pose/multi_world_bounds", compact_json(multi_world_bounds_payload))
-            # Clear temporary list
-            del all_world_bounds
-
-    # ------------------------------------------------------------------------
     # Performance monitoring
     # ------------------------------------------------------------------------
     
@@ -215,7 +118,7 @@ class PoseProcessor:
                 if psutil is not None:
                     process = psutil.Process()
                     mem_mb = process.memory_info().rss / 1024 / 1024
-                    osc_stats = self.osc_sender.get_stats()
+                    osc_stats = self.osc.get_stats()
                     print(f"{backend_name} FPS: {actual_fps:.2f} | Memory: {mem_mb:.1f}MB | "
                           f"OSC Sent: {osc_stats['sent']} Dropped: {osc_stats['dropped']} Queued: {osc_stats['queued']} | "
                           f"MP Pending: {self.pending_frames} Skipped: {self.skipped_frames}")
@@ -267,19 +170,19 @@ class TasksPoseProcessor(PoseProcessor):
     Recommended for new projects
     """
     
-    def __init__(self, osc_sender, show_fps=False, config=None, force_cpu=False, force_gpu=False, is_apple_silicon=None):
+    def __init__(self, osc, show_fps=False, config=None, force_cpu=False, force_gpu=False, is_apple_silicon=None):
         """
         Initialize Tasks processor
         
         Args:
-            osc_sender: ThreadedOSCSender instance
+            osc: OscEmitter instance
             show_fps: Boolean to enable FPS display
             config: Configuration object
             force_cpu: Force CPU delegate even if GPU available
             force_gpu: Force GPU delegate (WARNING: memory leak on Apple Silicon)
             is_apple_silicon: Override Apple Silicon detection
         """
-        super().__init__(osc_sender, show_fps, config)
+        super().__init__(osc, show_fps, config)
         self.force_cpu = force_cpu
         self.force_gpu = force_gpu
         # Use passed value or detect automatically
@@ -530,50 +433,26 @@ class TasksPoseProcessor(PoseProcessor):
 
                 if pose_detected and len(fresh_results.pose_landmarks) > 0:
                     self._last_detection_state = True
-                    # Process all detected poses
-                    all_pose_landmarks = []
-                    all_pose_world_landmarks = []
+                    # World landmarks are already real-world metres - the
+                    # emitter never applies the letterbox transform to them
+                    all_world = getattr(fresh_results, 'pose_world_landmarks', None) or []
 
-                    # Process each detected pose
+                    # One set of messages per detected pose, on the ordinary /pose/* channels
                     for i, pose_landmark in enumerate(fresh_results.pose_landmarks):
-                        pose_landmarks = process_landmarks_to_dict(pose_landmark, f"pose_{i}", transform)
-                        all_pose_landmarks.append(pose_landmarks)
+                        world = all_world[i] if i < len(all_world) else None
+                        self.osc.pose(i, pose_landmark, world, transform, f"pose_{i}", ts=timestamp)
 
-                    # Process world landmarks if available (already real-world metres - no transform)
-                    if (hasattr(fresh_results, 'pose_world_landmarks') and
-                        fresh_results.pose_world_landmarks):
-                        for i, pose_world_landmark in enumerate(fresh_results.pose_world_landmarks):
-                            pose_world_landmarks = process_landmarks_to_dict(pose_world_landmark, f"pose_world_{i}")
-                            all_pose_world_landmarks.append(pose_world_landmarks)
-
-                    # Send data for each pose individually
-                    for i in range(len(all_pose_landmarks)):
-                        pose_landmarks = all_pose_landmarks[i]
-                        pose_world_landmarks = all_pose_world_landmarks[i] if i < len(all_pose_world_landmarks) else None
-                        self.send_pose_data(pose_landmarks, pose_world_landmarks, timestamp)
-
-                        # Send bounds for this pose
-                        self.send_bounds_data(
-                            fresh_results.pose_landmarks[i],
-                            fresh_results.pose_world_landmarks[i] if pose_world_landmarks else None,
-                            transform
-                        )
-
-                    self.osc_sender.send_message("/mp/status", compact_json({"status": len(fresh_results.pose_landmarks)}))
+                    self.osc.pose_status(len(fresh_results.pose_landmarks))
 
                     # Draw all pose landmarks
                     for pose_landmark in fresh_results.pose_landmarks:
                         self._draw_landmarks(target, pose_landmark)
-
-                    # Clear temporary lists to free memory
-                    del all_pose_landmarks
-                    del all_pose_world_landmarks
                 else:
                     # Always send status message so receivers know program is running
-                    self.osc_sender.send_message("/mp/status", compact_json({"status": 0}))
+                    self.osc.pose_status(0)
                     # Only send empty data once when transitioning from detected to not detected
                     if self._last_detection_state:
-                        self.send_empty_data(timestamp)
+                        self.osc.pose_cleared(ts=timestamp)
                         self._last_detection_state = False
             elif self._display_results is not None:
                 # We have results but they're stale (already processed), just draw landmarks
@@ -581,10 +460,10 @@ class TasksPoseProcessor(PoseProcessor):
                     for pose_landmark in self._display_results.pose_landmarks:
                         self._draw_landmarks(target, pose_landmark)
                 # No fresh detection this frame - status 0 signals no actively tracked person
-                self.osc_sender.send_message("/mp/status", compact_json({"status": 0}))
+                self.osc.pose_status(0)
             else:
                 # No results yet - still send status so receivers know program is running
-                self.osc_sender.send_message("/mp/status", compact_json({"status": 0}))
+                self.osc.pose_status(0)
 
             # Clear intermediate frames to free memory
             del rgb_frame
@@ -707,41 +586,22 @@ class LegacyPoseProcessor(PoseProcessor):
             
             if pose_detected:
                 self._last_detection_state = True
-                # Process landmarks
-                pose_landmarks = process_landmarks_to_dict(
-                    results.pose_landmarks.landmark, "pose", self._letterbox_transform
-                )
-
-                # World landmarks are already real-world metres - no transform
-                pose_world_landmarks = []
-                if results.pose_world_landmarks:
-                    pose_world_landmarks = process_landmarks_to_dict(
-                        results.pose_world_landmarks.landmark, "pose_world"
-                    )
-
-                # Send data
-                self.send_pose_data(pose_landmarks, pose_world_landmarks, timestamp)
-                self.send_bounds_data(
-                    results.pose_landmarks.landmark,
-                    results.pose_world_landmarks.landmark if pose_world_landmarks else None,
-                    self._letterbox_transform
-                )
-                
-                self.osc_sender.send_message("/mp/status", compact_json({"status": 1}))
+                # World landmarks are already real-world metres - the
+                # emitter never applies the letterbox transform to them
+                world = results.pose_world_landmarks.landmark if results.pose_world_landmarks else None
+                self.osc.pose(0, results.pose_landmarks.landmark, world,
+                              self._letterbox_transform, "pose", ts=timestamp)
+                self.osc.pose_status(1)
                 
                 # Draw pose landmarks
                 if results.pose_landmarks:
                     self._draw_landmarks(target, results.pose_landmarks)
-
-                # Clear temporary lists to free memory
-                del pose_landmarks
-                del pose_world_landmarks
             else:
                 # Always send status message so receivers know program is running
-                self.osc_sender.send_message("/mp/status", compact_json({"status": 0}))
+                self.osc.pose_status(0)
                 # Only send empty data once when transitioning from detected to not detected
                 if self._last_detection_state:
-                    self.send_empty_data(timestamp)
+                    self.osc.pose_cleared(ts=timestamp)
                     self._last_detection_state = False
 
             self.update_fps(backend_name)

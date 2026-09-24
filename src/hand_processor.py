@@ -18,7 +18,7 @@ import numpy as np
 import mediapipe as mp
 from mediapipe.framework.formats import landmark_pb2
 
-from .pose_utils import get_pose_bounds_with_values, process_landmarks_to_dict, compact_json, letterbox_frame, LetterboxTransform
+from .pose_utils import letterbox_frame, LetterboxTransform
 from .model_downloader import download_hand_model
 
 # Optional psutil import for memory monitoring
@@ -44,16 +44,16 @@ HAND_CONNECTIONS = mp.solutions.hands.HAND_CONNECTIONS
 class HandProcessor:
     """Base class for hand processing with common functionality"""
     
-    def __init__(self, osc_sender, show_fps=False, config=None):
+    def __init__(self, osc, show_fps=False, config=None):
         """
         Initialize hand processor
         
         Args:
-            osc_sender: ThreadedOSCSender instance for network communication
+            osc: OscEmitter - every OSC message goes out through it
             show_fps: Boolean to enable FPS display
             config: Configuration object
         """
-        self.osc_sender = osc_sender
+        self.osc = osc
         self.show_fps = show_fps
         self.config = config
         self.fps_counter = 0
@@ -125,98 +125,6 @@ class HandProcessor:
         )
     
     # ------------------------------------------------------------------------
-    # OSC data transmission methods
-    # ------------------------------------------------------------------------
-    
-    def send_hand_data(self, hand_landmarks, hand_world_landmarks, handedness, timestamp):
-        """Send hand data via OSC (single hand)"""
-        # Use left_hand or right_hand prefix based on handedness
-        hand_prefix = "left_hand" if handedness.lower() == "left" else "right_hand"
-        
-        if hand_landmarks:
-            osc_payload = {
-                "timestamp": timestamp,
-                "handedness": handedness,
-                "landmarks": hand_landmarks
-            }
-            self.osc_sender.send_message(f"/{hand_prefix}/raw", compact_json(osc_payload))
-        
-        if hand_world_landmarks:
-            world_payload = {
-                "timestamp": timestamp,
-                "handedness": handedness,
-                "landmarks": hand_world_landmarks
-            }
-            self.osc_sender.send_message(f"/{hand_prefix}/world", compact_json(world_payload))
-    
-    def send_hand_bounds_data(self, landmarks, world_landmarks, handedness, transform=None):
-        """Send bounding box data via OSC (single hand)"""
-        # Use left_hand or right_hand prefix based on handedness
-        hand_prefix = "left_hand" if handedness.lower() == "left" else "right_hand"
-
-        if landmarks:
-            bounds = get_pose_bounds_with_values(landmarks, transform)
-            self.osc_sender.send_message(f"/{hand_prefix}/bounds", compact_json(bounds))
-
-        if world_landmarks:
-            # World landmarks are already in real-world metres - no transform
-            world_bounds = get_pose_bounds_with_values(world_landmarks)
-            self.osc_sender.send_message(f"/{hand_prefix}/world_bounds", compact_json(world_bounds))
-    
-    def send_empty_single_hand_data(self, handedness, timestamp):
-        """Send empty data for one hand to clear stale data on receiving machine"""
-        hand_prefix = "left_hand" if handedness.lower() == "left" else "right_hand"
-        empty_payload = {
-            "timestamp": timestamp,
-            "handedness": handedness,
-            "landmarks": []
-        }
-        self.osc_sender.send_message(f"/{hand_prefix}/raw", compact_json(empty_payload))
-        self.osc_sender.send_message(f"/{hand_prefix}/world", compact_json(empty_payload))
-        self.osc_sender.send_message(f"/{hand_prefix}/bounds", compact_json({}))
-        self.osc_sender.send_message(f"/{hand_prefix}/world_bounds", compact_json({}))
-
-    def send_empty_hand_data(self, timestamp):
-        """Send empty data to clear stale data on receiving machine"""
-        empty_payload = {
-            "timestamp": timestamp,
-            "landmarks": []
-        }
-        # Clear the per-hand channels actually used by send_hand_data/send_hand_bounds_data
-        for hand_prefix in ("left_hand", "right_hand"):
-            self.osc_sender.send_message(f"/{hand_prefix}/raw", compact_json(empty_payload))
-            self.osc_sender.send_message(f"/{hand_prefix}/world", compact_json(empty_payload))
-            self.osc_sender.send_message(f"/{hand_prefix}/bounds", compact_json({}))
-            self.osc_sender.send_message(f"/{hand_prefix}/world_bounds", compact_json({}))
-        self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
-    
-    def send_multiple_hand_data(self, all_hand_landmarks, all_handedness, timestamp):
-        """Send data for multiple detected hands via OSC"""
-        if all_hand_landmarks:
-            multi_hand_payload = {
-                "timestamp": timestamp,
-                "hands": all_hand_landmarks,
-                "handedness": all_handedness,
-                "count": len(all_hand_landmarks)
-            }
-            self.osc_sender.send_message("/hand/multi_raw", compact_json(multi_hand_payload))
-    
-    def send_multiple_hand_bounds_data(self, all_landmarks, transform=None):
-        """Send bounds data for multiple hands via OSC"""
-        if all_landmarks:
-            all_bounds = []
-            for landmarks in all_landmarks:
-                bounds = get_pose_bounds_with_values(landmarks, transform)
-                all_bounds.append(bounds)
-            
-            multi_bounds_payload = {
-                "hands": all_bounds,
-                "count": len(all_bounds)
-            }
-            self.osc_sender.send_message("/hand/multi_bounds", compact_json(multi_bounds_payload))
-            del all_bounds
-
-    # ------------------------------------------------------------------------
     # Performance monitoring
     # ------------------------------------------------------------------------
     
@@ -232,7 +140,7 @@ class HandProcessor:
                 if psutil is not None:
                     process = psutil.Process()
                     mem_mb = process.memory_info().rss / 1024 / 1024
-                    osc_stats = self.osc_sender.get_stats()
+                    osc_stats = self.osc.get_stats()
                     print(f"{backend_name} FPS: {actual_fps:.2f} | Memory: {mem_mb:.1f}MB | "
                           f"OSC Sent: {osc_stats['sent']} Dropped: {osc_stats['dropped']} Queued: {osc_stats['queued']} | "
                           f"Pending: {self.pending_frames} Skipped: {self.skipped_frames}")
@@ -255,19 +163,19 @@ class TasksHandProcessor(HandProcessor):
     Supports GPU acceleration and multi-hand detection
     """
     
-    def __init__(self, osc_sender, show_fps=False, config=None, force_cpu=False, force_gpu=False, is_apple_silicon=None):
+    def __init__(self, osc, show_fps=False, config=None, force_cpu=False, force_gpu=False, is_apple_silicon=None):
         """
         Initialize Tasks hand processor
         
         Args:
-            osc_sender: ThreadedOSCSender instance
+            osc: OscEmitter instance
             show_fps: Boolean to enable FPS display
             config: Configuration object
             force_cpu: Force CPU delegate even if GPU available
             force_gpu: Force GPU delegate (WARNING: memory leak on Apple Silicon)
             is_apple_silicon: Override Apple Silicon detection
         """
-        super().__init__(osc_sender, show_fps, config)
+        super().__init__(osc, show_fps, config)
         self.force_cpu = force_cpu
         self.force_gpu = force_gpu
         self.is_apple_silicon = is_apple_silicon if is_apple_silicon is not None else IS_APPLE_SILICON
@@ -497,23 +405,21 @@ class TasksHandProcessor(HandProcessor):
                 hands_detected = bool(fresh_results.hand_landmarks)
 
                 # Track which hand prefixes (left_hand/right_hand) are actually sent this
-                # frame, resolved via the same rule send_hand_data uses, so an "Unknown"
+                # frame, resolved via the same rule osc_protocol.hand_prefix uses, so an "Unknown"
                 # handedness label can't desync the flags from what was actually sent.
                 seen_prefixes = set()
                 hand_count = 0
 
                 if hands_detected and len(fresh_results.hand_landmarks) > 0:
-                    all_hand_landmarks = []
-                    all_hand_world_landmarks = []
-                    all_handedness = []
                     # Snapshot for this call - stable for the duration of process_frame
                     transform = self._letterbox_transform
+                    # World landmarks are already real-world metres - the
+                    # emitter never applies the letterbox transform to them
+                    all_world = getattr(fresh_results, 'hand_world_landmarks', None) or []
+                    all_handedness = []
 
-                    # Process each detected hand
+                    # One set of messages per detected hand, on /left_hand/* or /right_hand/*
                     for i, hand_landmark in enumerate(fresh_results.hand_landmarks):
-                        hand_landmarks = process_landmarks_to_dict(hand_landmark, f"hand_{i}", transform)
-                        all_hand_landmarks.append(hand_landmarks)
-
                         # Get handedness (left/right)
                         if fresh_results.handedness and i < len(fresh_results.handedness):
                             handedness = fresh_results.handedness[i][0].category_name
@@ -521,39 +427,17 @@ class TasksHandProcessor(HandProcessor):
                             handedness = "Unknown"
                         all_handedness.append(handedness)
 
-                    # Process world landmarks if available (already real-world metres - no transform)
-                    if (hasattr(fresh_results, 'hand_world_landmarks') and
-                        fresh_results.hand_world_landmarks):
-                        for i, hand_world_landmark in enumerate(fresh_results.hand_world_landmarks):
-                            hand_world_landmarks = process_landmarks_to_dict(hand_world_landmark, f"hand_world_{i}")
-                            all_hand_world_landmarks.append(hand_world_landmarks)
-
-                    # Send individual hand data for each hand
-                    for i in range(len(all_hand_landmarks)):
-                        hand_landmarks = all_hand_landmarks[i]
-                        hand_world_landmarks = all_hand_world_landmarks[i] if i < len(all_hand_world_landmarks) else None
-                        handedness = all_handedness[i]
+                        world = all_world[i] if i < len(all_world) else None
                         seen_prefixes.add("left_hand" if handedness.lower() == "left" else "right_hand")
                         hand_count += 1
-                        self.send_hand_data(hand_landmarks, hand_world_landmarks, handedness, timestamp)
-                        self.send_hand_bounds_data(
-                            fresh_results.hand_landmarks[i],
-                            fresh_results.hand_world_landmarks[i] if hand_world_landmarks else None,
-                            handedness,
-                            transform
-                        )
+                        self.osc.hand(handedness, hand_landmark, world, transform, f"hand_{i}", ts=timestamp)
 
                     # Draw all hand landmarks
                     for i, hand_landmark in enumerate(fresh_results.hand_landmarks):
-                        handedness = all_handedness[i] if i < len(all_handedness) else "Unknown"
-                        self._draw_landmarks(target, hand_landmark, handedness)
-
-                    del all_hand_landmarks
-                    del all_hand_world_landmarks
-                    del all_handedness
+                        self._draw_landmarks(target, hand_landmark, all_handedness[i])
 
                 # Always send status message so receivers know program is running
-                self.osc_sender.send_message("/hand/status", compact_json({"status": hand_count}))
+                self.osc.hand_status(hand_count)
 
                 # Per-hand transition-to-empty clearing: any hand not seen this frame
                 # that was tracked last frame gets cleared exactly once. Running this
@@ -566,7 +450,7 @@ class TasksHandProcessor(HandProcessor):
                     if hand_prefix in seen_prefixes:
                         setattr(self, last_state_attr, True)
                     elif getattr(self, last_state_attr):
-                        self.send_empty_single_hand_data(handedness_label, timestamp)
+                        self.osc.hand_cleared(handedness_label, ts=timestamp)
                         setattr(self, last_state_attr, False)
             elif self._display_results is not None:
                 # We have results but they're stale, just draw landmarks
@@ -577,10 +461,10 @@ class TasksHandProcessor(HandProcessor):
                             handedness = self._display_results.handedness[i][0].category_name
                         self._draw_landmarks(target, hand_landmark, handedness)
                 # No fresh detection this frame - status 0 signals no actively tracked hand
-                self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
+                self.osc.hand_status(0)
             else:
                 # No results yet - still send status so receivers know program is running
-                self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
+                self.osc.hand_status(0)
 
             del rgb_frame
             if 'rgba_frame' in locals():
@@ -726,14 +610,13 @@ class LegacyHandProcessor(HandProcessor):
             
             if hands_detected:
                 self._last_detection_state = True
-                all_hand_landmarks = []
-                all_hand_world_landmarks = []
+                # World landmarks are already real-world metres - the emitter
+                # never applies the letterbox transform to them (and legacy
+                # may not provide them at all)
+                all_world = getattr(results, 'multi_hand_world_landmarks', None) or []
                 all_handedness = []
 
                 for i, hand_landmark in enumerate(results.multi_hand_landmarks):
-                    hand_landmarks = process_landmarks_to_dict(hand_landmark.landmark, f"hand_{i}", self._letterbox_transform)
-                    all_hand_landmarks.append(hand_landmarks)
-
                     # Get handedness
                     if results.multi_handedness and i < len(results.multi_handedness):
                         handedness = results.multi_handedness[i].classification[0].label
@@ -741,43 +624,21 @@ class LegacyHandProcessor(HandProcessor):
                         handedness = "Unknown"
                     all_handedness.append(handedness)
 
-                # Process world landmarks if available (legacy may not have this)
-                # World landmarks are already real-world metres - no transform
-                if (hasattr(results, 'multi_hand_world_landmarks') and
-                    results.multi_hand_world_landmarks):
-                    for i, hand_world_landmark in enumerate(results.multi_hand_world_landmarks):
-                        hand_world_landmarks = process_landmarks_to_dict(hand_world_landmark.landmark, f"hand_world_{i}")
-                        all_hand_world_landmarks.append(hand_world_landmarks)
-
-                # Send individual hand data for each hand
-                for i in range(len(all_hand_landmarks)):
-                    hand_landmarks = all_hand_landmarks[i]
-                    hand_world_landmarks = all_hand_world_landmarks[i] if i < len(all_hand_world_landmarks) else None
-                    handedness = all_handedness[i]
-                    self.send_hand_data(hand_landmarks, hand_world_landmarks, handedness, timestamp)
-                    self.send_hand_bounds_data(
-                        results.multi_hand_landmarks[i].landmark,
-                        results.multi_hand_world_landmarks[i].landmark if hand_world_landmarks else None,
-                        handedness,
-                        self._letterbox_transform
-                    )
+                    world = all_world[i].landmark if i < len(all_world) else None
+                    self.osc.hand(handedness, hand_landmark.landmark, world,
+                                  self._letterbox_transform, f"hand_{i}", ts=timestamp)
                 
-                self.osc_sender.send_message("/hand/status", compact_json({"status": len(results.multi_hand_landmarks)}))
+                self.osc.hand_status(len(results.multi_hand_landmarks))
                 
                 # Draw hand landmarks
                 for i, hand_landmark in enumerate(results.multi_hand_landmarks):
-                    handedness = all_handedness[i] if i < len(all_handedness) else "Unknown"
-                    self._draw_landmarks_legacy(target, hand_landmark, handedness)
-
-                del all_hand_landmarks
-                del all_hand_world_landmarks
-                del all_handedness
+                    self._draw_landmarks_legacy(target, hand_landmark, all_handedness[i])
             else:
                 # Always send status message so receivers know program is running
-                self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
+                self.osc.hand_status(0)
                 # Only send empty data once when transitioning from detected to not detected
                 if self._last_detection_state:
-                    self.send_empty_hand_data(timestamp)
+                    self.osc.hand_cleared(None, ts=timestamp)
                     self._last_detection_state = False
 
             self.update_fps(backend_name)

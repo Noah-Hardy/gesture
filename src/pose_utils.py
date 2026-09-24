@@ -203,8 +203,8 @@ def landmark_dict(landmarks, idx, transform=None):
         "z": round(z, 3)
     }
 
-    # Add visibility if available
-    if hasattr(lm, "visibility"):
+    # Add visibility if available (a None visibility is omitted, not rounded)
+    if getattr(lm, "visibility", None) is not None:
         d["visibility"] = round(lm.visibility, 3)
 
     return d

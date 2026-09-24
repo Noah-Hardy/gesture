@@ -19,6 +19,7 @@ from pythonosc import udp_client
 from src import ThreadedOSCSender, TasksPoseProcessor, LegacyPoseProcessor, get_config
 from src import TasksHandProcessor, LegacyHandProcessor
 from src import TasksHolisticProcessor
+from src import OscEmitter
 from src import NDICapture, list_ndi_sources, NDI_AVAILABLE
 
 
@@ -333,8 +334,13 @@ def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
     last_frame_time = time.time()
     mirror_preview = display_config.get('mirror_preview', False)
     exit_reason = EXIT_OK
+    # Both processors share run()'s one emitter
+    osc_emitter = (pose_processor or hand_processor).osc
 
     while cap.isOpened():
+        # 1 Hz heartbeat first, so it keeps going through frame-read failures
+        osc_emitter.heartbeat()
+
         # Frame rate limiting
         if frame_interval > 0:
             current_time = time.time()
@@ -365,6 +371,7 @@ def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
             # aspect ratios differ. `display` accumulates both processors'
             # overlays onto one shared array instead.
             display = None
+            osc_emitter.begin_frame(time.time())
 
             # Process pose if enabled
             if pose_processor and pose_ctx:
@@ -373,6 +380,8 @@ def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
             # Process hand if enabled
             if hand_processor and hand_ctx:
                 display = hand_processor.process_frame(frame, hand_ctx, "Hand", draw_target=display)
+
+            osc_emitter.end_frame()
 
             if display_config.get('show_window', True):
                 show_preview(display, window_title, mirror_preview)
@@ -442,13 +451,18 @@ def run(args, config):
     # ------------------------------------------------------------------------
     print(f"🌐 OSC Target: {osc_config['host']}:{osc_config['port']}")
     try:
-        osc_client = udp_client.SimpleUDPClient(osc_config['host'], osc_config['port'])
+        # allow_broadcast: a subnet broadcast target (e.g. x.x.x.255) otherwise
+        # fails every send with PermissionError (#55)
+        osc_client = udp_client.SimpleUDPClient(osc_config['host'], osc_config['port'], allow_broadcast=True)
         threaded_osc = ThreadedOSCSender(osc_client, queue_size=osc_config['queue_size'])
     except OSError as e:
         print(f"❌ Could not resolve OSC target {osc_config['host']}:{osc_config['port']}: {e}")
         print("   Check the OSC host address for typos")
         print("   If using a hostname, try the IP address instead")
         return 1
+    # Every processor sends through the emitter, which owns the wire format
+    osc_emitter = OscEmitter(threaded_osc, osc_config.get('protocol', 'legacy'), config)
+    print(f"📡 OSC protocol: {osc_emitter.protocol}")
     
     # ------------------------------------------------------------------------
     # Frame rate limiting setup
@@ -508,7 +522,7 @@ def run(args, config):
             print("🧍 Initializing holistic tracking (pose + hands, one model)...")
             try:
                 holistic_processor = TasksHolisticProcessor(
-                    threaded_osc,
+                    osc_emitter,
                     show_fps=show_fps,
                     config=config,
                     force_cpu=force_cpu,
@@ -539,7 +553,7 @@ def run(args, config):
         if use_tasks:
             try:
                 pose_processor = TasksPoseProcessor(
-                    threaded_osc, 
+                    osc_emitter,
                     show_fps=show_fps,  # Enable FPS for pose in all modes
                     config=config,
                     force_cpu=force_cpu,
@@ -560,7 +574,7 @@ def run(args, config):
         if pose_processor is None:
             try:
                 pose_processor = LegacyPoseProcessor(
-                    threaded_osc, 
+                    osc_emitter,
                     show_fps=show_fps,  # Enable FPS for pose in all modes
                     config=config
                 )
@@ -584,7 +598,7 @@ def run(args, config):
         if use_tasks:
             try:
                 hand_processor = TasksHandProcessor(
-                    threaded_osc, 
+                    osc_emitter,
                     show_fps=hand_show_fps,
                     config=config,
                     force_cpu=force_cpu,
@@ -605,7 +619,7 @@ def run(args, config):
         if hand_processor is None:
             try:
                 hand_processor = LegacyHandProcessor(
-                    threaded_osc, 
+                    osc_emitter,
                     show_fps=show_fps if tracking_mode == 'hand' else False,
                     config=config
                 )
@@ -694,6 +708,9 @@ def run(args, config):
             mirror_preview = display_config.get('mirror_preview', False)
             
             while cap.isOpened():
+                # 1 Hz heartbeat first, so it keeps going through frame-read failures
+                osc_emitter.heartbeat()
+
                 # Frame rate limiting - sleep to maintain target fps
                 if frame_interval > 0:
                     current_time = time.time()
@@ -728,11 +745,13 @@ def run(args, config):
                     # aspect ratios differ. `display` accumulates both
                     # processors' overlays onto one shared array instead.
                     display = None
+                    osc_emitter.begin_frame(time.time())
                     if pose_processor and pose_is_tasks:
                         display = pose_processor.process_frame(frame, pose_landmarker, "Pose", timestamp_counter, draw_target=display)
 
                     if hand_processor and hand_is_tasks:
                         display = hand_processor.process_frame(frame, hand_landmarker, "Hand", timestamp_counter, draw_target=display)
+                    osc_emitter.end_frame()
 
                     if display_config.get('show_window', True):
                         show_preview(display, window_title, mirror_preview)
@@ -803,8 +822,14 @@ def run(args, config):
                     landmarker.close()
             except:
                 pass
+        # Clear every channel on the receiver (#55), then let the sender
+        # drain so those clears actually leave before the process exits
         try:
-            threaded_osc.stop()
+            osc_emitter.clear_all()
+        except Exception:
+            pass
+        try:
+            threaded_osc.stop(flush=True)
         except:
             pass
         try:

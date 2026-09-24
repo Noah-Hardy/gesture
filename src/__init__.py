@@ -19,6 +19,7 @@ import importlib
 _EXPORTS = {
     # OSC Communication
     'ThreadedOSCSender': 'osc_sender',
+    'OscEmitter': 'osc_protocol',
 
     # Pose Utilities
     'get_pose_bounds_with_values': 'pose_utils',
