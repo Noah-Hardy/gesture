@@ -332,6 +332,15 @@ class SettingsWindow:
         row = self._row_int(frame, row, "Capture FPS:", 'camera', 'fps', width=8)
         row = self._row_int(frame, row, "Buffer size:", 'camera', 'buffer_size', width=8,
                             minimum=1)
+        row = self._row_int(frame, row, "Processing width:", 'camera', 'processing_width', width=8,
+                            note="Tracking resolution - the main quality/speed trade-off.",
+                            minimum=16)
+        row = self._row_int(frame, row, "Processing height:", 'camera', 'processing_height', width=8,
+                            minimum=16)
+        row = self._row_int(frame, row, "Reconnect timeout (s):", 'camera', 'reconnect_timeout',
+                            width=8, note="Give up on a lost camera/NDI source after this (0 = never).")
+        row = self._row_combo(frame, row, "NDI bandwidth:", 'camera', 'ndi_bandwidth',
+                              ('lowest', 'highest'), width=10)
 
         row += 1
         ttk.Separator(frame, orient='horizontal').grid(
@@ -345,9 +354,11 @@ class SettingsWindow:
                         variable=self.var_show_fps).grid(row=row, column=0, columnspan=2,
                                                          sticky='w', pady=2)
         row += 1
-        row = self._row_check(frame, row, "Enable garbage collection", 'performance', 'gc_enabled')
-        row = self._row_int(frame, row, "GC interval (frames):",
-                            'performance', 'gc_interval', width=8)
+        row = self._row_check(frame, row, "Enable garbage collection", 'performance', 'gc_enabled',
+                              note="Off gives the smoothest frame timing; memory can grow over long sessions.")
+        row = self._row_int(frame, row, "Max pending frames:", 'performance', 'max_pending_frames',
+                            width=8, note="1 = lowest latency; higher trades latency for throughput.",
+                            minimum=1)
 
         row += 1
         ttk.Separator(frame, orient='horizontal').grid(

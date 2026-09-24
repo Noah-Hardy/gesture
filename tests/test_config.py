@@ -78,6 +78,13 @@ def test_sanitize_keeps_highest_ndi_bandwidth(config_path):
     assert cfg.get('camera', 'ndi_bandwidth') == 'highest'
 
 
+def test_sanitize_floors_max_pending_frames(config_path):
+    with open(config_path, 'w') as f:
+        json.dump({'performance': {'max_pending_frames': 0}}, f)
+    cfg = Config(config_path)
+    assert cfg.get('performance', 'max_pending_frames') == 1
+
+
 def test_sanitize_repairs_non_numeric_buffer_size(config_path):
     with open(config_path, 'w') as f:
         json.dump({'camera': {'buffer_size': 'not a number'}}, f)

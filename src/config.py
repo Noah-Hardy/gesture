@@ -97,8 +97,8 @@ class Config:
         "performance": {
             "show_fps": False,
             "target_fps": 0,  # 0 = uncapped, set to 30 for stable 30fps cap
-            "gc_enabled": True,  # Enable/disable garbage collection (disable for smoother FPS)
-            "gc_interval": 60,  # Garbage collection interval in frames (higher = smoother but more memory)
+            "gc_enabled": True,  # Automatic garbage collection; False = gc.disable() for the session (smoothest timing, memory can grow)
+            "max_pending_frames": 1,  # Frames MediaPipe may have in flight before new ones are skipped (1 = lowest latency)
             "force_cpu": False,  # Force the CPU delegate (launch-time, GUI/Settings only)
             "force_gpu": False,  # Force the GPU delegate - has a memory leak on Apple Silicon (launch-time)
             "force_legacy": False,  # Use MediaPipe's legacy synchronous API (launch-time, GUI/Settings only)
@@ -195,6 +195,13 @@ class Config:
         except (TypeError, ValueError):
             queue_size = self.MIN_OSC_QUEUE_SIZE
         config['osc']['queue_size'] = max(self.MIN_OSC_QUEUE_SIZE, queue_size)
+
+        # performance.max_pending_frames below 1 would skip every frame
+        try:
+            max_pending = int(config['performance'].get('max_pending_frames', 1))
+        except (TypeError, ValueError):
+            max_pending = 1
+        config['performance']['max_pending_frames'] = max(1, max_pending)
 
         # camera.ndi_bandwidth is a two-value enum; anything else (a typo in
         # a hand-edited config) falls back to the default rather than

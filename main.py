@@ -9,6 +9,7 @@ Main entry point for pose tracking with network streaming
 # ============================================================================
 import cv2
 import argparse
+import gc
 import os
 import platform
 import sys
@@ -20,7 +21,7 @@ from src import ThreadedOSCSender, TasksPoseProcessor, LegacyPoseProcessor, get_
 from src import TasksHandProcessor, LegacyHandProcessor
 from src import TasksHolisticProcessor
 from src import NDICapture, list_ndi_sources, NDI_AVAILABLE
-from src.runtime import ParentWatch, ReconnectingCapture, install_sigterm_handler
+from src.runtime import FrameClock, ParentWatch, ReconnectingCapture, install_sigterm_handler
 
 
 # ============================================================================
@@ -369,7 +370,7 @@ def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
         processors are active) can report the real reason instead of
         assuming every exit was a clean one.
     """
-    last_frame_time = time.time()
+    frame_clock = FrameClock(frame_interval)
     mirror_preview = display_config.get('mirror_preview', False)
     exit_reason = EXIT_OK
 
@@ -381,14 +382,9 @@ def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
             print("🛑 Launcher is gone - stopping")
             break
 
-        # Frame rate limiting
-        if frame_interval > 0:
-            current_time = time.time()
-            elapsed = current_time - last_frame_time
-            if elapsed < frame_interval:
-                time.sleep(frame_interval - elapsed)
-            last_frame_time = time.time()
-        
+        # Frame rate limiting (deadline-based - see FrameClock)
+        frame_clock.wait()
+
         # A failed read returns immediately (after at most a short backoff
         # slice) so this loop - and anything at its top - keeps running
         # while the capture reconnects
@@ -708,6 +704,22 @@ def run(args, config):
     if args.force_legacy:
         print("⚠️  --force-legacy is deprecated and will be removed in a future release; "
               "the legacy MediaPipe Solutions API is being replaced by the unified Tasks-only pipeline")
+
+    # In all mode without holistic, pose and hand read the same frame -
+    # letterbox and colour-convert it once for both (#36)
+    if pose_processor is not None and hand_processor is not None:
+        hand_processor.share_frame_prep(pose_processor)
+
+    # Setup is done: freeze everything it allocated (models, modules,
+    # config) into the permanent generation so no collection ever rescans
+    # it. That keeps the collector's periodic passes cheap without the old
+    # forced gc.collect() every N frames, which stalled the capture thread
+    # for milliseconds at a time - frame jitter receivers see (#36).
+    gc.collect()
+    gc.freeze()
+    if not performance_config.get('gc_enabled', True):
+        gc.disable()
+
     # Sentinel the launcher watches for to end its startup spinner
     print("🟢 Engine ready")
 
@@ -741,7 +753,7 @@ def run(args, config):
         
         if use_tasks_loop:
             # Tasks processing with async callback
-            last_frame_time = time.time()
+            frame_clock = FrameClock(frame_interval)
             mirror_preview = display_config.get('mirror_preview', False)
             
             # Not `while cap.isOpened()` - see _legacy_loop
@@ -751,15 +763,9 @@ def run(args, config):
                     print("🛑 Launcher is gone - stopping")
                     break
 
-                # Frame rate limiting - sleep to maintain target fps
-                if frame_interval > 0:
-                    current_time = time.time()
-                    elapsed = current_time - last_frame_time
-                    if elapsed < frame_interval:
-                        sleep_time = frame_interval - elapsed
-                        time.sleep(sleep_time)
-                    last_frame_time = time.time()
-                
+                # Frame rate limiting (deadline-based - see FrameClock)
+                frame_clock.wait()
+
                 # Returns promptly during a reconnect - see _legacy_loop
                 ret, frame = cap.read()
                 if not ret:

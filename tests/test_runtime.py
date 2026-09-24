@@ -1,7 +1,7 @@
 """
 src.runtime: the engine-lifetime and capture-loop helpers main.py's two
 processing loops share - parent-liveness watch and SIGTERM handling (#34),
-capture reconnect with backoff (#32).
+capture reconnect with backoff (#32) and deadline frame pacing (#36).
 """
 import os
 import signal
@@ -9,7 +9,7 @@ import signal
 import pytest
 
 from src import runtime
-from src.runtime import ParentWatch, ReconnectingCapture, install_sigterm_handler
+from src.runtime import FrameClock, ParentWatch, ReconnectingCapture, install_sigterm_handler
 
 
 class FakeClock:
@@ -228,3 +228,41 @@ def test_release_releases_the_current_capture():
     drain(wrapper, 50)
     wrapper.release()
     assert fresh.released is True
+
+
+# ----------------------------------------------------------------------------
+# FrameClock (#36)
+# ----------------------------------------------------------------------------
+
+def test_frame_clock_uncapped_never_sleeps():
+    clock = FakeClock()
+    sleep = SleepRecorder(clock)
+    FrameClock(0, clock=clock, sleep=sleep).wait()
+    assert sleep.calls == []
+
+
+def test_frame_clock_absorbs_per_frame_work():
+    # 10ms of work per frame at a 30 FPS cap: the old sleep-then-rebaseline
+    # cap added the work on top of every interval; the deadline cap doesn't
+    clock = FakeClock()
+    sleep = SleepRecorder(clock)
+    frame_clock = FrameClock(1 / 30, clock=clock, sleep=sleep)
+    start = clock.now
+    for _ in range(30):
+        frame_clock.wait()
+        clock.now += 0.010
+    assert abs((clock.now - start) - 1.0) < 0.05
+
+
+def test_frame_clock_resyncs_after_a_stall():
+    clock = FakeClock()
+    sleep = SleepRecorder(clock)
+    frame_clock = FrameClock(0.1, clock=clock, sleep=sleep)
+    frame_clock.wait()
+    clock.now += 5.0  # a long stall (reconnect, model hiccup)
+    frame_clock.wait()
+    sleep.calls.clear()
+    frame_clock.wait()
+    # Next frame waits a normal interval rather than bursting through the
+    # 50 missed slots with no sleep at all
+    assert sleep.calls and abs(sleep.calls[0] - 0.1) < 1e-9

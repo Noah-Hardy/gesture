@@ -11,14 +11,12 @@ Supports GPU acceleration and multi-hand tracking
 import os
 import time
 import platform
-import gc
 import threading
-import cv2
-import numpy as np
 import mediapipe as mp
 from mediapipe.framework.formats import landmark_pb2
 
-from .pose_utils import get_pose_bounds_with_values, process_landmarks_to_dict, compact_json, letterbox_frame, LetterboxTransform
+from .pose_utils import get_pose_bounds_with_values, process_landmarks_to_dict, compact_json, LetterboxTransform
+from .frame_prep import FramePrep
 from .model_downloader import download_hand_model
 
 # Optional psutil import for memory monitoring
@@ -61,7 +59,8 @@ class HandProcessor:
         self.fps_start_time = time.time() if show_fps else None
         self.results = None
         self.pending_frames = 0
-        self.max_pending_frames = 1
+        # See PoseProcessor - performance.max_pending_frames, floor 1
+        self.max_pending_frames = max(1, int(config.get('performance', 'max_pending_frames', 1))) if config else 1
         self.skipped_frames = 0
         self._last_detection_state = False  # Track if we had detection last time
         self._last_left_hand_state = False  # Per-hand detection state for transition-to-empty clearing
@@ -72,28 +71,20 @@ class HandProcessor:
         # Lock protecting results/pending_frames shared with MediaPipe's worker thread
         self._results_lock = threading.Lock()
 
-        # Pre-allocated buffer for resizing to prevent memory fragmentation
-        self._resize_buffer = None
-        self._rgb_buffer = None
-
         # Cache per-frame config lookups (config is not mutated after construction)
         camera_config = config.get('camera') if config else {}
         self._proc_width = camera_config.get('processing_width', 640)
         self._proc_height = camera_config.get('processing_height', 480)
+
+        # Letterbox + RGB conversion for the model input - replaced by the
+        # pose processor's in all mode without holistic (share_frame_prep)
+        self._frame_prep = FramePrep(self._proc_width, self._proc_height)
 
         # Maps normalized coords from the (possibly letterboxed) processing
         # frame back to the source frame; identity until the first resize
         self._letterbox_transform = LetterboxTransform(
             1.0, 0, 0, self._proc_width, self._proc_height, self._proc_width, self._proc_height
         )
-
-        if config:
-            performance_config = config.get('performance')
-            self._gc_enabled = performance_config.get('gc_enabled', True)
-            self._gc_interval = performance_config.get('gc_interval', 60)
-        else:
-            self._gc_enabled = False
-            self._gc_interval = 60
 
         # Pre-build DrawingSpec objects for left/right hand rendering
         display_config = config.get('display') if config else {}
@@ -240,10 +231,13 @@ class HandProcessor:
                     print(f"{backend_name} FPS: {actual_fps:.2f} | Skipped: {self.skipped_frames}")
                 self.fps_start_time = fps_end_time
 
-        # Force garbage collection at configurable interval (higher = smoother but more memory)
-        # Can be disabled entirely via gc_enabled config option
-        if self._gc_enabled and self.frame_counter % self._gc_interval == 0:
-            gc.collect()
+    def share_frame_prep(self, pose_processor):
+        """
+        Adopt the pose processor's FramePrep so each frame is letterboxed
+        and colour-converted once, not once per processor (#36)
+        """
+        pose_processor._frame_prep.shared = True
+        self._frame_prep = pose_processor._frame_prep
 
 
 # ============================================================================
@@ -385,7 +379,6 @@ class TasksHandProcessor(HandProcessor):
             self.results = result
             self._has_fresh_results = True  # Mark that we have new results to process
             self.pending_frames = max(0, self.pending_frames - 1)
-        del output_image
     
     def process_frame(self, frame, landmarker, backend_name, timestamp_counter, draw_target=None):
         """
@@ -412,23 +405,10 @@ class TasksHandProcessor(HandProcessor):
             if frame is None or frame.size == 0:
                 return frame
 
-            # Always resize frame for consistent display
-            proc_width = self._proc_width
-            proc_height = self._proc_height
-
-            h, w = frame.shape[:2]
-            if w != proc_width or h != proc_height:
-                # Letterbox instead of stretching: preserves the source aspect
-                # ratio (padding with black bars) so normalized coordinates
-                # sent over OSC stay correct relative to the true source frame
-                image, letterbox_transform = letterbox_frame(frame, proc_width, proc_height, self._resize_buffer)
-                if letterbox_transform.pad_x == 0 and letterbox_transform.pad_y == 0:
-                    # No padding needed - image is the reusable resize buffer
-                    self._resize_buffer = image
-                self._letterbox_transform = letterbox_transform
-            else:
-                image = frame
-                self._letterbox_transform = LetterboxTransform(1.0, 0, 0, proc_width, proc_height, proc_width, proc_height)
+            # Letterbox to the processing size (aspect-preserving, so OSC
+            # coordinates stay correct relative to the source frame) - shared
+            # with the other processor reading this frame, see FramePrep
+            image, self._letterbox_transform = self._frame_prep.letterbox(frame)
 
             # `image` is the inference input ONLY - always the clean,
             # letterboxed frame, never annotated. `target` is what gets
@@ -436,7 +416,7 @@ class TasksHandProcessor(HandProcessor):
             # multiple processors composite their overlays onto one shared
             # array in a single loop iteration without leaking one
             # processor's drawings into another's model input.
-            target = draw_target if draw_target is not None else (image.copy() if image is self._resize_buffer else image)
+            target = draw_target if draw_target is not None else self._frame_prep.drawable(image)
 
             # Check if MediaPipe's async queue is backing up
             if self.pending_frames >= self.max_pending_frames:
@@ -455,29 +435,17 @@ class TasksHandProcessor(HandProcessor):
                 # not "nothing detected"; sending status would misrepresent one or the other
                 return target
 
-            # Convert to RGB for MediaPipe
-            if (self._rgb_buffer is None or 
-                self._rgb_buffer.shape[0] != image.shape[0] or 
-                self._rgb_buffer.shape[1] != image.shape[1]):
-                self._rgb_buffer = np.empty((image.shape[0], image.shape[1], 3), dtype=np.uint8)
-            
-            cv2.cvtColor(image, cv2.COLOR_BGR2RGB, dst=self._rgb_buffer)
-            rgb_frame = self._rgb_buffer
-            
             # On Apple Silicon with GPU, use SRGBA format for Metal compatibility
             if self.is_apple_silicon and self.use_gpu:
-                rgba_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2RGBA)
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGBA, data=rgba_frame)
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGBA, data=self._frame_prep.rgba())
             else:
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-            
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=self._frame_prep.rgb())
+
             # Process with MediaPipe Tasks (async)
             landmarker.detect_async(mp_image, timestamp_counter)
             with self._results_lock:
                 self.pending_frames += 1
 
-            del mp_image
-            
             timestamp = time.time()
 
             # Atomically check-and-take fresh results from the callback thread
@@ -548,10 +516,6 @@ class TasksHandProcessor(HandProcessor):
                         handedness = all_handedness[i] if i < len(all_handedness) else "Unknown"
                         self._draw_landmarks(target, hand_landmark, handedness)
 
-                    del all_hand_landmarks
-                    del all_hand_world_landmarks
-                    del all_handedness
-
                 # Always send status message so receivers know program is running
                 self.osc_sender.send_message("/hand/status", compact_json({"status": hand_count}))
 
@@ -581,10 +545,6 @@ class TasksHandProcessor(HandProcessor):
             else:
                 # No results yet - still send status so receivers know program is running
                 self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
-
-            del rgb_frame
-            if 'rgba_frame' in locals():
-                del rgba_frame
 
             self.update_fps(backend_name)
             return target
@@ -684,41 +644,19 @@ class LegacyHandProcessor(HandProcessor):
             Annotated frame with landmarks drawn (draw_target, if provided)
         """
         try:
-            # Resize frame for processing if needed
-            proc_width = self._proc_width
-            proc_height = self._proc_height
-
-            h, w = frame.shape[:2]
-            if w != proc_width or h != proc_height:
-                # Letterbox instead of stretching: preserves the source aspect
-                # ratio (padding with black bars) so normalized coordinates
-                # sent over OSC stay correct relative to the true source frame
-                image, letterbox_transform = letterbox_frame(frame, proc_width, proc_height, self._resize_buffer)
-                if letterbox_transform.pad_x == 0 and letterbox_transform.pad_y == 0:
-                    # No padding needed - image is the reusable resize buffer
-                    self._resize_buffer = image
-                self._letterbox_transform = letterbox_transform
-            else:
-                image = frame
-                self._letterbox_transform = LetterboxTransform(1.0, 0, 0, proc_width, proc_height, proc_width, proc_height)
+            # Letterbox to the processing size (aspect-preserving, so OSC
+            # coordinates stay correct relative to the source frame) - shared
+            # with the other processor reading this frame, see FramePrep
+            image, self._letterbox_transform = self._frame_prep.letterbox(frame)
 
             # `image` is the inference input ONLY - always the clean,
             # letterboxed frame, never annotated. `target` is what gets
             # drawn into and returned - see TasksHandProcessor.process_frame
             # for the full rationale.
-            target = draw_target if draw_target is not None else (image.copy() if image is self._resize_buffer else image)
-
-            # Convert to RGB for MediaPipe
-            if (self._rgb_buffer is None or
-                self._rgb_buffer.shape[0] != image.shape[0] or
-                self._rgb_buffer.shape[1] != image.shape[1]):
-                self._rgb_buffer = np.empty((image.shape[0], image.shape[1], 3), dtype=np.uint8)
-
-            cv2.cvtColor(image, cv2.COLOR_BGR2RGB, dst=self._rgb_buffer)
-            rgb_image = self._rgb_buffer
+            target = draw_target if draw_target is not None else self._frame_prep.drawable(image)
 
             # Process with MediaPipe Hands
-            results = hand_context.process(rgb_image)
+            results = hand_context.process(self._frame_prep.rgb())
 
             timestamp = time.time()
             
@@ -768,10 +706,6 @@ class LegacyHandProcessor(HandProcessor):
                 for i, hand_landmark in enumerate(results.multi_hand_landmarks):
                     handedness = all_handedness[i] if i < len(all_handedness) else "Unknown"
                     self._draw_landmarks_legacy(target, hand_landmark, handedness)
-
-                del all_hand_landmarks
-                del all_hand_world_landmarks
-                del all_handedness
             else:
                 # Always send status message so receivers know program is running
                 self.osc_sender.send_message("/hand/status", compact_json({"status": 0}))
@@ -785,8 +719,6 @@ class LegacyHandProcessor(HandProcessor):
 
         except Exception as e:
             print(f"⚠️  Legacy hand frame processing error: {e}")
-            if 'image' in locals() and image is not frame:
-                del image
             return draw_target if draw_target is not None else frame
     
     def _draw_landmarks_legacy(self, image, hand_landmarks, handedness="Unknown"):

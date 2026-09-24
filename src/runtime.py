@@ -71,6 +71,46 @@ class ParentWatch:
 
 
 # ============================================================================
+# FRAME PACING
+# ============================================================================
+class FrameClock:
+    """
+    Deadline-based FPS cap
+
+    The old sleep-then-rebaseline cap measured each interval from *after*
+    the previous sleep, so read/inference/waitKey time was added on top of
+    every interval and the loop landed below the requested rate. Scheduling
+    against `next_deadline += interval` absorbs that overhead instead.
+    """
+
+    def __init__(self, interval, clock=time.monotonic, sleep=time.sleep):
+        """
+        Args:
+            interval: Seconds per frame (0 = uncapped, wait() is a no-op)
+        """
+        self.interval = interval
+        self._clock = clock
+        self._sleep = sleep
+        self._next_deadline = None
+
+    def wait(self):
+        """Sleep until this frame's slot, then book the next one"""
+        if self.interval <= 0:
+            return
+        now = self._clock()
+        if self._next_deadline is None:
+            self._next_deadline = now
+        delay = self._next_deadline - now
+        if delay > 0:
+            self._sleep(delay)
+        elif delay < -self.interval:
+            # More than a whole frame behind (a stall, a reconnect) - resync
+            # rather than bursting through the missed slots back to back
+            self._next_deadline = now
+        self._next_deadline += self.interval
+
+
+# ============================================================================
 # CAPTURE RECONNECT
 # ============================================================================
 class ReconnectingCapture:
