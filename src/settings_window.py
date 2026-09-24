@@ -21,10 +21,12 @@ from tkinter import colorchooser, messagebox, ttk
 from typing import Callable, Optional
 
 from src import theme
-from src.config import Config, valid_unit_float
+from src.config import OSC_PROTOCOLS, Config, valid_unit_float
 
 FORCE_GPU_WARNING = "Force GPU has a known memory leak on Apple Silicon - use with caution."
 FORCE_LEGACY_WARNING = "Deprecated - will be removed in a future release."
+OSC_PROTOCOL_NOTE = ("legacy = 0.2.x JSON (default until 0.4.0); json = JSON v2; "
+                     "float = one float message per landmark (Isadora). See Help > OSC Reference.")
 
 
 # ============================================================================
@@ -369,6 +371,10 @@ class SettingsWindow:
         row = self._row_int(frame, row, "Send queue size:", 'osc', 'queue_size', width=8,
                             note="Older queued messages are dropped once full.",
                             minimum=Config.MIN_OSC_QUEUE_SIZE)
+        row = self._row_combo(frame, row, "Output format:", 'osc', 'protocol', OSC_PROTOCOLS)
+        ttk.Label(frame, text=OSC_PROTOCOL_NOTE, style='Dim.TLabel').grid(
+            row=row, column=0, columnspan=3, sticky='w', padx=(20, 0))
+        row += 1
 
         row += 1
         ttk.Separator(frame, orient='horizontal').grid(

@@ -20,6 +20,7 @@ from src import ThreadedOSCSender, TasksPoseProcessor, LegacyPoseProcessor, get_
 from src import TasksHandProcessor, LegacyHandProcessor
 from src import TasksHolisticProcessor
 from src import OscEmitter
+from src.config import OSC_PROTOCOLS
 from src import NDICapture, list_ndi_sources, NDI_AVAILABLE
 from src.config import getenv
 from src.runtime import FrameClock, ParentWatch, ReconnectingCapture, install_sigterm_handler
@@ -73,6 +74,8 @@ def build_parser():
     parser.add_argument('--show-config', action='store_true', help='Show current configuration and exit')
     parser.add_argument('--host', help='OSC host address (overrides config)')
     parser.add_argument('--port', type=int, help='OSC port (overrides config)')
+    parser.add_argument('--osc-protocol', choices=OSC_PROTOCOLS, default=None,
+                        help='OSC output format: legacy (0.2.x JSON, the default), json (JSON v2, bundled) or float (native floats per landmark, bundled). Overrides config')
     parser.add_argument('--camera', type=int, help='Camera device ID (overrides config)')
     parser.add_argument('--force-cpu', action='store_true', help='Force CPU delegate (skip GPU)')
     parser.add_argument('--force-gpu', action='store_true', help='Force GPU delegate (WARNING: has memory leak on Apple Silicon)')
@@ -132,6 +135,8 @@ def apply_config_overrides(args, config):
         config.set('osc', 'host', args.host)
     if args.port is not None:
         config.set('osc', 'port', args.port)
+    if args.osc_protocol:
+        config.set('osc', 'protocol', args.osc_protocol)
     if args.camera is not None:
         config.set('camera', 'device_id', args.camera)
     if args.pose_model:
