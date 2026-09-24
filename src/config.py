@@ -19,12 +19,48 @@ from typing import Dict, Any, Optional
 # ============================================================================
 # PATH RESOLUTION
 # ============================================================================
+APP_SUPPORT_NAME = 'Gesture'
+# The folder name before the MP-OSC -> Gesture rename (<= 0.2.x)
+LEGACY_APP_SUPPORT_NAME = 'mp-osc'
+
+
+def app_support_dir() -> str:
+    """
+    ~/Library/Application Support/Gesture - config, models, docs, updates
+
+    The one place that names the folder. On the first launch after the
+    rename it moves the pre-rename mp-osc folder into place (a single
+    atomic os.rename, so config, downloaded models and install.log all
+    carry over). If that fails for any reason the old folder keeps being
+    used rather than starting over with an empty one. Once Gesture exists
+    it wins, so a later downgrade that recreates mp-osc is never merged in.
+    """
+    base = os.path.expanduser('~/Library/Application Support')
+    new = os.path.join(base, APP_SUPPORT_NAME)
+    old = os.path.join(base, LEGACY_APP_SUPPORT_NAME)
+
+    if not os.path.isdir(new) and os.path.isdir(old):
+        try:
+            os.rename(old, new)
+        except OSError:
+            # The launcher and the engine it spawns can race here - if the
+            # other one just moved it, the new folder is there now
+            if not os.path.isdir(new):
+                return old
+
+    try:
+        os.makedirs(new, exist_ok=True)
+    except OSError:
+        if os.path.isdir(old):
+            return old
+        raise
+    return new
+
+
 def default_config_path() -> str:
     """Resolve the config file path (writable location when frozen)."""
     if getattr(sys, 'frozen', False):
-        d = os.path.join(os.path.expanduser('~/Library/Application Support'), 'mp-osc')
-        os.makedirs(d, exist_ok=True)
-        return os.path.join(d, 'config.json')
+        return os.path.join(app_support_dir(), 'config.json')
     return 'config.json'
 
 
@@ -37,6 +73,27 @@ def default_config_path() -> str:
 # parsing can list them without importing python-osc/cv2.
 OSC_PROTOCOLS = ("legacy", "json", "float")
 DEFAULT_OSC_PROTOCOL = "legacy"
+
+
+# ============================================================================
+# ENVIRONMENT
+# ============================================================================
+def getenv(name: str, *legacy_names: str, default: Optional[str] = None) -> Optional[str]:
+    """
+    Read an environment variable by its Gesture name, then its pre-rename ones
+
+    Args:
+        name: Current name (GESTURE_...)
+        legacy_names: MPOSC_... / MP_OSC_... names still honoured, in order
+        default: Returned when none of them is set
+
+    Returns:
+        The first one set (even to an empty string), else default
+    """
+    for key in (name,) + legacy_names:
+        if key in os.environ:
+            return os.environ[key]
+    return default
 
 
 # ============================================================================
@@ -62,6 +119,7 @@ class Config:
     # matches one of these and is left alone.
     _LEGACY_WINDOW_TITLES = (
         "MediaPipe OSC Pose Detection",
+        "MP-OSC Preview — not the OSC output",
     )
 
     # Default configuration values
@@ -81,7 +139,9 @@ class Config:
             "processing_width": 640,
             "processing_height": 480,
             "use_ndi": False,
-            "ndi_source": ""
+            "ndi_source": "",
+            "ndi_bandwidth": "lowest",  # NDI receive stream: "lowest" (sender's ~640x360 proxy - plenty for tracking) or "highest"
+            "reconnect_timeout": 30  # Seconds a lost camera/NDI source may take to come back before the engine gives up (0 = never)
         },
         "mediapipe": {
             "model_complexity": 0,
@@ -107,8 +167,8 @@ class Config:
         "performance": {
             "show_fps": False,
             "target_fps": 0,  # 0 = uncapped, set to 30 for stable 30fps cap
-            "gc_enabled": True,  # Enable/disable garbage collection (disable for smoother FPS)
-            "gc_interval": 60,  # Garbage collection interval in frames (higher = smoother but more memory)
+            "gc_enabled": True,  # Automatic garbage collection; False = gc.disable() for the session (smoothest timing, memory can grow)
+            "max_pending_frames": 1,  # Frames MediaPipe may have in flight before new ones are skipped (1 = lowest latency)
             "force_cpu": False,  # Force the CPU delegate (launch-time, GUI/Settings only)
             "force_gpu": False,  # Force the GPU delegate - has a memory leak on Apple Silicon (launch-time)
             "force_legacy": False,  # Use MediaPipe's legacy synchronous API (launch-time, GUI/Settings only)
@@ -116,7 +176,7 @@ class Config:
         },
         "display": {
             "show_window": True,
-            "window_title": "MP-OSC Preview — not the OSC output",
+            "window_title": "Gesture Preview — not the OSC output",
             "mirror_preview": False,  # Flip the preview horizontally (display only - OSC data is unaffected)
             "landmark_color": [245, 117, 66],
             "connection_color": [245, 66, 230],
@@ -212,6 +272,19 @@ class Config:
         protocol = protocol.strip().lower() if isinstance(protocol, str) else ''
         config['osc']['protocol'] = protocol if protocol in OSC_PROTOCOLS else DEFAULT_OSC_PROTOCOL
 
+        # performance.max_pending_frames below 1 would skip every frame
+        try:
+            max_pending = int(config['performance'].get('max_pending_frames', 1))
+        except (TypeError, ValueError):
+            max_pending = 1
+        config['performance']['max_pending_frames'] = max(1, max_pending)
+
+        # camera.ndi_bandwidth is a two-value enum; anything else (a typo in
+        # a hand-edited config) falls back to the default rather than
+        # reaching the NDI SDK
+        if config['camera'].get('ndi_bandwidth') not in ('lowest', 'highest'):
+            config['camera']['ndi_bandwidth'] = self.DEFAULT_CONFIG['camera']['ndi_bandwidth']
+
         # A saved window_title exactly matching a previous release's
         # default is a config that never customized it - pick up the
         # retitle. A real custom title never matches and is untouched.
@@ -248,20 +321,23 @@ class Config:
             Configuration dict with environment overrides applied
         """
         # Environment variable to config path mappings
+        # Each key lists the names checked, first set wins: the Gesture
+        # name, then the pre-rename MP_OSC_* one it replaced
         env_mappings = {
-            "MP_OSC_HOST": ("osc", "host"),
-            "MP_OSC_PORT": ("osc", "port"),
-            "MP_CAMERA_ID": ("camera", "device_id"),
-            "MP_CAMERA_WIDTH": ("camera", "width"),
-            "MP_CAMERA_HEIGHT": ("camera", "height"),
-            "MP_SHOW_FPS": ("performance", "show_fps"),
-            "MP_MIRROR_PREVIEW": ("display", "mirror_preview"),
-            "MP_MIN_DETECTION_CONFIDENCE": ("mediapipe", "min_detection_confidence"),
-            "MP_MIN_TRACKING_CONFIDENCE": ("mediapipe", "min_tracking_confidence")
+            ("GESTURE_OSC_HOST", "MP_OSC_HOST"): ("osc", "host"),
+            ("GESTURE_OSC_PORT", "MP_OSC_PORT"): ("osc", "port"),
+            ("MP_CAMERA_ID",): ("camera", "device_id"),
+            ("MP_CAMERA_WIDTH",): ("camera", "width"),
+            ("MP_CAMERA_HEIGHT",): ("camera", "height"),
+            ("MP_SHOW_FPS",): ("performance", "show_fps"),
+            ("MP_MIRROR_PREVIEW",): ("display", "mirror_preview"),
+            ("MP_MIN_DETECTION_CONFIDENCE",): ("mediapipe", "min_detection_confidence"),
+            ("MP_MIN_TRACKING_CONFIDENCE",): ("mediapipe", "min_tracking_confidence")
         }
         
-        for env_var, (section, key) in env_mappings.items():
-            if env_var in os.environ:
+        for env_names, (section, key) in env_mappings.items():
+            env_var = next((name for name in env_names if name in os.environ), None)
+            if env_var is not None:
                 value = os.environ[env_var]
                 # Type conversion based on original type
                 if isinstance(config[section][key], bool):

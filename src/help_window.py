@@ -41,7 +41,7 @@ class HelpWindow:
         self.current_slug: Optional[str] = None
 
         self.top = tk.Toplevel(parent)
-        self.top.title("MP-OSC Help")
+        self.top.title("Gesture Help")
         self.top.minsize(820, 520)
         self.top.geometry("920x640")
         self.top.configure(bg=theme.PALETTE['bg'])
@@ -273,6 +273,6 @@ class HelpWindow:
             docs.open_site()
         except Exception:
             try:
-                webbrowser.open('https://github.com/Noah-Hardy/mp-osc#readme')
+                webbrowser.open('https://github.com/Noah-Hardy/gesture#readme')
             except Exception:
                 pass

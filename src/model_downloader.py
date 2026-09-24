@@ -12,6 +12,7 @@ import shutil
 import sys
 import urllib.request
 
+from src.config import app_support_dir
 from src.net import ssl_context
 
 # urlopen() goes through the process-wide opener, so installing one
@@ -36,7 +37,7 @@ def _bundled_tasks_dir() -> str:
 def _writable_tasks_dir() -> str:
     """Directory models can be downloaded into."""
     if getattr(sys, 'frozen', False):
-        d = os.path.join(os.path.expanduser('~/Library/Application Support'), 'mp-osc', 'models')
+        d = os.path.join(app_support_dir(), 'models')
         os.makedirs(d, exist_ok=True)
         return d
     return _bundled_tasks_dir()

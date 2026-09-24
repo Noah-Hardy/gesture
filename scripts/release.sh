@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# Package MP-OSC.app into distributable archives for a GitHub release.
+# Package Gesture.app into distributable archives for a GitHub release.
 #
-# Produces dist/MP-OSC-<version>-macos-arm64.zip plus a .sha256 checksum, and,
-# when a signing identity is set, also dist/MP-OSC-<version>-macos-arm64.dmg
+# Produces dist/Gesture-<version>-macos-arm64.zip plus a .sha256 checksum, and,
+# when a signing identity is set, also dist/Gesture-<version>-macos-arm64.dmg
 # plus its own .sha256. The zip is created with ditto, which is the only
 # archiver that reliably preserves macOS bundle structure and code
 # signatures; the DMG is what the Releases page and README point humans at,
@@ -12,18 +12,22 @@
 # The zip is not cosmetic leftover: src/updater.py's in-app updater matches
 # release assets by the exact zip filename and skips any release that lacks
 # one (see _ASSET_RE / _pick_release), so every release must keep shipping it
-# or existing installs silently stop offering updates.
+# or existing installs silently stop offering updates. 0.2.1 and later accept
+# both the Gesture- and the pre-rename MP-OSC- prefix; 0.2.0 and earlier only
+# know MP-OSC-, so they skip Gesture-only releases and land on 0.2.1 instead.
 #
 # Usage:
-#   ./scripts/release.sh              # package the existing dist/MP-OSC.app
+#   ./scripts/release.sh              # package the existing dist/Gesture.app
 #   ./scripts/release.sh --build      # rebuild the app first, then package
 #
 # Signing and notarization (optional, needs a paid Apple Developer account):
-#   export MPOSC_CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
-#   export MPOSC_NOTARY_PROFILE="mp-osc-notary"   # see notarytool store-credentials
+#   export GESTURE_CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+#   export GESTURE_NOTARY_PROFILE="gesture-notary"   # see notarytool store-credentials
 #   ./scripts/release.sh --build
 #
-# Without MPOSC_CODESIGN_IDENTITY the build is ad-hoc signed and only the zip
+# The pre-rename MPOSC_CODESIGN_IDENTITY / MPOSC_NOTARY_PROFILE names still work.
+#
+# Without a signing identity the build is ad-hoc signed and only the zip
 # is produced (no DMG, since an unsigned DMG has the same Gatekeeper problem
 # as the app inside it, and stapling has nothing to attach to). It runs fine
 # on this machine, but Gatekeeper rejects it anywhere else and users must
@@ -33,20 +37,26 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-APP="dist/MP-OSC.app"
+APP="dist/Gesture.app"
 VERSION="$(grep -m1 '^version' pyproject.toml | sed 's/.*"\(.*\)".*/\1/')"
-ARCHIVE="dist/MP-OSC-${VERSION}-macos-arm64.zip"
-DMG="dist/MP-OSC-${VERSION}-macos-arm64.dmg"
+ARCHIVE="dist/Gesture-${VERSION}-macos-arm64.zip"
+DMG="dist/Gesture-${VERSION}-macos-arm64.dmg"
+
+# GESTURE_* first, then the pre-rename MPOSC_* spelling
+CODESIGN_IDENTITY="${GESTURE_CODESIGN_IDENTITY:-${MPOSC_CODESIGN_IDENTITY:-}}"
+NOTARY_PROFILE="${GESTURE_NOTARY_PROFILE:-${MPOSC_NOTARY_PROFILE:-}}"
 
 # ----------------------------------------------------------------------------
 # Optional rebuild
 # ----------------------------------------------------------------------------
 if [[ "${1:-}" == "--build" ]]; then
-    if [[ -n "${MPOSC_CODESIGN_IDENTITY:-}" ]]; then
-        export MPOSC_ENTITLEMENTS="$(pwd)/scripts/entitlements.plist"
-        echo "==> Building with Developer ID: ${MPOSC_CODESIGN_IDENTITY}"
+    if [[ -n "$CODESIGN_IDENTITY" ]]; then
+        # build_app.sh and gesture.spec read these
+        export GESTURE_CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
+        export GESTURE_ENTITLEMENTS="$(pwd)/scripts/entitlements.plist"
+        echo "==> Building with Developer ID: ${CODESIGN_IDENTITY}"
     else
-        echo "==> Building ad-hoc signed (no MPOSC_CODESIGN_IDENTITY set)"
+        echo "==> Building ad-hoc signed (no GESTURE_CODESIGN_IDENTITY set)"
     fi
     ./scripts/build_app.sh
 fi
@@ -73,7 +83,7 @@ fi
 # then the .app last so the outer seal covers the finished contents.
 #
 # Entitlements are applied only to the outer bundle. They govern the process
-# that actually runs (Contents/MacOS/mp-osc); a dylib does not get its own
+# that actually runs (Contents/MacOS/gesture); a dylib does not get its own
 # JIT permission, it inherits the hosting process's. The main executable's
 # disable-library-validation is what lets these third-party dylibs load.
 # ----------------------------------------------------------------------------
@@ -130,9 +140,9 @@ sign_inside_out() {
     codesign "${flags[@]}" --entitlements scripts/entitlements.plist "$app"
 }
 
-if [[ -n "${MPOSC_CODESIGN_IDENTITY:-}" ]]; then
+if [[ -n "$CODESIGN_IDENTITY" ]]; then
     echo "==> Signing with the hardened runtime (inside-out)"
-    sign_inside_out "$MPOSC_CODESIGN_IDENTITY" "$APP"
+    sign_inside_out "$CODESIGN_IDENTITY" "$APP"
 fi
 
 echo "==> Verifying the signature"
@@ -152,10 +162,10 @@ ditto -c -k --sequesterRsrc --keepParent "$APP" "$ARCHIVE"
 # ----------------------------------------------------------------------------
 # Notarize the app, when credentials are available
 # ----------------------------------------------------------------------------
-if [[ -n "${MPOSC_NOTARY_PROFILE:-}" ]]; then
+if [[ -n "$NOTARY_PROFILE" ]]; then
     echo "==> Submitting the app to Apple for notarization (this takes a few minutes)"
     xcrun notarytool submit "$ARCHIVE" \
-        --keychain-profile "$MPOSC_NOTARY_PROFILE" --wait
+        --keychain-profile "$NOTARY_PROFILE" --wait
 
     echo "==> Stapling the ticket to the app"
     xcrun stapler staple "$APP"
@@ -163,7 +173,7 @@ if [[ -n "${MPOSC_NOTARY_PROFILE:-}" ]]; then
     echo "==> Verifying Gatekeeper acceptance"
     spctl -a -vvv -t exec "$APP" 2>&1 | tail -3
 else
-    echo "==> Skipping notarization (MPOSC_NOTARY_PROFILE not set)"
+    echo "==> Skipping notarization (GESTURE_NOTARY_PROFILE not set)"
 fi
 
 # ----------------------------------------------------------------------------
@@ -175,24 +185,24 @@ fi
 # yet carry the ticket. The Applications symlink makes the DMG a drag-to-
 # install window - the flow macOS users already know from every other app.
 # ----------------------------------------------------------------------------
-if [[ -n "${MPOSC_CODESIGN_IDENTITY:-}" ]]; then
+if [[ -n "$CODESIGN_IDENTITY" ]]; then
     echo "==> Building $DMG"
     rm -f "$DMG"
     DMG_STAGE="$(mktemp -d)"
     trap 'rm -rf "$DMG_STAGE"' EXIT
-    ditto "$APP" "$DMG_STAGE/MP-OSC.app"
+    ditto "$APP" "$DMG_STAGE/Gesture.app"
     ln -s /Applications "$DMG_STAGE/Applications"
-    hdiutil create -srcfolder "$DMG_STAGE" -volname "MP-OSC" -fs HFS+ -format UDZO -ov "$DMG"
+    hdiutil create -srcfolder "$DMG_STAGE" -volname "Gesture" -fs HFS+ -format UDZO -ov "$DMG"
     rm -rf "$DMG_STAGE"
     trap - EXIT
 
     echo "==> Signing $DMG"
-    codesign --force --timestamp --sign "$MPOSC_CODESIGN_IDENTITY" "$DMG"
+    codesign --force --timestamp --sign "$CODESIGN_IDENTITY" "$DMG"
 
-    if [[ -n "${MPOSC_NOTARY_PROFILE:-}" ]]; then
+    if [[ -n "$NOTARY_PROFILE" ]]; then
         echo "==> Submitting the disk image to Apple for notarization"
         xcrun notarytool submit "$DMG" \
-            --keychain-profile "$MPOSC_NOTARY_PROFILE" --wait
+            --keychain-profile "$NOTARY_PROFILE" --wait
 
         echo "==> Stapling the ticket to the disk image"
         xcrun stapler staple "$DMG"
@@ -205,14 +215,14 @@ if [[ -n "${MPOSC_CODESIGN_IDENTITY:-}" ]]; then
     rm -f "$ARCHIVE"
     ditto -c -k --sequesterRsrc --keepParent "$APP" "$ARCHIVE"
 else
-    echo "==> Skipping DMG (no MPOSC_CODESIGN_IDENTITY set - ad-hoc builds ship the zip only)"
+    echo "==> Skipping DMG (no GESTURE_CODESIGN_IDENTITY set - ad-hoc builds ship the zip only)"
 fi
 
 # ----------------------------------------------------------------------------
 # Checksums and summary
 #
 # Run from inside dist/ so the filename embedded in each .sha256 is bare
-# (e.g. "MP-OSC-0.1.2-macos-arm64.zip") rather than "dist/MP-OSC-...zip".
+# (e.g. "Gesture-0.3.0-macos-arm64.zip") rather than "dist/Gesture-...zip".
 # `shasum -c` matches that embedded name against a file in the current
 # directory, so a dist/-prefixed name fails for anyone who downloads the
 # checksum file and the archive into the same folder.
@@ -233,16 +243,16 @@ if spctl -a -t exec "$APP" >/dev/null 2>&1; then
     echo "  accepted - installs on other machines with no extra steps"
 else
     echo "  REJECTED - ad-hoc signed. Other users must run:"
-    echo "    xattr -dr com.apple.quarantine /Applications/MP-OSC.app"
+    echo "    xattr -dr com.apple.quarantine /Applications/Gesture.app"
 fi
 echo
 echo "Publish with:"
 if [[ -f "$DMG" ]]; then
-    echo "  git tag -a v${VERSION} -m 'MP-OSC v${VERSION}' && git push origin v${VERSION}"
+    echo "  git tag -a v${VERSION} -m 'Gesture v${VERSION}' && git push origin v${VERSION}"
     echo "  gh release create v${VERSION} '${DMG}' '${DMG}.sha256' '${ARCHIVE}' '${ARCHIVE}.sha256' \\"
-    echo "    --title 'MP-OSC v${VERSION}' --notes-file RELEASE_NOTES.md"
+    echo "    --title 'Gesture v${VERSION}' --notes-file RELEASE_NOTES.md"
 else
-    echo "  git tag -a v${VERSION} -m 'MP-OSC v${VERSION}' && git push origin v${VERSION}"
+    echo "  git tag -a v${VERSION} -m 'Gesture v${VERSION}' && git push origin v${VERSION}"
     echo "  gh release create v${VERSION} '${ARCHIVE}' '${ARCHIVE}.sha256' \\"
-    echo "    --title 'MP-OSC v${VERSION}' --notes-file RELEASE_NOTES.md"
+    echo "    --title 'Gesture v${VERSION}' --notes-file RELEASE_NOTES.md"
 fi

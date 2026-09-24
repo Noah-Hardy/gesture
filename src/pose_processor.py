@@ -11,14 +11,12 @@ Supports GPU acceleration and multi-pose tracking
 import os
 import time
 import platform
-import gc
 import threading
-import cv2
-import numpy as np
 import mediapipe as mp
 from mediapipe.framework.formats import landmark_pb2
 
-from .pose_utils import letterbox_frame, LetterboxTransform
+from .pose_utils import LetterboxTransform
+from .frame_prep import FramePrep
 from .model_downloader import download_pose_model
 
 # Optional psutil import for memory monitoring
@@ -54,7 +52,10 @@ class PoseProcessor:
         self.fps_start_time = time.time() if show_fps else None
         self.results = None  # For Tasks async results
         self.pending_frames = 0  # Track frames in MediaPipe's async queue
-        self.max_pending_frames = 1  # Maximum frames to queue before skipping (reduced to 1 to prevent buildup)
+        # Frames MediaPipe may have in flight before new ones are skipped -
+        # 1 keeps latency lowest; performance.max_pending_frames trades
+        # latency for throughput on a model that can't keep up
+        self.max_pending_frames = max(1, int(config.get('performance', 'max_pending_frames', 1))) if config else 1
         self.skipped_frames = 0  # Count of frames skipped due to backpressure
         self._last_detection_state = False  # Track if we had detection last time (for transition to empty)
         self._has_fresh_results = False  # Track if callback delivered new results
@@ -63,28 +64,21 @@ class PoseProcessor:
         # Lock protecting results/pending_frames shared with MediaPipe's worker thread
         self._results_lock = threading.Lock()
 
-        # Pre-allocated buffer for resizing to prevent memory fragmentation
-        self._resize_buffer = None
-        self._rgb_buffer = None
-
         # Cache per-frame config lookups (config is not mutated after construction)
         camera_config = config.get('camera') if config else {}
         self._proc_width = camera_config.get('processing_width', 640)
         self._proc_height = camera_config.get('processing_height', 480)
+
+        # Letterbox + RGB conversion for the model input. In all mode without
+        # holistic, main.py has the hand processor adopt this one
+        # (HandProcessor.share_frame_prep) so each frame is prepared once
+        self._frame_prep = FramePrep(self._proc_width, self._proc_height)
 
         # Maps normalized coords from the (possibly letterboxed) processing
         # frame back to the source frame; identity until the first resize
         self._letterbox_transform = LetterboxTransform(
             1.0, 0, 0, self._proc_width, self._proc_height, self._proc_width, self._proc_height
         )
-
-        if config:
-            performance_config = config.get('performance')
-            self._gc_enabled = performance_config.get('gc_enabled', True)
-            self._gc_interval = performance_config.get('gc_interval', 60)
-        else:
-            self._gc_enabled = False
-            self._gc_interval = 60
 
         # Pre-build DrawingSpec objects for landmark rendering
         display_config = config.get('display') if config else {}
@@ -125,11 +119,6 @@ class PoseProcessor:
                 else:
                     print(f"{backend_name} FPS: {actual_fps:.2f} | Skipped: {self.skipped_frames}")
                 self.fps_start_time = fps_end_time
-
-        # Force garbage collection at configurable interval (higher = smoother but more memory)
-        # Can be disabled entirely via gc_enabled config option
-        if self._gc_enabled and self.frame_counter % self._gc_interval == 0:
-            gc.collect()
 
     # ------------------------------------------------------------------------
     # Drawing
@@ -315,8 +304,7 @@ class TasksPoseProcessor(PoseProcessor):
             self._has_fresh_results = True  # Mark that we have new results to process
             # Decrement pending frame counter
             self.pending_frames = max(0, self.pending_frames - 1)
-        # Explicitly don't store output_image - it's not needed and causes memory leaks
-        del output_image
+        # output_image is deliberately not stored - only the result is needed
     
     def process_frame(self, frame, landmarker, backend_name, timestamp_counter, draw_target=None):
         """
@@ -344,23 +332,10 @@ class TasksPoseProcessor(PoseProcessor):
             if frame is None or frame.size == 0:
                 return frame
 
-            # Always resize frame for consistent display, regardless of processing
-            proc_width = self._proc_width
-            proc_height = self._proc_height
-
-            h, w = frame.shape[:2]
-            if w != proc_width or h != proc_height:
-                # Letterbox instead of stretching: preserves the source aspect
-                # ratio (padding with black bars) so normalized coordinates
-                # sent over OSC stay correct relative to the true source frame
-                image, letterbox_transform = letterbox_frame(frame, proc_width, proc_height, self._resize_buffer)
-                if letterbox_transform.pad_x == 0 and letterbox_transform.pad_y == 0:
-                    # No padding needed - image is the reusable resize buffer
-                    self._resize_buffer = image
-                self._letterbox_transform = letterbox_transform
-            else:
-                image = frame
-                self._letterbox_transform = LetterboxTransform(1.0, 0, 0, proc_width, proc_height, proc_width, proc_height)
+            # Letterbox to the processing size (aspect-preserving, so OSC
+            # coordinates stay correct relative to the source frame) - shared
+            # with the other processor reading this frame, see FramePrep
+            image, self._letterbox_transform = self._frame_prep.letterbox(frame)
 
             # `image` is the inference input ONLY - always the clean,
             # letterboxed frame, never annotated. `target` is what gets
@@ -368,7 +343,7 @@ class TasksPoseProcessor(PoseProcessor):
             # multiple processors composite their overlays onto one shared
             # array in a single loop iteration without leaking one
             # processor's drawings into another's model input.
-            target = draw_target if draw_target is not None else (image.copy() if image is self._resize_buffer else image)
+            target = draw_target if draw_target is not None else self._frame_prep.drawable(image)
 
             # Check if MediaPipe's async queue is backing up - skip frame if too many pending
             if self.pending_frames >= self.max_pending_frames:
@@ -384,33 +359,19 @@ class TasksPoseProcessor(PoseProcessor):
                 # not "nothing detected"; sending status would misrepresent one or the other
                 return target
 
-            # Convert to RGB for MediaPipe using pre-allocated buffer
-            if (self._rgb_buffer is None or 
-                self._rgb_buffer.shape[0] != image.shape[0] or 
-                self._rgb_buffer.shape[1] != image.shape[1]):
-                self._rgb_buffer = np.empty((image.shape[0], image.shape[1], 3), dtype=np.uint8)
-            
-            cv2.cvtColor(image, cv2.COLOR_BGR2RGB, dst=self._rgb_buffer)
-            rgb_frame = self._rgb_buffer
-            
             # On Apple Silicon with GPU, use SRGBA format (4 channels) for Metal compatibility
             # The Metal GPU buffer doesn't support SRGB (3 channels), only SRGBA
             if self.is_apple_silicon and self.use_gpu:
-                # Convert RGB to RGBA by adding alpha channel
-                rgba_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2RGBA)
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGBA, data=rgba_frame)
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGBA, data=self._frame_prep.rgba())
             else:
                 # Standard SRGB format for CPU or non-Apple platforms
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-            
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=self._frame_prep.rgb())
+
             # Process with MediaPipe Tasks (async)
             landmarker.detect_async(mp_image, timestamp_counter)
             with self._results_lock:
                 self.pending_frames += 1
 
-            # Explicitly clear reference to mp_image - data was already copied
-            del mp_image
-            
             timestamp = time.time()
 
             # Atomically check-and-take fresh results from the callback thread
@@ -464,11 +425,6 @@ class TasksPoseProcessor(PoseProcessor):
             else:
                 # No results yet - still send status so receivers know program is running
                 self.osc.pose_status(0)
-
-            # Clear intermediate frames to free memory
-            del rgb_frame
-            if 'rgba_frame' in locals():
-                del rgba_frame
 
             self.update_fps(backend_name)
             return target
@@ -543,42 +499,19 @@ class LegacyPoseProcessor(PoseProcessor):
             Annotated frame with landmarks drawn (draw_target, if provided)
         """
         try:
-            # Resize frame for processing if needed
-            proc_width = self._proc_width
-            proc_height = self._proc_height
-
-            h, w = frame.shape[:2]
-            if w != proc_width or h != proc_height:
-                # Letterbox instead of stretching: preserves the source aspect
-                # ratio (padding with black bars) so normalized coordinates
-                # sent over OSC stay correct relative to the true source frame
-                image, letterbox_transform = letterbox_frame(frame, proc_width, proc_height, self._resize_buffer)
-                if letterbox_transform.pad_x == 0 and letterbox_transform.pad_y == 0:
-                    # No padding needed - image is the reusable resize buffer
-                    self._resize_buffer = image
-                self._letterbox_transform = letterbox_transform
-            else:
-                # Use frame directly, avoid copy
-                image = frame
-                self._letterbox_transform = LetterboxTransform(1.0, 0, 0, proc_width, proc_height, proc_width, proc_height)
+            # Letterbox to the processing size (aspect-preserving, so OSC
+            # coordinates stay correct relative to the source frame) - shared
+            # with the other processor reading this frame, see FramePrep
+            image, self._letterbox_transform = self._frame_prep.letterbox(frame)
 
             # `image` is the inference input ONLY - always the clean,
             # letterboxed frame, never annotated. `target` is what gets
             # drawn into and returned - see TasksPoseProcessor.process_frame
             # for the full rationale.
-            target = draw_target if draw_target is not None else (image.copy() if image is self._resize_buffer else image)
-
-            # Convert to RGB for MediaPipe using pre-allocated buffer
-            if (self._rgb_buffer is None or
-                self._rgb_buffer.shape[0] != image.shape[0] or
-                self._rgb_buffer.shape[1] != image.shape[1]):
-                self._rgb_buffer = np.empty((image.shape[0], image.shape[1], 3), dtype=np.uint8)
-
-            cv2.cvtColor(image, cv2.COLOR_BGR2RGB, dst=self._rgb_buffer)
-            rgb_image = self._rgb_buffer
+            target = draw_target if draw_target is not None else self._frame_prep.drawable(image)
 
             # Process with MediaPipe Pose
-            results = pose_context.process(rgb_image)
+            results = pose_context.process(self._frame_prep.rgb())
 
             timestamp = time.time()
             
@@ -609,9 +542,6 @@ class LegacyPoseProcessor(PoseProcessor):
 
         except Exception as e:
             print(f"⚠️  Legacy frame processing error: {e}")
-            # Ensure we don't hold references on error
-            if 'image' in locals() and image is not frame:
-                del image
             return draw_target if draw_target is not None else frame
     
     def _draw_landmarks(self, image, pose_landmarks):

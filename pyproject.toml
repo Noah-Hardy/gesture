@@ -1,5 +1,5 @@
 [project]
-name = "mp-osc"
+name = "gesture"
 version = "0.2.1"
 description = "MediaPipe pose and hand tracking, streamed live over OSC"
 readme = "README.md"

@@ -9,7 +9,7 @@ Main entry point for pose tracking with network streaming
 # ============================================================================
 import cv2
 import argparse
-import os
+import gc
 import platform
 import sys
 import time
@@ -21,6 +21,8 @@ from src import TasksHandProcessor, LegacyHandProcessor
 from src import TasksHolisticProcessor
 from src import OscEmitter
 from src import NDICapture, list_ndi_sources, NDI_AVAILABLE
+from src.config import getenv
+from src.runtime import FrameClock, ParentWatch, ReconnectingCapture, install_sigterm_handler
 
 
 # ============================================================================
@@ -39,7 +41,7 @@ IS_APPLE_SILICON = platform.system() == "Darwin" and platform.machine() == "arm6
 # processing loop itself ended*, so the launcher can tell a clean stop from
 # a real failure instead of treating every nonzero code the same way.
 EXIT_OK = 0                # Clean stop: user Stop (SIGINT), 'q', window closed
-EXIT_CAPTURE_LOST = 2      # Consecutive frame-read failures tripped the loop's guard
+EXIT_CAPTURE_LOST = 2      # Capture stayed lost past camera.reconnect_timeout
 EXIT_CRASH = 3             # Unhandled exception inside the processing loop
 
 
@@ -51,7 +53,7 @@ EXIT_CRASH = 3             # Unhandled exception inside the processing loop
 # empty (config default is never empty, so that's a manually-edited config
 # only) - kept unambiguous rather than mode-specific so it never regresses
 # to a name that sounds like the OSC output (see issue #60).
-DEFAULT_WINDOW_TITLE = "MP-OSC Preview — not the OSC output"
+DEFAULT_WINDOW_TITLE = "Gesture Preview — not the OSC output"
 
 
 # ============================================================================
@@ -193,7 +195,7 @@ def print_platform_info():
 # ============================================================================
 # CAMERA/NDI CAPTURE SETUP
 # ============================================================================
-def setup_camera(config, use_ndi=False, ndi_source=None):
+def setup_camera(config, use_ndi=False, ndi_source=None, warmup=True):
     """
     Initialize video capture from camera or NDI source
     
@@ -201,6 +203,9 @@ def setup_camera(config, use_ndi=False, ndi_source=None):
         config: Configuration object with camera settings
         use_ndi: Boolean to use NDI instead of camera
         ndi_source: Name of NDI source to connect to
+        warmup: Wait up to 3s for the webcam's first frame. Reopens during
+            a reconnect skip it so the processing loop keeps iterating -
+            ReconnectingCapture's backoff covers the slow start instead
         
     Returns:
         cv2.VideoCapture or NDICapture object when a capture was opened.
@@ -228,7 +233,8 @@ def setup_camera(config, use_ndi=False, ndi_source=None):
 
         print("🎬 Setting up NDI capture...")
         try:
-            cap = NDICapture(source_name=ndi_source)
+            cap = NDICapture(source_name=ndi_source,
+                             bandwidth=camera_config.get('ndi_bandwidth', 'lowest'))
         except Exception as e:
             print(f"❌ NDI setup failed: {e}")
             print("   Check that ndi-python and the NDI runtime are installed correctly")
@@ -263,6 +269,9 @@ def setup_camera(config, use_ndi=False, ndi_source=None):
     print(f"📷 Camera setup: Device {camera_config['device_id']}, "
           f"{camera_config['width']}x{camera_config['height']} @ {camera_config['fps']}fps")
     
+    if not warmup:
+        return cap
+
     # ------------------------------------------------------------------------
     # Wait for camera initialization (important for virtual cameras)
     # ------------------------------------------------------------------------
@@ -286,6 +295,34 @@ def setup_camera(config, use_ndi=False, ndi_source=None):
         print("⚠️  Camera may be slow to start - continuing anyway")
     
     return cap
+
+
+def reopen_capture(config, old_cap, use_ndi=False, ndi_source=None):
+    """
+    Replace a capture that stopped delivering frames (ReconnectingCapture's
+    reopen hook, #32)
+
+    Args:
+        config: Configuration object with camera settings
+        old_cap: The failing capture (may be None after a failed reopen)
+        use_ndi, ndi_source: The same values the session was opened with,
+            so an NDI session never falls back to the webcam
+
+    Returns:
+        The capture to read from next - may be None, which the wrapper
+        treats as one more failed read and retries after its backoff
+    """
+    # NDI: rebuild the receiver through the retained finder instead of
+    # re-initializing NDI and waiting out a full discovery (#31)
+    if hasattr(old_cap, 'reconnect'):
+        old_cap.reconnect()
+        return old_cap
+    if old_cap is not None:
+        try:
+            old_cap.release()
+        except Exception:
+            pass
+    return setup_camera(config, use_ndi=use_ndi, ndi_source=ndi_source, warmup=False)
 
 
 # ============================================================================
@@ -312,17 +349,21 @@ def show_preview(image, window_title, mirror):
 # LEGACY PROCESSING LOOP HELPER
 # ============================================================================
 def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
-                 display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
-                 frame_interval=0, reassert_dock_policy=None):
+                 display_config, window_title, show_fps, tracking_mode,
+                 frame_interval=0, reassert_dock_policy=None, parent_watch=None):
     """
     Helper function to run the legacy processing loop
     Handles both single and combined processor modes
 
     Args:
-        frame_interval: Minimum time between frames (0 = uncapped)
+        cap: ReconnectingCapture - a failed read is retried with backoff
+            and only ends the loop once cap.gave_up is set
         reassert_dock_policy: Optional callable (macOS, launcher-spawned only)
             that re-applies the Accessory Dock policy after HighGUI's first
             window creation resets it. None elsewhere.
+        frame_interval: Minimum time between frames (0 = uncapped)
+        parent_watch: Optional ParentWatch - the loop stops cleanly once
+            the launcher that spawned it is gone (#34)
 
     Returns:
         One of the EXIT_* constants indicating why the loop ended, so run()
@@ -330,35 +371,37 @@ def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
         processors are active) can report the real reason instead of
         assuming every exit was a clean one.
     """
-    consecutive_failures = 0
-    last_frame_time = time.time()
+    frame_clock = FrameClock(frame_interval)
     mirror_preview = display_config.get('mirror_preview', False)
     exit_reason = EXIT_OK
     # Both processors share run()'s one emitter
     osc_emitter = (pose_processor or hand_processor).osc
 
-    while cap.isOpened():
+    # Not `while cap.isOpened()`: during a reconnect the capture can be
+    # closed for a while, and the loop has to keep iterating through it
+    while True:
+        # Launcher force-quit or crashed - don't keep holding the camera
+        if parent_watch is not None and parent_watch.parent_gone():
+            print("🛑 Launcher is gone - stopping")
+            break
+
         # 1 Hz heartbeat first, so it keeps going through frame-read failures
+
         osc_emitter.heartbeat()
 
-        # Frame rate limiting
-        if frame_interval > 0:
-            current_time = time.time()
-            elapsed = current_time - last_frame_time
-            if elapsed < frame_interval:
-                time.sleep(frame_interval - elapsed)
-            last_frame_time = time.time()
-        
+
+        # Frame rate limiting (deadline-based - see FrameClock)
+        frame_clock.wait()
+
+        # A failed read returns immediately (after at most a short backoff
+        # slice) so this loop - and anything at its top - keeps running
+        # while the capture reconnects
         ret, frame = cap.read()
         if not ret:
-            consecutive_failures += 1
-            if consecutive_failures >= max_consecutive_failures:
-                print(f"❌ Too many consecutive frame failures ({consecutive_failures})")
+            if cap.gave_up:
                 exit_reason = EXIT_CAPTURE_LOST
                 break
             continue
-
-        consecutive_failures = 0
 
         try:
             # Each processor's inference always reads the clean source
@@ -441,10 +484,15 @@ def run(args, config):
     # their first cv2.waitKey() following the first cv2.imshow(). Lazily
     # imported and gated the same way as set_accessory_policy() so CLI/
     # non-GUI runs never touch libobjc.
+    launched_from_gui = bool(getenv('GESTURE_LAUNCHED_FROM_GUI', 'MPOSC_LAUNCHED_FROM_GUI'))
     reassert_dock_policy = None
-    if os.environ.get('MPOSC_LAUNCHED_FROM_GUI'):
+    if launched_from_gui:
         from src.macos_app import reassert_accessory_policy
         reassert_dock_policy = reassert_accessory_policy
+
+    # Recorded now, while the launcher is certainly still our parent - the
+    # loops poll it so a force-quit launcher can't orphan the engine (#34)
+    parent_watch = ParentWatch(enabled=launched_from_gui)
 
     # ------------------------------------------------------------------------
     # Initialize OSC communication
@@ -672,6 +720,22 @@ def run(args, config):
     if args.force_legacy:
         print("⚠️  --force-legacy is deprecated and will be removed in a future release; "
               "the legacy MediaPipe Solutions API is being replaced by the unified Tasks-only pipeline")
+
+    # In all mode without holistic, pose and hand read the same frame -
+    # letterbox and colour-convert it once for both (#36)
+    if pose_processor is not None and hand_processor is not None:
+        hand_processor.share_frame_prep(pose_processor)
+
+    # Setup is done: freeze everything it allocated (models, modules,
+    # config) into the permanent generation so no collection ever rescans
+    # it. That keeps the collector's periodic passes cheap without the old
+    # forced gc.collect() every N frames, which stalled the capture thread
+    # for milliseconds at a time - frame jitter receivers see (#36).
+    gc.collect()
+    gc.freeze()
+    if not performance_config.get('gc_enabled', True):
+        gc.disable()
+
     # Sentinel the launcher watches for to end its startup spinner
     print("🟢 Engine ready")
 
@@ -683,14 +747,15 @@ def run(args, config):
     # unhandled crash, instead of always reporting success.
     exit_reason = EXIT_OK
     try:
-        # NDI may have gaps between frames - allow more failures
-        consecutive_failures = 0
-        try:
-            # OpenCV raises if the capture never opened, so treat that as non-NDI
-            is_ndi = cap.getBackendName() == "NDI"
-        except Exception:
-            is_ndi = False
-        max_consecutive_failures = 100 if is_ndi else 30  # NDI: ~5s, Camera: ~1s
+        # Failed reads back off and reopen instead of busy-spinning, and
+        # only a loss lasting camera.reconnect_timeout seconds ends the
+        # session (#32). Rebinding `cap` means the cleanup below releases
+        # whichever capture is current after any reopen.
+        cap = ReconnectingCapture(
+            cap,
+            reopen=lambda old_cap: reopen_capture(config, old_cap, args.ndi, args.ndi_source),
+            timeout=config.get('camera', 'reconnect_timeout', 30),
+        )
 
         if not cap.isOpened():
             print("❌ Video capture is not open - nothing to process")
@@ -704,32 +769,31 @@ def run(args, config):
         
         if use_tasks_loop:
             # Tasks processing with async callback
-            last_frame_time = time.time()
+            frame_clock = FrameClock(frame_interval)
             mirror_preview = display_config.get('mirror_preview', False)
             
-            while cap.isOpened():
+            # Not `while cap.isOpened()` - see _legacy_loop
+            while True:
+                # Launcher force-quit or crashed - don't keep holding the camera
+                if parent_watch.parent_gone():
+                    print("🛑 Launcher is gone - stopping")
+                    break
+
                 # 1 Hz heartbeat first, so it keeps going through frame-read failures
+
                 osc_emitter.heartbeat()
 
-                # Frame rate limiting - sleep to maintain target fps
-                if frame_interval > 0:
-                    current_time = time.time()
-                    elapsed = current_time - last_frame_time
-                    if elapsed < frame_interval:
-                        sleep_time = frame_interval - elapsed
-                        time.sleep(sleep_time)
-                    last_frame_time = time.time()
-                
+
+                # Frame rate limiting (deadline-based - see FrameClock)
+                frame_clock.wait()
+
+                # Returns promptly during a reconnect - see _legacy_loop
                 ret, frame = cap.read()
                 if not ret:
-                    consecutive_failures += 1
-                    if consecutive_failures >= max_consecutive_failures:
-                        print(f"❌ Too many consecutive frame failures ({consecutive_failures})")
+                    if cap.gave_up:
                         exit_reason = EXIT_CAPTURE_LOST
                         break
                     continue
-
-                consecutive_failures = 0
 
                 try:
                     timestamp_counter += 1
@@ -788,18 +852,18 @@ def run(args, config):
             if pose_ctx and hand_ctx:
                 with pose_ctx as pose, hand_ctx as hand:
                     exit_reason = _legacy_loop(cap, pose_processor, pose, hand_processor, hand,
-                                display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
-                                frame_interval, reassert_dock_policy)
+                                display_config, window_title, show_fps, tracking_mode,
+                                frame_interval, reassert_dock_policy, parent_watch)
             elif pose_ctx:
                 with pose_ctx as pose:
                     exit_reason = _legacy_loop(cap, pose_processor, pose, None, None,
-                                display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
-                                frame_interval, reassert_dock_policy)
+                                display_config, window_title, show_fps, tracking_mode,
+                                frame_interval, reassert_dock_policy, parent_watch)
             elif hand_ctx:
                 with hand_ctx as hand:
                     exit_reason = _legacy_loop(cap, None, None, hand_processor, hand,
-                                display_config, window_title, max_consecutive_failures, show_fps, tracking_mode,
-                                frame_interval, reassert_dock_policy)
+                                display_config, window_title, show_fps, tracking_mode,
+                                frame_interval, reassert_dock_policy, parent_watch)
 
     except KeyboardInterrupt:
         # This is how the launcher stops the engine cleanly (it sends SIGINT
@@ -864,9 +928,13 @@ def main(argv=None):
     """
     args = parse_args(argv)
 
+    # SIGTERM (the launcher's escalation, or a plain `kill`) unwinds through
+    # run()'s cleanup like a SIGINT Stop instead of dying mid-frame
+    install_sigterm_handler()
+
     # When the launcher spawns us, drop out of the Dock before any window
     # exists so the engine doesn't get a second identical Dock tile.
-    if os.environ.get('MPOSC_LAUNCHED_FROM_GUI'):
+    if getenv('GESTURE_LAUNCHED_FROM_GUI', 'MPOSC_LAUNCHED_FROM_GUI'):
         from src.macos_app import set_accessory_policy
         set_accessory_policy()
 

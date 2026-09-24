@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Build the MP-OSC macOS app bundle.
+# Build the Gesture macOS app bundle.
 #
-# Produces dist/MP-OSC.app -- a self-contained, ad-hoc signed, arm64 onedir
+# Produces dist/Gesture.app -- a self-contained, ad-hoc signed, arm64 onedir
 # bundle containing Python, mediapipe, ndi-python (libndi.dylib) and the
 # landmarker models. Takes several minutes and roughly 2GB of scratch space
 # in build/.
@@ -37,20 +37,22 @@ for label, fetch in jobs:
 PY
 
 echo "==> Running PyInstaller"
-uv run pyinstaller --noconfirm --clean mp-osc.spec
+uv run pyinstaller --noconfirm --clean gesture.spec
 
 # An ad-hoc signature is the floor, not a preference: arm64 macOS refuses to
 # execute unsigned code, so the bundle needs one to launch at all. Skip it when
 # a real identity is set, because --deep ad-hoc would overwrite the Developer ID
 # signature the spec just applied to the executable, and scripts/release.sh is
 # about to sign everything properly inside-out anyway.
-if [[ -n "${MPOSC_CODESIGN_IDENTITY:-}" ]]; then
-    echo "==> Leaving the bundle unsealed for release.sh to sign as ${MPOSC_CODESIGN_IDENTITY}"
+# GESTURE_CODESIGN_IDENTITY, or its pre-rename name MPOSC_CODESIGN_IDENTITY
+CODESIGN_IDENTITY="${GESTURE_CODESIGN_IDENTITY:-${MPOSC_CODESIGN_IDENTITY:-}}"
+if [[ -n "$CODESIGN_IDENTITY" ]]; then
+    echo "==> Leaving the bundle unsealed for release.sh to sign as ${CODESIGN_IDENTITY}"
 else
     echo "==> Ad-hoc signing the bundle"
-    codesign --force --deep -s - dist/MP-OSC.app
+    codesign --force --deep -s - dist/Gesture.app
 fi
 
 echo
-echo "Built: $(pwd)/dist/MP-OSC.app"
-echo "Run it with: open dist/MP-OSC.app"
+echo "Built: $(pwd)/dist/Gesture.app"
+echo "Run it with: open dist/Gesture.app"

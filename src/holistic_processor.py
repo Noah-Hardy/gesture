@@ -11,12 +11,9 @@ Used for 'all' mode to halve inference work vs separate pose + hand landmarkers
 # ============================================================================
 import os
 import time
-import cv2
-import numpy as np
 import mediapipe as mp
 from mediapipe.framework.formats import landmark_pb2
 
-from .pose_utils import letterbox_frame, LetterboxTransform
 from .model_downloader import download_holistic_model
 from .pose_processor import PoseProcessor
 
@@ -176,8 +173,7 @@ class TasksHolisticProcessor(PoseProcessor):
             self.results = result
             self._has_fresh_results = True
             self.pending_frames = max(0, self.pending_frames - 1)
-        # Explicitly don't store output_image - it's not needed and causes memory leaks
-        del output_image
+        # output_image is deliberately not stored - only the result is needed
 
     # ------------------------------------------------------------------------
     # Setup
@@ -316,28 +312,14 @@ class TasksHolisticProcessor(PoseProcessor):
             if frame is None or frame.size == 0:
                 return frame
 
-            # Always resize frame for consistent display, regardless of processing
-            proc_width = self._proc_width
-            proc_height = self._proc_height
-
-            h, w = frame.shape[:2]
-            if w != proc_width or h != proc_height:
-                # Letterbox instead of stretching: preserves the source aspect
-                # ratio (padding with black bars) so normalized coordinates
-                # sent over OSC stay correct relative to the true source frame
-                image, letterbox_transform = letterbox_frame(frame, proc_width, proc_height, self._resize_buffer)
-                if letterbox_transform.pad_x == 0 and letterbox_transform.pad_y == 0:
-                    # No padding needed - image is the reusable resize buffer
-                    self._resize_buffer = image
-                self._letterbox_transform = letterbox_transform
-            else:
-                image = frame
-                self._letterbox_transform = LetterboxTransform(1.0, 0, 0, proc_width, proc_height, proc_width, proc_height)
+            # Letterbox to the processing size (aspect-preserving, so OSC
+            # coordinates stay correct relative to the source frame)
+            image, self._letterbox_transform = self._frame_prep.letterbox(frame)
 
             # `image` is the inference input ONLY - always the clean,
             # letterboxed frame, never annotated. `target` is what gets
             # drawn into and returned.
-            target = draw_target if draw_target is not None else (image.copy() if image is self._resize_buffer else image)
+            target = draw_target if draw_target is not None else self._frame_prep.drawable(image)
 
             # Check if MediaPipe's async queue is backing up - skip frame if too many pending
             if self.pending_frames >= self.max_pending_frames:
@@ -357,28 +339,16 @@ class TasksHolisticProcessor(PoseProcessor):
                 # not "nothing detected"; sending status would misrepresent one or the other
                 return target
 
-            # Convert to RGB for MediaPipe using pre-allocated buffer
-            if (self._rgb_buffer is None or
-                self._rgb_buffer.shape[0] != image.shape[0] or
-                self._rgb_buffer.shape[1] != image.shape[1]):
-                self._rgb_buffer = np.empty((image.shape[0], image.shape[1], 3), dtype=np.uint8)
-
-            cv2.cvtColor(image, cv2.COLOR_BGR2RGB, dst=self._rgb_buffer)
-            rgb_frame = self._rgb_buffer
-
             # On Apple Silicon with GPU, use SRGBA format for Metal compatibility
             if self.is_apple_silicon and self.use_gpu:
-                rgba_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2RGBA)
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGBA, data=rgba_frame)
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGBA, data=self._frame_prep.rgba())
             else:
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=self._frame_prep.rgb())
 
             # Process with MediaPipe Tasks (async)
             landmarker.detect_async(mp_image, timestamp_counter)
             with self._results_lock:
                 self.pending_frames += 1
-
-            del mp_image
 
             timestamp = time.time()
 
@@ -456,11 +426,6 @@ class TasksHolisticProcessor(PoseProcessor):
                 # No results yet - still send status so receivers know program is running
                 self.osc.pose_status(0)
                 self.osc.hand_status(0)
-
-            # Clear intermediate frames to free memory
-            del rgb_frame
-            if 'rgba_frame' in locals():
-                del rgba_frame
 
             self.update_fps(backend_name)
             return target
