@@ -61,9 +61,9 @@ The script downloads all five landmarker models so they ship inside the bundle, 
 
 This always produces `dist/Gesture-<version>-macos-arm64.zip` and a matching `.sha256`. The zip is created with `ditto`, which is the only macOS archiver that reliably preserves bundle structure and code signatures — a plain `zip` corrupts the signature. The in-app updater (`src/updater.py`) matches release assets by this filename pattern (see `_ASSET_RE` / `_pick_release`; 0.2.1 and later accept both the `Gesture-` prefix and the older `MP-OSC-` one), and skips a release entirely when no matching zip is attached — so the zip ships on every release, unconditionally, or existing installs silently stop being offered updates.
 
-When `MPOSC_CODESIGN_IDENTITY` is set, the script also produces `dist/Gesture-<version>-macos-arm64.dmg` and its own `.sha256` — a disk image with an `Applications` shortcut, which is what the README and Releases page point people at for a fresh install (drag-to-Applications is the flow macOS users already know). An unsigned build skips the DMG: an unsigned disk image would hit the same Gatekeeper rejection as the app inside it, and there's no notarization ticket to staple to it anyway.
+When `GESTURE_CODESIGN_IDENTITY` is set, the script also produces `dist/Gesture-<version>-macos-arm64.dmg` and its own `.sha256` — a disk image with an `Applications` shortcut, which is what the README and Releases page point people at for a fresh install (drag-to-Applications is the flow macOS users already know). An unsigned build skips the DMG: an unsigned disk image would hit the same Gatekeeper rejection as the app inside it, and there's no notarization ticket to staple to it anyway.
 
-Building the DMG involves **two separate notarization submissions** when `MPOSC_NOTARY_PROFILE` is set, not one:
+Building the DMG involves **two separate notarization submissions** when `GESTURE_NOTARY_PROFILE` is set, not one:
 
 1. The interim zip is submitted first, and the returned ticket is stapled directly onto `Gesture.app` — this is what makes the `.app` itself carry proof of notarization, not just whatever archive happens to be wrapping it.
 2. The DMG is built *from that already-stapled app*, signed, then submitted and stapled a second time, so the disk image itself also opens clean and offline.
@@ -99,6 +99,11 @@ Start it from **Actions → Build macOS release → Run workflow**:
 Every run uploads the zip (and the DMG, when the build is signed) plus their
 checksums as a build artifact (kept 30 days), so `publish` is only needed
 when the build should become a Release.
+
+Dispatch the workflow from a branch or tag that contains the Gesture rename
+(0.3.0 or later), not from an older `main`. GitHub runs the workflow file
+from the ref you dispatch from, and older workflow files look for
+`mp-osc.spec`, which no longer exists.
 
 The runner is `macos-15`, which is arm64. This is not optional: `ndi-python`
 publishes only arm64 macOS wheels. The workflow installs Homebrew
@@ -147,11 +152,11 @@ To ship an app that opens with no extra steps, you need a paid Apple Developer a
 
 ```sh
 # One-time: store an app-specific password for notarytool
-xcrun notarytool store-credentials mp-osc-notary \
+xcrun notarytool store-credentials gesture-notary \
   --apple-id you@example.com --team-id TEAMID --password <app-specific-password>
 
-export MPOSC_CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
-export MPOSC_NOTARY_PROFILE="mp-osc-notary"
+export GESTURE_CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+export GESTURE_NOTARY_PROFILE="gesture-notary"
 ./scripts/release.sh --build
 ```
 

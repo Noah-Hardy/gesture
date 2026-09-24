@@ -12,11 +12,18 @@ Pick **🎥 NDI** to receive video over the network from an NDI sender (a switch
 
 A few behaviors worth knowing:
 
-- Matching a source by name is a **case-insensitive substring match**, not an exact match. Typing `switcher` will match a source literally named `Switcher-1 (Program)`.
-- If the name you've saved doesn't match anything currently on the network, Gesture connects to the first available source instead, rather than failing outright.
-- If no NDI sources are found at all after searching, Gesture falls back to the webcam automatically.
+- Names are matched **case-insensitively**. An exact name match always wins. Otherwise a partial name is accepted only if it matches exactly one source: typing `switcher` connects to `Switcher-1 (Program)` if that's the only source containing "switcher", but not if `Switcher-2 (Preview)` is also on the network. Use the full name then.
+- If the saved name doesn't match any source, or matches more than one, Gesture stops with a message saying so. It never silently connects to a different source, and it never switches to the webcam instead.
+- With no source name saved, Gesture uses the first source it finds.
+- **NDI bandwidth** (Settings → Advanced → Camera, `camera.ndi_bandwidth`) picks which stream to receive. `lowest` (the default) asks the sender for its small proxy stream, around 640×360, which is plenty for tracking and much lighter on the network. `highest` receives the full-resolution stream.
 
 NDI and the OSC coordinates it produces don't have a fixed relationship to real-world size — see **Processing resolution**, below, for why that matters.
+
+## If the camera or NDI source drops out
+
+If frames stop arriving mid-session (a USB cable knocked loose, a network hiccup, a sender restarting), Gesture doesn't stop straight away. It keeps retrying, backing off from 0.1 up to 2 seconds between attempts, and reopens the camera or NDI connection after every 5 failed reads. The log shows `⚠️ Capture stopped delivering frames - retrying`, then `✅ Capture recovered` once frames return. OSC keeps flowing meanwhile: the heartbeat continues, so receivers can tell the engine is alive.
+
+It gives up only after **Reconnect timeout** (Settings → Advanced → Camera, `camera.reconnect_timeout`, 30 seconds by default). Set it to `0` to keep retrying forever, which suits an unattended installation.
 
 ## Show preview window
 
@@ -28,6 +35,6 @@ NDI and the OSC coordinates it produces don't have a fixed relationship to real-
 
 ## Processing resolution
 
-Internally, every incoming frame — from a camera or from NDI — is resized to a fixed **processing resolution** before MediaPipe looks at it, and that resized frame is also what appears in the preview window. This is a `config.json` setting (`camera.processing_width` / `camera.processing_height`, default 640×480) rather than something in the launcher form.
+Internally, every incoming frame — from a camera or from NDI — is resized to a fixed **processing resolution** before MediaPipe looks at it, and that resized frame is also what appears in the preview window. Set it under **Settings → Advanced → Camera** as **Processing width** and **Processing height** (`camera.processing_width` / `camera.processing_height`, default 640×480). It's the main quality/speed trade-off: a smaller size tracks faster, a larger one catches smaller or more distant people.
 
-**This resize does not preserve aspect ratio.** If your camera or NDI source has a different aspect ratio than the configured processing resolution (for example, a 16:9 source resized into a 4:3 processing size), the image — and the body it's tracking — will be stretched or squashed. If you're seeing landmark positions that seem subtly off, or people that look unnaturally wide or narrow in the preview, check that the processing resolution's aspect ratio matches your actual source. See the **Appendix** for how to change it.
+The resize **preserves the aspect ratio**. A source whose shape doesn't match the processing size (say, a 16:9 camera into the default 4:3) is scaled to fit and padded with black bars rather than stretched, and every normalized coordinate Gesture sends is mapped back to the original source frame. So 0–1 in x and y always spans your actual camera image, whatever the processing size.

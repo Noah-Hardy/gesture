@@ -6,12 +6,14 @@ The tracking engine's console output streams directly into the launcher's log pa
 
 | Message | Meaning |
 |---|---|
-| `❌ Video capture is not open - nothing to process` | The chosen camera device ID doesn't exist, or NDI never connected and there was no camera to fall back to. Check the device ID, or on macOS confirm camera access under **System Settings → Privacy & Security → Camera**. |
+| `❌ Video capture is not open - nothing to process` | The chosen camera device ID doesn't exist, or NDI never connected. Check the device ID, or on macOS confirm camera access under **System Settings → Privacy & Security → Camera**. |
 | `⚠️ Camera may be slow to start - continuing anyway` | The camera didn't produce a frame within about 3 seconds of opening. Often harmless (some cameras are just slow to wake up); if tracking never starts, the camera may be in use by another app. |
-| `❌ Too many consecutive frame failures` | The camera or NDI source stopped delivering frames mid-session — often a cable, USB, or network dropout. Tracking stops; restart it once the source is back. |
+| `⚠️ Capture stopped delivering frames - retrying` | The camera or NDI source stopped delivering frames mid-session, often a cable, USB or network dropout. Gesture keeps retrying and reopens the source every few attempts; `✅ Capture recovered` follows once it's back. See **Camera & NDI**. |
+| `❌ Capture lost for ...s (... failed reads) - giving up` | The source didn't come back within **Reconnect timeout** (Settings → Advanced, default 30 s). Tracking stops; fix the source and click Start again, or set the timeout to 0 to retry forever. |
 | `❌ NDI requested but ndi-python not installed` | This build doesn't have NDI support available. NDI is optional; camera input still works. |
-| `❌ NDI capture failed to open, falling back to camera...` | NDI setup failed for some reason (see the next line in the log for the specific error) and Gesture switched to the webcam instead. |
-| `⚠️ Source '...' not found, using first available` | The saved NDI source name didn't match anything currently on the network (matching is a substring search — see **Camera & NDI**), so Gesture connected to whatever NDI source it found first instead. |
+| `❌ NDI source unavailable - not falling back to webcam` | NDI didn't connect. The line above it says why: `no NDI sources found`, `no source named '...'`, or `'...' matches more than one source` (use the full name). Gesture never switches to a different source or the webcam on its own. See **Camera & NDI**. |
+| `❌ NDI setup failed` | The NDI library itself failed to start (see the rest of the line for the error). Check that the NDI runtime is installed. |
+| `🛑 Launcher is gone - stopping` | The launcher that started the engine quit or crashed, so the engine stopped itself rather than keep running (and holding the camera) in the background. |
 | `⚠️ Resolution differs from config` | Your camera's actual resolution doesn't match what's requested. Frames are resized to the configured processing resolution regardless — see **Processing resolution** in **Camera & NDI** for why that can distort the image. |
 
 ## Startup and model loading

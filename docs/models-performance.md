@@ -47,4 +47,10 @@ The `mediapipe.model_complexity`, `mediapipe.enable_segmentation`, `mediapipe.sm
 
 ## Garbage collection and memory
 
-**Enable garbage collection** and **GC interval (frames)**, in **Settings → Advanced**, control periodic Python garbage collection during tracking (`config.json`'s `performance.gc_enabled` and `performance.gc_interval`). Disabling it can produce smoother, more consistent frame timing at the cost of higher memory use over a long-running session.
+Once the models have loaded, Gesture runs one full garbage collection and then freezes everything loaded so far, so Python's automatic garbage collector never has to walk the (large) MediaPipe and OpenCV state again during tracking. There's no periodic forced collection anymore; `performance.gc_interval` from older configs is ignored.
+
+**Enable garbage collection**, in **Settings → Advanced** (`performance.gc_enabled`), is on by default. Turning it off disables Python's automatic garbage collection for the session, which gives the smoothest frame timing at the cost of memory that can grow over a long run.
+
+## Max pending frames
+
+**Max pending frames** (Settings → Advanced → Performance, `performance.max_pending_frames`, default 1, minimum 1) is how many frames MediaPipe may be working on at once before new camera frames are skipped. `1` gives the lowest latency: landmarks always describe the most recent frame possible. A higher value can raise throughput on a fast machine, at the cost of landmarks lagging a little further behind the camera.
