@@ -1,70 +1,68 @@
 # OSC Output
 
-## Three output formats
+## Output formats
 
-Gesture can send its data in three formats. Choose one under **Settings → Advanced → OSC → Output format** (config key `osc.protocol`), or with `--osc-protocol legacy|json|float` on the command line. It applies the next time you click Start.
+Select the format under **Settings → Advanced → OSC → Output format** (`osc.protocol`), or with `--osc-protocol legacy|json|float`. Changes apply at the next **Start**.
 
-| Format | Landmarks arrive as | Packets | Use it when |
+| Format | Landmark encoding | Transport | Intended use |
 |---|---|---|---|
-| `legacy` (default) | One JSON string per channel, with a `type` and `id` on every landmark, exactly as 0.2.x sent it | One UDP datagram per message, never bundled | You have an existing patch and don't want to touch it |
-| `json` | One leaner JSON string per channel: a top-level `person` index, no per-landmark `type`/`id` | Per-frame OSC bundles | Your receiver parses JSON and you want smaller payloads |
-| `float` | One message per landmark with plain float arguments, e.g. `/pose/lm/0 x y z visibility` | Per-frame OSC bundles | Isadora, TouchDesigner's OSC In CHOP, Resolume, or any receiver that binds an address to numbers; lossy or busy networks |
+| `legacy` (default) | One JSON string per channel; each landmark has `type` and `id` fields. Identical to 0.2.x. | One datagram per message; no bundles | Existing patches built for 0.2.x |
+| `json` | One JSON string per channel, with a top-level `person` index and no per-landmark `type` or `id` | OSC bundles | Receivers that parse JSON |
+| `float` | One message per landmark with float arguments, for example `/pose/lm/0 x y z visibility` | OSC bundles | Receivers that bind addresses to numeric values (Isadora, TouchDesigner OSC In CHOP, Resolume); lossy networks |
 
-**`legacy` stays the default for all of 0.3.x**, so an existing patch keeps working with no changes. 0.4.0 will switch the default to the new format, so if you're starting a new patch, build it on `json` or `float`. The **OSC Address Reference** lists every address in all three formats side by side.
+`legacy` is the default throughout 0.3.x. The default changes in 0.4.0; new patches should use `json` or `float`. The **OSC Address Reference** lists every address in each format.
 
-Whatever the format, pose and hand data stay on the same address families (`/pose/...`, `/left_hand/...`, `/right_hand/...`). The status, tracking and heartbeat channels always carry plain numbers. In `json` and `float` they live under `/gesture/...`. In `legacy`, status stays on the 0.2.x addresses (`/mp/status`, `/hand/status`, as JSON), and the new channels sit alongside them.
+Pose and hand data use the same address families in all formats: `/pose/...`, `/left_hand/...` and `/right_hand/...`. Status, tracking and heartbeat channels carry numeric arguments. In `json` and `float` they are under `/gesture/...`. In `legacy`, status uses the 0.2.x addresses (`/mp/status` and `/hand/status`, as JSON), and the tracking and heartbeat channels are added alongside.
 
-## OSC bundles (json and float)
+## OSC bundles
 
-In `json` and `float` mode, each processed frame's messages are packed into **OSC bundles** of at most 1400 bytes. 1400 bytes fits inside a standard 1500-byte network packet with room to spare, so a bundle never has to be split into IP fragments along the way. A frame that doesn't fit in one bundle is split across several, in order. Every bundle uses the "immediately" timetag.
+In `json` and `float`, the messages for each frame are sent as OSC bundles of at most 1400 bytes, which fits in a standard 1500-byte Ethernet frame without IP fragmentation. Frames that exceed 1400 bytes are split across several bundles, in order. Bundles use the "immediately" timetag.
 
-Your receiver has to accept OSC bundles. TouchDesigner, Max's `[udpreceive]`, Isadora, python-osc and the common Unity OSC packages unpack bundles on their own, so each message inside arrives exactly as if it had been sent alone. If a receiver only understands bare messages, stay on `legacy`, which never bundles.
+The receiver must support OSC bundles. TouchDesigner, Max `[udpreceive]`, Isadora, python-osc and the common Unity OSC packages do. For receivers that accept only bare messages, use `legacy`.
 
-## Large JSON payloads and fragmentation
+## Payload size and fragmentation
 
-A full 33-landmark pose is a lot of JSON. In `legacy` mode, `/pose/raw` is about 2.5 KB and `/pose/world` about 2.7 KB. Both are bigger than one network packet, so the operating system splits each into IP fragments. On a busy or lossy network (Wi-Fi, a venue switch), losing any single fragment loses the whole message, and some receivers never reassemble fragments at all. That's the "data arrives but is incomplete" symptom in **Troubleshooting**.
+In `legacy`, `/pose/raw` is about 2.5 KB and `/pose/world` about 2.7 KB. Both exceed one Ethernet frame and are IP-fragmented. On a lossy network, such as Wi-Fi or a busy venue switch, loss of any fragment discards the whole message, and some receivers do not reassemble fragments. The result is intermittent or incomplete landmark data (see **Troubleshooting**).
 
-`json` mode shrinks this: `/pose/world` drops to about 1.2 KB and fits in a bundle, and the hand channels all fit. **`/pose/raw` is still about 1.76 KB in `json` mode**, though, which is over the 1400-byte budget. It goes out alone in its own bundle and still gets fragmented. On a single machine (`127.0.0.1`) or a quiet wired network that's harmless.
+In `json`, `/pose/world` (about 1.2 KB) and all hand channels fit within one bundle. `/pose/raw` (about 1.76 KB) does not; it is sent in its own bundle and is still fragmented. This has no practical effect on `127.0.0.1` or a lightly loaded wired network.
 
-**`float` mode is the fix for lossy networks and Isadora**: each landmark is a 36–44 byte message, and every bundle stays within 1400 bytes, so nothing is ever fragmented.
+In `float`, each landmark message is 36–56 bytes and no bundle exceeds 1400 bytes. Use `float` on lossy networks and with Isadora.
 
-## Tracking modes decide what's sent
+## Tracking mode
 
-The **Tracking mode** dropdown controls which channels exist at all:
+**Tracking mode** determines which channels are sent:
 
-| Mode | Sends |
+| Mode | Channels |
 |---|---|
-| `pose` | Body pose landmarks, pose status and pose tracking |
-| `hand` | Left/right hand landmarks, hand status and hand tracking |
-| `all` | Both, pose and hands together |
+| `pose` | Pose landmarks, pose status, pose tracking |
+| `hand` | Hand landmarks, hand status, hand tracking |
+| `all` | All of the above |
 
 The heartbeat is sent in every mode.
 
-`all` mode normally uses a single combined model pass (MediaPipe's "Holistic" landmarker) rather than running pose and hand detection separately. This is faster, but it only ever reports one person, and in `legacy` mode it changes how hand landmarks are labeled (`hand_left`/`hand_right` rather than `hand_0`/`hand_1`). **No Holistic**, in Settings → Advanced, is a launch-time toggle that switches `all` mode back to two separate models if you need to run `mediapipe.num_poses` above 1. See the **OSC Address Reference** for the details.
+By default, `all` uses MediaPipe's combined Holistic landmarker, which is faster but tracks one person only. In `legacy`, it also labels hands `hand_left` / `hand_right` instead of `hand_0` / `hand_1`. **No holistic** (**Settings → Advanced**) uses separate pose and hand models instead; this is required for `mediapipe.num_poses` above 1.
 
 ## Status, tracking and heartbeat
 
-Three kinds of health channel tell your patch what's going on:
+- **Status** (`/gesture/pose/status`, `/gesture/hand/status`; `legacy`: `/mp/status`, `/hand/status` as `{"status": N}`) is the number of poses or hands in the current frame's result. Detection runs asynchronously and does not produce a result on every frame, so status is `0` on intermediate frames even while tracking is continuous.
+- **Tracking** (`/gesture/pose/tracking`, `/gesture/hand/tracking`; `legacy`: `/mp/tracking`, `/hand/tracking`) is the highest status value over the last 0.3 seconds. It rises immediately on detection and falls only after detection stops. Use tracking, not status, for presence detection. The hold time is set by the optional `osc.tracking_hold` key, in seconds.
+- **Heartbeat** (`/gesture/heartbeat`; `legacy`: `/mp/heartbeat`) is sent once per second with four arguments: processing rate in FPS (float), send queue depth, total dropped packets and total sent packets (integers). It is sent regardless of whether anyone is in frame or the source is reconnecting. A missing heartbeat indicates that the engine has stopped.
 
-- **Status** (`/gesture/pose/status`, `/gesture/hand/status`; in `legacy`, `/mp/status` and `/hand/status` as `{"status": N}`) is the raw count of poses or hands **in this frame's result**. MediaPipe's detector runs asynchronously and doesn't finish a fresh result every frame. On the frames in between, status is `0` even while someone is being tracked continuously. If your patch treats a single `0` as "gone", it will flicker.
-- **Tracking** (`/gesture/pose/tracking`, `/gesture/hand/tracking`; in `legacy`, `/mp/tracking` and `/hand/tracking`) is the debounced count. It's the highest status count from the last 0.3 seconds, so it rises the moment someone is detected and only falls once detection has really stopped reporting them. **Drive "person present" logic from tracking, not status.** The hold time is the optional `osc.tracking_hold` config key, in seconds.
-- **Heartbeat** (`/gesture/heartbeat`; in `legacy`, `/mp/heartbeat`) arrives once a second with four numbers: the processing loop's frames per second (float), then the OSC send queue's current depth, total dropped packets and total sent packets (ints). It keeps coming even when nobody is in frame or the camera has hiccupped, so a missing heartbeat means the engine has stopped, not that the room is empty.
+## Clear messages
 
-## Losing tracking clears the last position, once
+When a tracked pose or hand is lost, one clear message is sent on each affected channel:
 
-When a pose or hand that was being tracked disappears, Gesture sends one "cleared" signal on the affected channels so your receiver doesn't freeze on the last known position:
+- `legacy` and `json`: an empty `landmarks` list on raw and world channels, and `{}` on bounds channels.
+- `float`: six `0.0` values on each bounds address (`/pose/bounds`, `/pose/world_bounds` and the hand equivalents). Per-landmark addresses retain their last values; use tracking to determine whether they are current.
 
-- `legacy` and `json`: an empty `landmarks` list on the raw and world channels, and an empty `{}` on the bounds channels.
-- `float`: six `0.0`s on each bounds address (`/pose/bounds`, `/pose/world_bounds`, and the hand equivalents). The per-landmark addresses keep their last values; use tracking (or all-zero bounds) to know whether they're live.
+The clear is sent once, on the frame where tracking is lost. Use tracking to detect a continuing absence.
 
-This fires exactly once, on the frame tracking is lost, not repeatedly while nobody is in frame. For "no one is here" as an ongoing state, use the tracking channel.
+On **Stop** or quit, the engine sends clears for every channel used in the session, and status and tracking values of `0`, before exiting.
 
-Clicking **Stop** (or quitting) sends the same clears for every channel the session used, plus status `0` and tracking `0`, before the engine exits, so receivers don't keep showing the last pose after the engine has stopped.
+## Send queue
 
-## OSC send queue and dropped messages
+Packets are queued and sent on a background thread so that network delays do not stall tracking. When the queue is full, the oldest packet is dropped. The drop count appears in the stats line when **Show FPS** is enabled, and in the heartbeat.
 
-Outgoing packets are queued and sent by a background thread so that a slow network target can't stall tracking. If packets are produced faster than the sender thread can push them out, the **oldest** queued packet is dropped to make room for the newest one. Under sustained congestion, a stale pose isn't worth keeping over a fresh one. A running count of drops appears in the FPS/stats line (see **Models & Performance**) when **Show FPS** is enabled, and in every heartbeat.
+OSC uses UDP, so sending to a host or port with no listener does not produce an error or increase the drop count. A rising drop count means packets are produced faster than the send thread can transmit them.
 
-OSC is UDP, which is fire-and-forget: sending to a host/port nobody is listening on doesn't fail, block, or come back as an error. It just silently goes nowhere. An absent or wrong OSC target does **not** produce Dropped counts by itself. A climbing "Dropped" count instead means Gesture's own outgoing queue is filling up faster than it can be drained, whether or not anything is listening on the other end.
-
-The host can be a broadcast address (for example `192.168.1.255`) to reach every machine on the subnet at once.
+The host can be a broadcast address, such as `192.168.1.255`, to send to all machines on the subnet.

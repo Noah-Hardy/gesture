@@ -1,40 +1,40 @@
 # Camera & NDI
 
-## Webcam
+## Camera
 
-Pick **📷 Camera** and set **Device ID** — `0` is almost always your Mac's built-in camera or the first camera macOS finds; try `1`, `2`, etc. if you have more than one connected.
+Select **Camera** and set **Device ID**. `0` is normally the built-in camera or the first camera detected; additional cameras use `1`, `2` and so on.
 
-The first time Gesture accesses the camera, macOS will prompt for camera permission. If you accidentally denied it, re-enable it under **System Settings → Privacy & Security → Camera**, then restart Gesture.
+macOS requests camera permission on first use. If permission was denied, enable it under **System Settings → Privacy & Security → Camera** and restart Gesture.
 
 ## NDI
 
-Pick **🎥 NDI** to receive video over the network from an NDI sender (a switcher, another Mac running an NDI source app, OBS with the NDI plugin, etc.) instead of a local camera. Click **Refresh** to search the network for available sources — this takes a few seconds — then choose one from the dropdown.
+Select **NDI** to receive video from an NDI sender, such as a video switcher, another computer or OBS with the NDI plugin. Click **Refresh** to discover sources (this takes a few seconds), then select one.
 
-A few behaviors worth knowing:
+Source matching:
 
-- Names are matched **case-insensitively**. An exact name match always wins. Otherwise a partial name is accepted only if it matches exactly one source: typing `switcher` connects to `Switcher-1 (Program)` if that's the only source containing "switcher", but not if `Switcher-2 (Preview)` is also on the network. Use the full name then.
-- If the saved name doesn't match any source, or matches more than one, Gesture stops with a message saying so. It never silently connects to a different source, and it never switches to the webcam instead.
-- With no source name saved, Gesture uses the first source it finds.
-- **NDI bandwidth** (Settings → Advanced → Camera, `camera.ndi_bandwidth`) picks which stream to receive. `lowest` (the default) asks the sender for its small proxy stream, around 640×360, which is plenty for tracking and much lighter on the network. `highest` receives the full-resolution stream.
+- Names are case-insensitive. An exact match takes precedence.
+- A partial name is accepted only if it matches exactly one source. For example, `switcher` selects `Switcher-1 (Program)` only if no other source name contains "switcher".
+- If the name matches no source, or more than one, the engine exits with an error. It does not fall back to a different source or to the camera.
+- If no name is set, the first source found is used.
 
-NDI and the OSC coordinates it produces don't have a fixed relationship to real-world size — see **Processing resolution**, below, for why that matters.
+**NDI bandwidth** (**Settings → Advanced → Camera**, `camera.ndi_bandwidth`) selects the received stream. `lowest` (the default) requests the sender's proxy stream, about 640×360, which is sufficient for tracking and uses less network bandwidth. `highest` requests full resolution.
 
-## If the camera or NDI source drops out
+## Source loss and reconnection
 
-If frames stop arriving mid-session (a USB cable knocked loose, a network hiccup, a sender restarting), Gesture doesn't stop straight away. It keeps retrying, backing off from 0.1 up to 2 seconds between attempts, and reopens the camera or NDI connection after every 5 failed reads. The log shows `⚠️ Capture stopped delivering frames - retrying`, then `✅ Capture recovered` once frames return. OSC keeps flowing meanwhile: the heartbeat continues, so receivers can tell the engine is alive.
+If frames stop arriving, the engine retries with a delay that increases from 0.1 to 2 seconds, and reopens the source after every 5 failed reads. The log shows `Capture stopped delivering frames - retrying`, followed by `Capture recovered` when frames resume. The OSC heartbeat continues during this time.
 
-It gives up only after **Reconnect timeout** (Settings → Advanced → Camera, `camera.reconnect_timeout`, 30 seconds by default). Set it to `0` to keep retrying forever, which suits an unattended installation.
+The engine exits after **Reconnect timeout** (**Settings → Advanced → Camera**, `camera.reconnect_timeout`, default 30 seconds). A value of `0` retries indefinitely, which is suitable for unattended installations.
 
 ## Show preview window
 
-**🖼️ Show preview window**, under **Input**, controls whether the separate confirmation window opens at all — titled **"Gesture Preview — not the OSC output"** so it's never mistaken for the data feed itself. It's on by default; uncheck it to run without the window (headless use, or if it's distracting). This mirrors **Mirror preview**, below, in also being a launcher checkbox that always overrides the saved `config.json` value for the run about to start (also available in **Settings → Preview**, and as `--preview`/`--no-preview` on the command line).
+**Show preview window**, under **Input**, controls whether the preview window opens. It is also available in **Settings → Preview** and as `--preview` / `--no-preview`. The launcher checkbox overrides the saved value for each run.
 
 ## Mirror preview
 
-**🪞 Mirror preview window** flips the preview horizontally, so a webcam feed looks like a mirror (your right hand appears on the right side of the screen) rather than a video call (your right hand appears on the left). This is a **display-only** setting — it does not change any OSC data. Landmark coordinates and every value Gesture sends over the network are computed before the mirror flip and are completely unaffected by this checkbox.
+**Mirror preview window** flips the preview horizontally. It affects the display only; landmark coordinates are computed from the unflipped frame.
 
 ## Processing resolution
 
-Internally, every incoming frame — from a camera or from NDI — is resized to a fixed **processing resolution** before MediaPipe looks at it, and that resized frame is also what appears in the preview window. Set it under **Settings → Advanced → Camera** as **Processing width** and **Processing height** (`camera.processing_width` / `camera.processing_height`, default 640×480). It's the main quality/speed trade-off: a smaller size tracks faster, a larger one catches smaller or more distant people.
+Each frame is resized to the processing resolution before tracking. The preview shows this resized frame. Set it in **Settings → Advanced → Camera** (`camera.processing_width` and `camera.processing_height`, default 640×480). Smaller sizes run faster; larger sizes detect smaller or more distant people.
 
-The resize **preserves the aspect ratio**. A source whose shape doesn't match the processing size (say, a 16:9 camera into the default 4:3) is scaled to fit and padded with black bars rather than stretched, and every normalized coordinate Gesture sends is mapped back to the original source frame. So 0–1 in x and y always spans your actual camera image, whatever the processing size.
+The aspect ratio is preserved. A source with a different aspect ratio, such as 16:9 into 4:3, is scaled and padded rather than stretched, and all normalized coordinates are mapped back to the source frame. Normalized x and y therefore always span the full source image, from 0 to 1.

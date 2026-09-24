@@ -1,53 +1,53 @@
 # Quick Start
 
-## Installing
+## Installation
 
-Open the `.dmg` you downloaded, then drag `Gesture.app` into the **Applications** shortcut inside it, and open Gesture from your Applications folder — not from inside the disk image. The copy on the disk image is read-only, so it works for a quick look but the in-app updater can't install into it; Gesture warns about this once at launch if you do.
+Open the downloaded `.dmg` and drag `Gesture.app` into **Applications**. Run Gesture from the Applications folder. A copy run from the disk image is read-only and cannot be updated in place; Gesture shows a warning at launch in that case.
 
 ## The launcher window
 
-Opening Gesture.app shows one window with three collapsible sections, then Start/Save Config/Clear Log buttons, a live log of the engine's output, and a status line. Click a section's ▾/▸ header to expand or collapse it — the app remembers each section's open/closed state between launches.
+The launcher has three collapsible sections, followed by the **Start**, **Save Config** and **Clear Log** buttons, a log pane and a status line. The open or collapsed state of each section is kept between launches.
 
-- **Input** (open by default) — tracking mode, and camera or NDI source
-- **OSC Output** (open by default) — the host and port Gesture sends to
-- **Model & Performance** (collapsed by default) — pose model and FPS cap, plus a pointer to **Gesture → Settings…** for everything else
+- **Input**: tracking mode and video source.
+- **OSC Output**: destination host and port.
+- **Model & Performance**: pose model and FPS cap.
 
-Most of what used to be scattered checkboxes now lives in the **Settings** window (see below) — the main window stays short, with only the handful of fields you're likely to touch every session.
+All other options are in **Gesture → Settings…**.
 
-The launcher itself never runs MediaPipe. Pressing **Start** launches a second, hidden process that does the actual camera capture and tracking — its console output is what you see streaming into the log pane. **Stop** shuts that process down cleanly.
+The launcher does not run MediaPipe itself. **Start** launches a separate engine process that captures video and performs tracking; the log pane shows that process's output. **Stop** shuts it down.
 
 ## First run
 
-1. Set **OSC Output → Host** to the IP address of the machine that will receive the data. It defaults to `127.0.0.1` (localhost) — leave it as-is if Gesture and the receiver run on the same machine.
-2. Set **Port** to whatever your receiving software is listening on.
-3. Under **Input**, pick **📷 Camera** and leave the device ID at `0` (your Mac's built-in or first external camera), or see **Camera & NDI** for other options.
-4. Leave **Tracking mode** on `all` — it tracks pose and both hands together.
+1. Set **OSC Output → Host** to the IP address of the receiving machine. The default, `127.0.0.1`, is correct when the receiver runs on the same Mac.
+2. Set **Port** to the port the receiver listens on.
+3. Under **Input**, select **Camera** with device ID `0` (the built-in or first external camera). See **Camera & NDI** for other sources.
+4. Leave **Tracking mode** set to `all` to track pose and both hands.
 5. Click **Start**.
 
-The log pane will fill with startup messages: which delegate (CPU or GPU) was chosen, which model loaded, and a confirmation line once tracking begins. A preview window opens separately, titled **"Gesture Preview — not the OSC output"** — a reminder that this window is for your own confirmation only, showing the camera feed with the detected skeleton drawn over it, and is never itself what gets sent over OSC. Press `q` with that window focused to stop tracking early, or use the launcher's **Stop** button (the Start button turns into Stop, in red, while the engine is running).
+The log reports the selected delegate (CPU or GPU), the loaded model, and a confirmation once tracking begins. A preview window titled **"Gesture Preview — not the OSC output"** shows the camera feed with detected landmarks overlaid. It is for visual confirmation only and is not transmitted.
 
-Uncheck **🖼️ Show preview window** under **Input** if you don't want the window to open at all — for example, running headless, or if you find it distracting. With the preview hidden, `q` has nothing to be pressed in, so **Stop** is the only way to end tracking.
+To stop tracking, click **Stop**, or press `q` in the preview window. To run without a preview, clear **Show preview window** under **Input**; **Stop** is then the only way to end tracking.
 
-## Confirming data is arriving
+## Confirming output
 
-If your receiving software can log incoming OSC messages, you should see something arrive on `/mp/status` continuously once the engine starts, and on `/pose/raw`, `/left_hand/raw`, and `/right_hand/raw` whenever a person is in frame. See **OSC Output** for what these actually contain, and the **OSC Address Reference** for the complete list.
+With the default `legacy` format, a receiver logging incoming OSC shows `/mp/status` continuously while the engine runs, and `/pose/raw`, `/left_hand/raw` and `/right_hand/raw` while a person is in frame. See **OSC Output** and the **OSC Address Reference** for details.
 
-If nothing arrives, double-check the host/port match your receiver, and that no firewall on either machine is blocking UDP traffic on that port.
+If nothing arrives, check that the host and port match the receiver and that no firewall blocks UDP on that port.
 
-## Save Config
+## Saving the configuration
 
-Gesture reopens the way you last used it. Every time you click **Start**, quit, or let an update install, it saves the main window's fields to `config.json`, including the tracking mode. **Save Config** saves those fields straight away, and tells you if the port or camera ID isn't a valid number.
+The main window's fields, including tracking mode, are saved to `config.json` on **Start**, on quit, and before an update installs. **Save Config** saves them immediately and reports an invalid port or camera ID.
 
-Everything set in the **Settings** window is saved there directly, as soon as you click its own Save button — you don't need to also click the main window's Save Config for those fields.
+The **Settings** window saves its own fields with its **Save** button.
 
 ## Settings
 
-**Gesture → Settings…** (⌘,) opens a separate window with four tabs — General, Tracking, Preview, and Advanced — covering update behavior, detection thresholds, preview styling, camera/performance tuning, and the launch-time backend toggles (Force CPU, Force GPU, Force Legacy (deprecated), No Holistic) that used to live as checkboxes in this window. See the **Settings** guide for a tour of each tab.
+**Gesture → Settings…** (⌘,) opens the General, Tracking, Preview and Advanced tabs. See **Settings**.
 
 ## Updates
 
-Gesture checks GitHub for a newer release a few seconds after it opens, silently — if you're already current, nothing happens. If a newer version is available, a dialog shows the release notes with the option to install and relaunch automatically. See the **Updates** guide for the full flow, and how to check manually.
+Gesture checks for a newer release shortly after launch. If one is available, it shows the release notes and offers to install it. See **Updates**.
 
 ## Stopping and quitting
 
-**Stop** (or ⌘.) asks the tracking process to shut down cleanly — it releases the camera, closes the OSC connection, and closes the preview window. Quitting the app entirely (⌘Q, or the red close button) does the same thing first, then closes the launcher.
+**Stop** (⌘.) shuts down the engine, which releases the camera, closes the OSC socket and closes the preview window. Quitting (⌘Q or the close button) stops the engine first, then exits.

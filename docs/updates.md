@@ -1,60 +1,51 @@
 # Updates
 
-Gesture can check GitHub for a newer release and install it for you, without leaving the app.
+Gesture checks GitHub Releases for new versions and can install them in place.
 
-## The silent launch check
+## Launch check
 
-A few seconds after Gesture opens, it quietly asks GitHub whether a newer release exists. If you're already on the latest version, nothing happens — no popup, no log spam. This check is throttled to at most once every 24 hours per launch and skips itself entirely if you're offline or GitHub is unreachable.
+Shortly after launch, Gesture checks for a newer release, at most once every 24 hours. It shows nothing if the installed version is current, or if GitHub cannot be reached.
 
-Turn this off, or include pre-release builds in what counts as "newer," under **Settings → General**:
+**Settings → General** controls this:
 
-- **Check for updates on launch** — uncheck to disable the silent check entirely. You can still check manually at any time (see below).
-- **Include pre-release builds** (off by default) — pre-release tags on GitHub count as an available update when checked, ahead of a stable build that supersedes them.
+- **Check for updates on launch**: disables the launch check. Manual checks remain available.
+- **Include pre-release builds** (off by default): treats pre-releases as available updates.
 
-## Checking manually
+## Manual check
 
-Two places trigger an immediate check, ignoring the usual throttling:
+Both of the following check immediately, regardless of the 24-hour limit:
 
 - **Help → Check for Updates…**
-- **Settings → General → Check Now** (next to a "Last checked: …" label showing when Gesture last asked GitHub)
+- **Settings → General → Check Now**, next to the time of the last check.
 
-A manual check that finds nothing newer tells you so; a silent launch check that finds nothing stays quiet either way.
+A manual check reports when no update is available.
 
-## When an update is found
+## Update dialog
 
-A dialog opens showing the release notes for the new version, rendered the same way the in-app Help topics are. Three buttons:
+When an update is found, a dialog shows its release notes and three options:
 
-- **Install and Relaunch** — starts the install flow below.
-- **Skip This Version** — dismisses this dialog and won't prompt again for this specific release on future silent checks (a manual check will still offer it).
-- **Later** — dismisses the dialog; Gesture asks again on its next scheduled check.
+- **Install and Relaunch**: installs the update (see below).
+- **Skip This Version**: suppresses launch-check prompts for this release. A manual check still offers it.
+- **Later**: closes the dialog until the next check.
 
-If the tracking engine is running when you click Install, Gesture asks to stop it first — the app has to be able to relaunch cleanly.
+If the engine is running, Gesture asks to stop it before installing.
 
-## What Install and Relaunch does
+## Installation steps
 
-1. **Download** — fetches the release's zip archive from GitHub, with a progress bar showing megabytes and percent complete. (Releases also publish a `.dmg` for anyone installing by hand from the Releases page — the updater itself always uses the zip.)
-2. **Verify checksum** — computes the SHA-256 of what was downloaded and compares it against the published `.sha256` file. A mismatch (a truncated or corrupted download) aborts here.
-3. **Verify signature and notarization** — unpacks the archive and checks that the new `Gesture.app` is signed by the *same* Developer ID as the app you're currently running, and that it passes Gatekeeper's assessment. Anything else is rejected and discarded — this is what stops a tampered or mismatched build from ever being installed, regardless of what the checksum said.
-4. **Swap** — once verified, Gesture quits itself; a small helper script waits for it to fully exit, moves the current `.app` aside as a backup, moves the new one into its place, and reopens it.
-5. **Relaunch** — the new version opens automatically, on the same window position and settings as before (nothing in `config.json` is touched by an update).
+1. **Download**: fetches the release's zip archive. The updater always uses the zip; the `.dmg` is for manual installation.
+2. **Checksum**: compares the archive's SHA-256 against the published `.sha256` file.
+3. **Signature**: verifies that the new `Gesture.app` is signed with the same Developer ID as the running app and passes Gatekeeper assessment.
+4. **Swap**: Gesture quits. A helper script moves the current app aside as a backup, moves the new app into place, and reopens it.
+5. **Relaunch**: the new version opens. `config.json` is not modified.
 
-## The move from MP-OSC.app to Gesture.app
+If any step fails, the existing version is kept or restored from the backup, and the dialog shows the failure along with a link to the release page.
 
-The app used to be called MP-OSC. If you're updating an existing install, two things happen on their own:
+## When self-update is unavailable
 
-- **Settings** move from `~/Library/Application Support/mp-osc` to `~/Library/Application Support/Gesture` the first time Gesture launches. If the move isn't possible, Gesture keeps using the old folder.
-- **The app's name on disk** changes one update late. Updating from 0.2.1 installs the new version in place, still named `MP-OSC.app`, because 0.2.1's installer does the swap. The next update after that renames it to `Gesture.app`.
+The updater requires the packaged app, installed in a location the current user can write to. Otherwise it explains why and links to the Releases page. This applies when:
 
-## If something goes wrong
+- **Running from source** (`uv run python app.py`).
+- **Running from the disk image or a translocated copy**: macOS runs apps opened from a mounted `.dmg`, or from Downloads, from a temporary read-only location. Move `Gesture.app` to **Applications** and reopen it.
+- **Installed in a location the user cannot write to**, such as `/Applications` for a non-administrator account. Move the app to a writable location, or install updates manually.
 
-If the download, checksum, signature check, or swap fails at any point, the old version is left running (or restored from its backup) and nothing is lost — you keep using Gesture exactly as it was. The dialog shows what failed, with a button to open the release's GitHub page so you can download and install by hand if you'd rather not retry.
-
-## When self-update isn't available
-
-The updater only works on an installed, packaged `.app` sitting somewhere your account can write to. It explains why and offers to open the GitHub Releases page in your browser instead when:
-
-- **You're running from source** (`uv run python app.py`), not the packaged app — updates only apply to `Gesture.app`.
-- **Gesture is translocated, or still running from the `.dmg`** — opening `Gesture.app` straight out of the mounted disk image (instead of dragging it to Applications first), or from a Downloads folder, runs it from a temporary or read-only copy macOS controls, not the real location. Gesture warns about this once at launch; either way, drag `Gesture.app` to your **Applications** folder and reopen it from there.
-- **Gesture is installed somewhere your account can't write to** — for example, `/Applications` on a Mac where you're not an administrator. An administrator can move it somewhere writable, or you can download and install the new version by hand.
-
-In any of these cases, grabbing the new version manually from the project's GitHub Releases page and replacing the old `.app` works exactly the same as letting the updater do it.
+A manual installation, replacing the old `.app` with the one from the Releases page, is equivalent to a self-update.

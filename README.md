@@ -1,84 +1,82 @@
 # Gesture
 
-Gesture watches a camera or an [NDI](https://ndi.video/) video feed, detects a person's body pose and hand positions in real time with [MediaPipe](https://developers.google.com/mediapipe), and streams the result over [OSC (Open Sound Control)](https://opensoundcontrol.stanford.edu/) to any address on your network. Anything that can receive OSC — TouchDesigner, Max/MSP, Unity, Unreal, Resolume, Ableton — can subscribe to that stream and react to where a person's body and hands are, live.
+Gesture tracks body pose and hand landmarks from a camera or [NDI](https://ndi.video/) video feed using [MediaPipe](https://developers.google.com/mediapipe), and sends the results over [OSC](https://opensoundcontrol.stanford.edu/) in real time. Any OSC-capable application, such as TouchDesigner, Max/MSP, Unity, Unreal, Resolume or Ableton, can receive the stream.
 
-## Overview
+## Features
 
-- **Real-time pose and hand tracking**, using MediaPipe's Tasks API with an automatic fallback to its legacy Solutions API if the modern one fails to initialize.
-- **Camera or NDI input** — capture from a local webcam, or receive video over the network from an NDI source (a switcher, another Mac, OBS with the NDI plugin, etc).
-- **Three OSC output formats**: the original JSON strings (`legacy`, the default through 0.3.x), a leaner bundled JSON (`json`), and one native-float message per landmark (`float`) for receivers like Isadora that bind to numeric OSC arguments. Plus bounds, status, debounced tracking and a 1 Hz heartbeat.
-- **Landmark visualization** in a live preview window, purely for your own confirmation — it's not part of what gets sent over the network.
-- **A native macOS app**: a dark-themed launcher, a full tabbed Settings window covering everything from tracking thresholds to preview styling, and a self-updater — no Python, no terminal, no dependencies to install.
-- **A command-line interface** underneath it all — the app builds a command line from its own form and runs the exact same engine, so nothing behaves differently between the GUI and the CLI.
+- Real-time pose and hand tracking with the MediaPipe Tasks API, with automatic fallback to the Solutions API.
+- Camera or NDI input.
+- Three OSC output formats: `legacy` (JSON strings, the default), `json` (compact bundled JSON) and `float` (one numeric message per landmark, for receivers such as Isadora). Bounds, status, debounced tracking and a 1 Hz heartbeat are sent in every format.
+- A preview window with landmark overlay.
+- A native macOS launcher with a Settings window and built-in updater.
+- A command-line interface that runs the same engine as the launcher.
 
-## Download
+## Requirements
 
-Grab the latest release from the [Releases page](https://github.com/Noah-Hardy/gesture/releases).
+Apple Silicon Mac running macOS 13 or later.
 
-Requires an **Apple Silicon Mac running macOS 13 or later**.
+## Installation
 
-## Install
+Download the latest `.dmg` from the [Releases page](https://github.com/Noah-Hardy/gesture/releases), open it, and drag `Gesture.app` into **Applications**. The app is signed and notarized.
 
-Open the downloaded `.dmg` and drag `Gesture.app` into **Applications**. It's signed and notarized, so it opens with no Gatekeeper warning.
-
-## Quick Start
+## Quick start
 
 1. Open Gesture.
-2. Under **OSC Output**, set the **Host** (defaults to `127.0.0.1` — leave it alone if the receiver runs on the same Mac) and **Port** your receiving software is listening on.
-3. Under **Input**, choose **Camera** or **NDI** and pick a source.
+2. Under **OSC Output**, set **Host** (default `127.0.0.1`, for a receiver on the same Mac) and **Port** to match the receiver.
+3. Under **Input**, select **Camera** or **NDI** and a source.
 4. Click **Start**.
 
-A preview window shows the camera feed with detected landmarks drawn over it. See the in-app **Quick Start** guide (Help menu) for the full walkthrough.
-
-**Tracking mode** decides what gets tracked and sent:
+**Tracking mode** selects what is tracked:
 
 | Mode | Tracks |
 |---|---|
-| `pose` | Body pose only |
-| `hand` | Both hands only |
-| `all` | Pose and both hands together (the default) |
+| `pose` | Body pose |
+| `hand` | Both hands |
+| `all` | Body pose and both hands (default) |
 
-## Updating
+The in-app **Quick Start** guide (**Help** menu) covers this in detail.
 
-Gesture checks for a newer release when it opens and offers to install it and relaunch. See the in-app **Updates** guide for details.
+## Updates
 
-## What It Sends
+Gesture checks for new releases at launch and can install them in place. See the in-app **Updates** guide.
 
-Pose, left-hand and right-hand landmarks each get their own OSC addresses, in one of three formats chosen under **Settings → Advanced → OSC → Output format** (or `--osc-protocol` on the command line):
+## OSC output
 
-| Format | What a pose looks like on the wire |
+Pose, left-hand and right-hand landmarks are sent on separate addresses, in the format selected under **Settings → Advanced → OSC → Output format** or with `--osc-protocol`:
+
+| Format | Pose encoding |
 |---|---|
-| `legacy` (default) | `/pose/raw` with one JSON string argument, exactly as 0.2.x sent it |
-| `json` | `/pose/raw` with a leaner JSON string (a `person` index, no per-landmark `type`/`id`), sent in OSC bundles |
-| `float` | `/pose/lm/0` … `/pose/lm/32`, each with four float arguments `x y z visibility`, sent in OSC bundles |
+| `legacy` (default) | `/pose/raw` with one JSON string argument |
+| `json` | `/pose/raw` with compact JSON (a `person` index; no per-landmark `type` or `id`), in OSC bundles |
+| `float` | `/pose/lm/0` to `/pose/lm/32`, each with float arguments `x y z visibility`, in OSC bundles |
 
-Every format also sends:
+All formats also send:
 
-- **World landmarks**: real-world-scale coordinates in metres, alongside the normalized image-space ones.
-- **Bounds**: the extremes of each detection on every axis.
-- **Status and tracking**: how many poses/hands the latest detection found, raw per frame and debounced.
-- **Heartbeat**: once a second, the engine's FPS and send-queue counters, even when nobody is in frame.
+- **World landmarks**: coordinates in metres, alongside normalized image coordinates.
+- **Bounds**: the extent of each detection on each axis.
+- **Status and tracking**: the per-frame and debounced counts of detected poses and hands.
+- **Heartbeat**: engine FPS and send-queue counters, once per second.
 
-See the in-app **OSC Output** guide for how the formats compare, **OSC Address Reference** for every address and payload, and **TouchDesigner, Max, Unity, Isadora** for receiver setups.
+The in-app guides **OSC Output**, **OSC Address Reference** and **TouchDesigner, Max, Unity, Isadora** cover format selection, every address and payload, and receiver setup.
 
 ## Configuration
 
-Most settings live in the app itself: OSC host/port, tracking mode, pose model and FPS cap in the main window, and everything else in **Gesture → Settings…**, split across four tabs:
+The launcher holds OSC host and port, tracking mode, pose model and FPS cap. **Gesture → Settings…** contains the remaining options:
 
-- **General** — the update checker, and shortcuts to `config.json`.
-- **Tracking** — pose and hand detection thresholds, smoothing, and how many of each to track.
-- **Preview** — whether the preview window shows, mirroring, and landmark/connection colors and sizes.
-- **Advanced** — camera capture settings, performance and garbage-collection tuning, the OSC send queue size and output format, and launch-time backend toggles (Force CPU/GPU, legacy API (deprecated), holistic on/off).
+- **General**: update checks and access to `config.json`.
+- **Tracking**: detection thresholds, smoothing, and the number of poses and hands.
+- **Preview**: preview visibility, mirroring and landmark styling.
+- **Advanced**: camera capture, performance, OSC queue size and output format, and backend options.
 
-Whatever remains reachable only through `config.json`, and the full list of every key the app understands, is documented in the in-app **Appendix: CLI & config.json**, which also covers running Gesture from the command line with flags and environment variables.
+The in-app **Appendix: CLI & config.json** documents every configuration key, command-line flag and environment variable.
 
 ## Troubleshooting
 
-The in-app **Troubleshooting** guide (Help menu) is keyed to the exact messages Gesture prints to its log pane, so it's usually the fastest way to figure out what a given warning or error actually means.
+The in-app **Troubleshooting** guide explains the messages shown in the log pane.
 
 ## License
 
-This project is based on MediaPipe and is licensed under the Apache License 2.0.
+Based on MediaPipe. Licensed under the Apache License 2.0.
 
 ---
 #### Author:
