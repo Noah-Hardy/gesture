@@ -81,11 +81,13 @@ def test_migration_leaves_json_and_float_alone(config_path, protocol):
     assert cfg.get('ui', 'protocol_notice_pending') is False
 
 
-def test_config_without_protocol_key_gets_default_and_stamp(config_path):
+def test_pre_0_3_config_without_protocol_key_is_migrated_with_notice(config_path):
+    # Before 0.3 there was no osc.protocol; such a file was sending the
+    # legacy format, so it gets the same notice as an explicit legacy
     _write(config_path, {'osc': {'port': 9000}})
     cfg = Config(config_path)
     assert cfg.get('osc', 'protocol') == 'float'
-    assert cfg.get('ui', 'protocol_notice_pending') is False
+    assert cfg.get('ui', 'protocol_notice_pending') is True
 
 
 def test_sanitize_normalizes_known_protocol(config_path):

@@ -288,7 +288,8 @@ class Config:
         if osc.get('protocol_migrated'):
             return file_config
 
-        protocol = osc.get('protocol')
+        # No key at all is a pre-0.3 file, which was sending legacy too
+        protocol = osc.get('protocol', 'legacy')
         if isinstance(protocol, str) and protocol.strip().lower() == 'legacy':
             osc['protocol'] = DEFAULT_OSC_PROTOCOL
             ui = file_config.get('ui')
