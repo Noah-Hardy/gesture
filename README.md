@@ -6,7 +6,7 @@ Gesture tracks body pose and hand landmarks from a camera or [NDI](https://ndi.v
 
 - Real-time pose and hand tracking with the MediaPipe Tasks API, with automatic fallback to the Solutions API.
 - Camera or NDI input.
-- Three OSC output formats: `legacy` (JSON strings, the default), `json` (compact bundled JSON) and `float` (one numeric message per landmark, for receivers such as Isadora). Bounds, status, debounced tracking and a 1 Hz heartbeat are sent in every format.
+- Three OSC output formats: `float` (one numeric message per landmark, for receivers such as Isadora; the default since 0.4.0), `json` (compact bundled JSON) and `legacy` (the 0.2.x JSON strings; deprecated). Bounds, status, debounced tracking and a 1 Hz heartbeat are sent in every format.
 - A preview window with landmark overlay.
 - A native macOS launcher with a Settings window and built-in updater.
 - A command-line interface that runs the same engine as the launcher.
@@ -46,9 +46,9 @@ Pose, left-hand and right-hand landmarks are sent on separate addresses, in the 
 
 | Format | Pose encoding |
 |---|---|
-| `legacy` (default) | `/pose/raw` with one JSON string argument |
+| `float` (default) | `/pose/lm/0` to `/pose/lm/32`, each with float arguments `x y z visibility`, in OSC bundles |
 | `json` | `/pose/raw` with compact JSON (a `person` index; no per-landmark `type` or `id`), in OSC bundles |
-| `float` | `/pose/lm/0` to `/pose/lm/32`, each with float arguments `x y z visibility`, in OSC bundles |
+| `legacy` (deprecated) | `/pose/raw` with one JSON string argument |
 
 All formats also send:
 

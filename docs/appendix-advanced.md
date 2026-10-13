@@ -18,7 +18,7 @@ The positional `mode` argument is required.
 |---|---|
 | `--host HOST` | OSC destination host |
 | `--port PORT` | OSC destination port |
-| `--osc-protocol {legacy,json,float}` | OSC output format (default `legacy`); see **OSC Output** |
+| `--osc-protocol {legacy,json,float}` | OSC output format (default `float`); see **OSC Output** |
 | `--camera N` | Camera device ID |
 | `--ndi` | Use NDI input |
 | `--ndi-source NAME` | NDI source name (case-insensitive; a partial name must match exactly one source) |
@@ -44,7 +44,7 @@ Most keys are editable in the **Settings** window. OSC host and port, tracking m
 
 | Section | Keys |
 |---|---|
-| `osc` | `host`, `port`, `queue_size` (packets queued before the oldest is dropped; minimum 32), `protocol` (`legacy`, `json` or `float`; unknown values fall back to `legacy`), `tracking_hold` (optional; tracking hold time in seconds, default 0.3) |
+| `osc` | `host`, `port`, `queue_size` (packets queued before the oldest is dropped; minimum 32), `protocol` (`float`, `json` or `legacy`; unknown values fall back to `float`), `protocol_migrated` (set by the one-time 0.4.0 migration; do not edit), `tracking_hold` (optional; tracking hold time in seconds, default 0.3) |
 | `camera` | `device_id`, `width` / `height` (capture resolution), `processing_width` / `processing_height` (see **Camera & NDI**), `use_ndi`, `ndi_source`, `ndi_bandwidth` (`lowest` or `highest`, default `lowest`), `reconnect_timeout` (seconds, default 30, `0` for no limit) |
 | `mediapipe` | `pose_model_type`, `num_poses` (Tasks API; values above 1 disable the Holistic model in `all` mode), confidence thresholds, `model_complexity` / `enable_segmentation` / `smooth_landmarks` (legacy API only) |
 | `hand` | `num_hands`, confidence thresholds, preview colours, `model_complexity` (legacy API only) |

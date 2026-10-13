@@ -30,7 +30,7 @@ To stop tracking, click **Stop**, or press `q` in the preview window. To run wit
 
 ## Confirming output
 
-With the default `legacy` format, a receiver logging incoming OSC shows `/mp/status` continuously while the engine runs, and `/pose/raw`, `/left_hand/raw` and `/right_hand/raw` while a person is in frame. See **OSC Output** and the **OSC Address Reference** for details.
+With the default `float` format, a receiver logging incoming OSC shows `/gesture/heartbeat` and `/gesture/pose/status` continuously while the engine runs, and `/pose/lm/<n>` while a person is in frame. See **OSC Output** and the **OSC Address Reference** for details.
 
 If nothing arrives, check that the host and port match the receiver and that no firewall blocks UDP on that port.
 

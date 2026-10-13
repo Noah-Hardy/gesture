@@ -69,10 +69,10 @@ def test_osc_protocol_overrides_config(tmp_path, protocol):
 
 def test_osc_protocol_absent_leaves_config_alone(tmp_path):
     config = Config(str(tmp_path / 'config.json'))
-    assert config.get('osc', 'protocol') == 'legacy'
-    config.set('osc', 'protocol', 'float')
-    apply_config_overrides(parse_args(['pose']), config)
     assert config.get('osc', 'protocol') == 'float'
+    config.set('osc', 'protocol', 'json')
+    apply_config_overrides(parse_args(['pose']), config)
+    assert config.get('osc', 'protocol') == 'json'
 
 
 def test_osc_protocol_rejects_unknown_values():

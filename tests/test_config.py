@@ -21,10 +21,71 @@ def test_missing_file_falls_back_to_defaults(config_path):
     assert cfg.get('camera', 'buffer_size') == 1
 
 
-def test_protocol_defaults_to_legacy(config_path):
-    # Legacy (the frozen 0.2.x wire format) stays the default until 0.4.0
+def test_protocol_defaults_to_float(config_path):
+    # float is the default since 0.4.0 (legacy is the deprecated 0.2.x format)
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'protocol') == 'float'
+
+
+# 0.3 -> 0.4 default change (#83): 0.3.x wrote "legacy" into nearly every config
+def _write(path, data):
+    with open(path, 'w') as f:
+        json.dump(data, f)
+
+
+def test_fresh_config_is_float_with_no_notice(config_path):
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'protocol') == 'float'
+    assert cfg.get('osc', 'protocol_migrated') == '0.4.0'
+    assert cfg.get('ui', 'protocol_notice_pending') is False
+
+
+def test_0_3_legacy_config_is_migrated_once_with_notice(config_path, capsys):
+    _write(config_path, {'osc': {'protocol': 'legacy', 'port': 9000}})
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'protocol') == 'float'
+    assert cfg.get('osc', 'port') == 9000
+    assert cfg.get('osc', 'protocol_migrated') == '0.4.0'
+    assert cfg.get('ui', 'protocol_notice_pending') is True
+    assert 'Legacy (0.2.x)' in capsys.readouterr().out
+
+
+def test_migration_does_not_repeat_after_save(config_path):
+    _write(config_path, {'osc': {'protocol': 'legacy'}})
+    cfg = Config(config_path)
+    cfg.save()
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'protocol') == 'float'
+    # The user now deliberately goes back to legacy: it must stick
+    cfg.set('osc', 'protocol', 'legacy')
+    cfg.set('ui', 'protocol_notice_pending', False)
+    cfg.save()
     cfg = Config(config_path)
     assert cfg.get('osc', 'protocol') == 'legacy'
+    assert cfg.get('ui', 'protocol_notice_pending') is False
+
+
+def test_explicit_legacy_after_migration_is_kept(config_path):
+    _write(config_path, {'osc': {'protocol': 'legacy', 'protocol_migrated': '0.4.0'}})
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'protocol') == 'legacy'
+    assert cfg.get('ui', 'protocol_notice_pending') is False
+
+
+@pytest.mark.parametrize('protocol', ['json', 'float'])
+def test_migration_leaves_json_and_float_alone(config_path, protocol):
+    _write(config_path, {'osc': {'protocol': protocol}})
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'protocol') == protocol
+    assert cfg.get('osc', 'protocol_migrated') == '0.4.0'
+    assert cfg.get('ui', 'protocol_notice_pending') is False
+
+
+def test_config_without_protocol_key_gets_default_and_stamp(config_path):
+    _write(config_path, {'osc': {'port': 9000}})
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'protocol') == 'float'
+    assert cfg.get('ui', 'protocol_notice_pending') is False
 
 
 def test_sanitize_normalizes_known_protocol(config_path):
@@ -35,11 +96,11 @@ def test_sanitize_normalizes_known_protocol(config_path):
 
 
 @pytest.mark.parametrize('bad', ['udp-carrier-pigeon', 42, None, ''])
-def test_sanitize_clamps_unknown_protocol_to_legacy(config_path, bad):
+def test_sanitize_clamps_unknown_protocol_to_default(config_path, bad):
     with open(config_path, 'w') as f:
         json.dump({'osc': {'protocol': bad}}, f)
     cfg = Config(config_path)
-    assert cfg.get('osc', 'protocol') == 'legacy'
+    assert cfg.get('osc', 'protocol') == 'float'
 
 
 def test_include_prereleases_defaults_to_false(config_path):

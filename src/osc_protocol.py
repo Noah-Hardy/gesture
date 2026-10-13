@@ -8,7 +8,7 @@ packets (single datagrams or MTU-sized bundles) and hands them to the
 ThreadedOSCSender.
 
 Protocols (config key osc.protocol):
-    legacy - the frozen 0.2.x wire format (default until 0.4.0): JSON
+    legacy - the frozen 0.2.x wire format (deprecated; removed in 1.0): JSON
              strings with per-landmark type/id, one datagram per message,
              /mp/* status. Must stay byte-identical to
              tests/fixtures/osc_golden.json.
@@ -155,7 +155,7 @@ def register_formatter(cls):
 
 
 def make_formatter(protocol):
-    """Formatter instance for an osc.protocol value; unknown/unimplemented values fall back to legacy"""
+    """Formatter instance for an osc.protocol value; unknown/unimplemented values fall back to DEFAULT_OSC_PROTOCOL"""
     cls = FORMATTERS.get(protocol)
     if cls is None:
         print(f"⚠️  OSC protocol '{protocol}' not available - using '{DEFAULT_OSC_PROTOCOL}'")

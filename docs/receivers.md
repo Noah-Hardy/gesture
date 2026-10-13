@@ -5,7 +5,7 @@ Configure the receiver to listen for OSC over UDP on the port set in Gesture's *
 The approach depends on the output format (**Settings → Advanced → OSC → Output format**; see **OSC Output**):
 
 - **`float`**: each landmark has its own address with float arguments. Suitable for receivers that bind addresses to numeric values. Recommended for Isadora and lossy networks.
-- **`legacy`** (default) and **`json`**: one JSON string per channel, parsed in the receiver.
+- **`legacy`** (deprecated) and **`json`**: one JSON string per channel, parsed in the receiver.
 
 `json` and `float` are sent as OSC bundles. All receivers below unpack bundles automatically.
 
