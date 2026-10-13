@@ -16,6 +16,7 @@ from pythonosc.osc_bundle import OscBundle
 from pythonosc.osc_message import OscMessage
 from pythonosc.osc_packet import OscPacket
 
+from src.config import DEFAULT_OSC_PROTOCOL
 from src.osc_protocol import (
     FORMATTERS,
     MAX_BUNDLE_BYTES,
@@ -293,6 +294,34 @@ def test_bundled_frame_stays_within_budget():
     ]
 
 
+# The one json address that cannot fit a packet (#85): a full 33-landmark pose
+# with visibility is ~1.76 KB. The wire shape is frozen (the 0.3 migration guide
+# promised json stays compatible), so the answer is documentation: float is the
+# choice for lossy networks. Every other address must stay within the budget.
+JSON_OVERSIZE_ADDRESSES = {'/pose/raw'}
+
+
+def test_json_all_mode_frame_only_pose_raw_exceeds_one_packet():
+    sender = CaptureSender()
+    emitter = OscEmitter(sender, 'json')
+    transform = LetterboxTransform(0.5, 0, 60, 640, 480, 1280, 720)
+    emitter.begin_frame(1.0)
+    emitter.pose(0, fake_landmarks(33, 0), fake_landmarks(33, 1, world=True), transform, 'pose_0')
+    emitter.pose_status(1)
+    emitter.hand('Left', fake_landmarks(21, 2), fake_landmarks(21, 3, world=True), transform, 'hand_left')
+    emitter.hand('Right', fake_landmarks(21, 4), fake_landmarks(21, 5, world=True), transform, 'hand_right')
+    emitter.hand_status(2)
+    emitter.end_frame()
+    emitter.heartbeat(30.0)
+
+    oversize = set()
+    for d in sender.dgrams:
+        assert OscBundle.dgram_is_bundle(d)
+        if len(d) > MAX_BUNDLE_BYTES:
+            oversize.update(m.address for m in _messages(d))
+    assert oversize == JSON_OVERSIZE_ADDRESSES
+
+
 def test_hand_frame_bundles_fit_the_mtu():
     # Hand JSON v2 messages are each under the budget, so every bundle fits
     sender = CaptureSender()
@@ -489,7 +518,7 @@ def test_registry_has_legacy_and_json():
     assert not LegacyFormatter.bundled and JsonFormatter.bundled
 
 
-def test_unknown_protocol_falls_back_to_legacy(capsys):
-    assert isinstance(make_formatter('no-such-protocol'), LegacyFormatter)
+def test_unknown_protocol_falls_back_to_the_default(capsys):
+    assert isinstance(make_formatter('no-such-protocol'), FORMATTERS[DEFAULT_OSC_PROTOCOL])
     assert 'not available' in capsys.readouterr().out
-    assert OscEmitter(CaptureSender(), 'no-such-protocol').protocol == 'legacy'
+    assert OscEmitter(CaptureSender(), 'no-such-protocol').protocol == DEFAULT_OSC_PROTOCOL

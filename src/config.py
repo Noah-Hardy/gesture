@@ -68,11 +68,15 @@ def default_config_path() -> str:
 # OSC PROTOCOLS
 # ============================================================================
 # Valid osc.protocol values (see src/osc_protocol.py). legacy is the frozen
-# 0.2.x wire format and stays the default until 0.4.0; json and float are
-# opt-in. Lives here, not in osc_protocol, so the settings UI and argument
-# parsing can list them without importing python-osc/cv2.
+# 0.2.x wire format (the default through 0.3.x, deprecated since 0.4.0 and
+# removed in 1.0); json and float are the current formats. Lives here, not in
+# osc_protocol, so the settings UI and argument parsing can list them without
+# importing python-osc/cv2. Changing the default is this one line (existing
+# configs are handled separately, see Config._migrate_0_4).
 OSC_PROTOCOLS = ("legacy", "json", "float")
-DEFAULT_OSC_PROTOCOL = "legacy"
+DEFAULT_OSC_PROTOCOL = "float"
+# Release that moved the default off legacy; stored in osc.protocol_migrated
+PROTOCOL_MIGRATION_VERSION = "0.4.0"
 
 
 # ============================================================================
@@ -128,7 +132,8 @@ class Config:
             "host": "127.0.0.1",
             "port": 1234,
             "queue_size": MIN_OSC_QUEUE_SIZE,
-            "protocol": DEFAULT_OSC_PROTOCOL  # legacy (0.2.x format), json or float
+            "protocol": DEFAULT_OSC_PROTOCOL,  # float (default), json or legacy (0.2.x format, removed in 1.0)
+            "protocol_migrated": PROTOCOL_MIGRATION_VERSION  # Set once the 0.3 -> 0.4 default change was applied to this config (see _migrate_0_4)
         },
         "camera": {
             "device_id": 0,
@@ -207,6 +212,7 @@ class Config:
             "console_open": True,            # Console drawer open/closed (0.4.0 window)
             "console_height": 160,           # Console drawer height in px, 90-360
             "first_run_complete": False,     # First-run wizard finished or skipped
+            "protocol_notice_pending": False,  # A 0.3 config was moved off the Legacy (0.2.x) OSC format; the UI offers "Keep Legacy" once, then clears this
             "launch_animation": True         # Play the launch animation (skipped anyway under Reduce Motion)
         }
     }
@@ -239,6 +245,7 @@ class Config:
             try:
                 with open(self.config_file, 'r') as f:
                     file_config = json.load(f)
+                file_config = self._migrate_0_4(file_config)
                 config = self._deep_merge(config, file_config)
                 print(f"📋 Loaded configuration from {self.config_file}")
             except (json.JSONDecodeError, IOError) as e:
@@ -253,6 +260,45 @@ class Config:
         config = self._apply_env_overrides(config)
 
         return config
+
+    def _migrate_0_4(self, file_config: Any) -> Any:
+        """
+        One-time 0.3 -> 0.4 migration of a config loaded from disk
+
+        0.3.x saved osc.protocol "legacy" into nearly every config.json (the
+        default was merged in on every save), so changing the default only
+        reaches fresh installs. A file without osc.protocol_migrated that
+        says legacy is therefore switched to the new default once, and
+        ui.protocol_notice_pending is set so the UI can offer "Keep Legacy
+        (0.2.x) format". Every loaded file is stamped, so a user who then
+        picks legacy deliberately stays on it. Runs on the file's contents,
+        before they are merged over the defaults (which carry the stamp).
+
+        Args:
+            file_config: Parsed config.json contents
+
+        Returns:
+            The same dict, migrated (anything that is not a dict is returned as is)
+        """
+        if not isinstance(file_config, dict):
+            return file_config
+        osc = file_config.get('osc')
+        if not isinstance(osc, dict):
+            osc = file_config['osc'] = {}
+        if osc.get('protocol_migrated'):
+            return file_config
+
+        protocol = osc.get('protocol')
+        if isinstance(protocol, str) and protocol.strip().lower() == 'legacy':
+            osc['protocol'] = DEFAULT_OSC_PROTOCOL
+            ui = file_config.get('ui')
+            if not isinstance(ui, dict):
+                ui = file_config['ui'] = {}
+            ui['protocol_notice_pending'] = True
+            print(f"🔀 OSC output format moved from Legacy (0.2.x) to {DEFAULT_OSC_PROTOCOL} "
+                  f"(new default in {PROTOCOL_MIGRATION_VERSION}); switch back in Settings or with --osc-protocol legacy")
+        osc['protocol_migrated'] = PROTOCOL_MIGRATION_VERSION
+        return file_config
 
     def _sanitize(self, config: Dict[str, Any]) -> Dict[str, Any]:
         """Repair values that older builds allowed to be saved out of range"""

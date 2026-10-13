@@ -25,8 +25,8 @@ from src.config import OSC_PROTOCOLS, Config, valid_unit_float
 
 FORCE_GPU_WARNING = "Force GPU has a known memory leak on Apple Silicon - use with caution."
 FORCE_LEGACY_WARNING = "Deprecated - will be removed in a future release."
-OSC_PROTOCOL_NOTE = ("legacy = 0.2.x JSON (default until 0.4.0); json = JSON v2; "
-                     "float = one float message per landmark (Isadora). See Help > OSC Reference.")
+OSC_PROTOCOL_NOTE = ("float = one float message per landmark (default, Isadora); json = JSON v2; "
+                     "legacy = 0.2.x JSON (deprecated). See Help > OSC Reference.")
 
 
 # ============================================================================

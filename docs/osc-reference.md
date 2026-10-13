@@ -4,7 +4,7 @@ Every address sent in each output format, with its payload. See **OSC Output** f
 
 ## Address map
 
-| Purpose | legacy (default) | json | float |
+| Purpose | legacy (deprecated) | json | float (default) |
 |---|---|---|---|
 | Pose landmarks | `/pose/raw` JSON, `type` and `id` per landmark | `/pose/raw` JSON with `person`; no `type` or `id` | `/pose/lm/<n>` `ffff` (x y z visibility); additional people: `/pose/<p>/lm/<n>` |
 | Pose world landmarks | `/pose/world` JSON | `/pose/world` JSON, no visibility | `/pose/world/lm/<n>` `fff` |
@@ -89,6 +89,8 @@ In all formats, any hand whose handedness is not `"Left"`, including `Unknown`, 
 ## json format
 
 The `legacy` addresses with reduced payloads, sent in OSC bundles.
+
+`/pose/raw` in this format is about 1.76 KB for a full 33-landmark pose, which exceeds one packet (1400-byte bundle budget) and is IP-fragmented. It is the only `json` address that does. On lossy networks, where losing one fragment drops the whole message, use `float`.
 
 ```
 /pose/raw   {"timestamp":1727200000.123,"person":0,"landmarks":[{"x":0.512,"y":0.231,"z":-0.413,"visibility":0.998}, ...]}
