@@ -183,7 +183,9 @@ class Config:
             "landmark_thickness": 1,
             "landmark_radius": 2,
             "connection_thickness": 1,
-            "connection_radius": 1
+            "connection_radius": 1,
+            "draw_landmarks": True,          # Draw landmarks over the in-app preview (display only)
+            "render_in_background": False    # Keep rendering preview frames while the window is hidden (tracking continues either way)
         },
         "updates": {
             "check_on_launch": True,      # Silently check GitHub for a newer release on launch
@@ -201,7 +203,11 @@ class Config:
             "input_section_open": True,
             "osc_section_open": True,
             "model_section_open": False,
-            "log_section_open": True
+            "log_section_open": True,
+            "console_open": True,            # Console drawer open/closed (0.4.0 window)
+            "console_height": 160,           # Console drawer height in px, 90-360
+            "first_run_complete": False,     # First-run wizard finished or skipped
+            "launch_animation": True         # Play the launch animation (skipped anyway under Reduce Motion)
         }
     }
     
