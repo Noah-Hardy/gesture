@@ -31,17 +31,10 @@ _EXPORTS = {
     'download_hand_model': 'model_downloader',
     'download_holistic_model': 'model_downloader',
 
-    # Pose Processors
-    'PoseProcessor': 'pose_processor',
+    # Landmarker Processors
+    'LandmarkerProcessor': 'landmarker_processor',
     'TasksPoseProcessor': 'pose_processor',
-    'LegacyPoseProcessor': 'pose_processor',
-    'GPUPoseProcessor': 'pose_processor',
-    'CPUPoseProcessor': 'pose_processor',
-
-    # Hand Processors
-    'HandProcessor': 'hand_processor',
     'TasksHandProcessor': 'hand_processor',
-    'LegacyHandProcessor': 'hand_processor',
 
     # Holistic Processor
     'TasksHolisticProcessor': 'holistic_processor',

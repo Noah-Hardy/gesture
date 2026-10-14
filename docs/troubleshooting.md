@@ -22,8 +22,8 @@ The engine's output appears in the launcher's log pane. Messages are listed belo
 |---|---|
 | `Downloading pose model...` / `hand model...` / `holistic model...` | A model file is being downloaded. This requires an internet connection once; models are cached afterwards. The packaged app includes all models, so this appears only when running from source. |
 | `Failed to download model` | The model download failed. Check the internet connection and retry. |
-| `Model file not available` / `Hand model file not available` / `Holistic model file not available` | A required model file is missing and could not be downloaded. Tracking cannot start. |
-| `Cannot initialize pose processing backend` / `hand processing backend` / `any processing backend` | Both the Tasks and legacy MediaPipe APIs failed to initialize. The preceding log lines give the cause. |
+| `Pose model file not available` / `Hand model file not available` / `Holistic model file not available` | A required model file is missing and could not be downloaded. Tracking cannot start. |
+| `Cannot initialize pose processing backend` / `hand processing backend` / `any processing backend` | The MediaPipe Tasks landmarker failed to initialize. The preceding log lines give the cause. |
 
 ## Delegate selection
 
@@ -39,7 +39,7 @@ These errors are recoverable; tracking continues.
 
 | Message | Meaning |
 |---|---|
-| `Tasks frame processing error` / `Legacy frame processing error` / `Hand frame processing error` / `Holistic frame processing error` | One frame failed to process and was skipped. Occasional occurrences are harmless. If it repeats on every frame, restart the engine. |
+| `Pose frame processing error` / `Hand frame processing error` / `Holistic frame processing error` / `Frame processing error` | One frame failed to process and was skipped. Occasional occurrences are harmless. If it repeats on every frame, restart the engine. |
 | `OSC send error` | A send failed, for example because the destination is unreachable. The packet is counted as dropped. Check the OSC host and port. |
 
 ## Configuration

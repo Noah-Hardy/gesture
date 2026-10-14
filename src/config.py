@@ -149,18 +149,14 @@ class Config:
             "reconnect_timeout": 30  # Seconds a lost camera/NDI source may take to come back before the engine gives up (0 = never)
         },
         "mediapipe": {
-            "model_complexity": 0,
             "min_detection_confidence": 0.7,
             "min_tracking_confidence": 0.5,
             "min_pose_presence_confidence": 0.5,
-            "smooth_landmarks": True,
-            "enable_segmentation": False,
             "num_poses": 1,  # Note: Only supported in GPU mode (MediaPipe Tasks), CPU mode limited to 1
             "pose_model_type": "lite"  # lite, full, or heavy
         },
         "hand": {
             "num_hands": 2,
-            "model_complexity": 1,
             "min_detection_confidence": 0.5,
             "min_presence_confidence": 0.5,
             "min_tracking_confidence": 0.5,
@@ -176,7 +172,6 @@ class Config:
             "max_pending_frames": 1,  # Frames MediaPipe may have in flight before new ones are skipped (1 = lowest latency)
             "force_cpu": False,  # Force the CPU delegate (launch-time, GUI/Settings only)
             "force_gpu": False,  # Force the GPU delegate - has a memory leak on Apple Silicon (launch-time)
-            "force_legacy": False,  # Use MediaPipe's legacy synchronous API (launch-time, GUI/Settings only)
             "no_holistic": False  # In "all" mode, use separate pose+hand models instead of holistic (launch-time)
         },
         "display": {
@@ -301,8 +296,22 @@ class Config:
         osc['protocol_migrated'] = PROTOCOL_MIGRATION_VERSION
         return file_config
 
+    #: Keys that only configured the removed MediaPipe Solutions path (#35);
+    #: dropped from loaded configs so they are not carried forward on save
+    _REMOVED_KEYS = (
+        ('mediapipe', 'model_complexity'),
+        ('mediapipe', 'enable_segmentation'),
+        ('mediapipe', 'smooth_landmarks'),
+        ('hand', 'model_complexity'),
+        ('performance', 'force_legacy'),
+    )
+
     def _sanitize(self, config: Dict[str, Any]) -> Dict[str, Any]:
         """Repair values that older builds allowed to be saved out of range"""
+        for section, key in self._REMOVED_KEYS:
+            if isinstance(config.get(section), dict):
+                config[section].pop(key, None)
+
         # cv2.CAP_PROP_BUFFERSIZE needs at least 1 frame of buffering
         try:
             buffer_size = int(config['camera'].get('buffer_size', 1))

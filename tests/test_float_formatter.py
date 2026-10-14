@@ -202,7 +202,7 @@ def test_full_frame_bundles_fit_the_mtu_and_keep_order():
 
 
 def test_real_processors_run_in_float_mode(capsys):
-    """Every golden scenario (pose, hand, holistic, legacy mp.solutions) runs
+    """Every golden scenario (pose, hand, holistic) runs
     through the real processors in float mode without errors or JSON"""
     captured = golden.capture(lambda sender: OscEmitter(sender, 'float'))
     assert 'error' not in capsys.readouterr().out.lower()

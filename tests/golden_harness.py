@@ -5,7 +5,9 @@ byte for byte.
 
 The fixture file (tests/fixtures/osc_golden.json) was captured from the
 0.2.1 send code (processors calling ThreadedOSCSender.send_message directly)
-before the 0.3.0 protocol refactor. The legacy protocol must keep
+before the 0.3.0 protocol refactor. The Solutions-API scenarios captured there
+were dropped with the legacy MediaPipe path (#35); the Tasks and holistic ones
+are byte-identical to the original capture. The legacy protocol must keep
 reproducing it exactly - test_osc_protocol.py replays these scenarios and
 compares bytes.
 
@@ -81,25 +83,6 @@ def holistic_result(pose=True, left=True, right=True, pose_world=True):
     )
 
 
-def legacy_pose_result(detected):
-    if not detected:
-        return SimpleNamespace(pose_landmarks=None, pose_world_landmarks=None)
-    return SimpleNamespace(
-        pose_landmarks=SimpleNamespace(landmark=fake_landmarks(33, 30)),
-        pose_world_landmarks=SimpleNamespace(landmark=fake_landmarks(33, 80, world=True)),
-    )
-
-
-def legacy_hand_result(hands):
-    if not hands:
-        return SimpleNamespace(multi_hand_landmarks=None, multi_handedness=None, multi_hand_world_landmarks=None)
-    return SimpleNamespace(
-        multi_hand_landmarks=[SimpleNamespace(landmark=fake_landmarks(21, 40 + i)) for i in range(len(hands))],
-        multi_handedness=[SimpleNamespace(classification=[SimpleNamespace(label=h)]) for h in hands],
-        multi_hand_world_landmarks=[SimpleNamespace(landmark=fake_landmarks(21, 90 + i, world=True)) for i in range(len(hands))],
-    )
-
-
 # ============================================================================
 # CAPTURE
 # ============================================================================
@@ -124,7 +107,7 @@ def legacy_emitter(sender):
 
 def _no_draw(proc):
     """Landmark drawing is irrelevant to the wire (and needs real protos)"""
-    for name in ('_draw_landmarks', '_draw_landmarks_legacy', '_draw_hand_landmarks'):
+    for name in ('_draw_landmarks', '_draw_hand_landmarks'):
         setattr(proc, name, lambda *args, **kwargs: None)
     return proc
 
@@ -159,22 +142,10 @@ def _run_tasks(processor_cls, steps, letterbox, output_factory=legacy_emitter):
     return frames
 
 
-def _run_legacy(processor_cls, results, letterbox, output_factory=legacy_emitter):
-    sender = CaptureSender()
-    proc = _no_draw(processor_cls(output_factory(sender), config=None))
-    frames = []
-    for r in results:
-        ctx = SimpleNamespace(process=lambda image, r=r: r)
-        start = len(sender.dgrams)
-        proc.process_frame(_frame(letterbox), ctx, 'Test')
-        frames.append(sender.dgrams[start:])
-    return frames
-
-
 def scenarios():
     """name -> callable(output_factory) returning a list of per-frame datagram lists"""
-    from src.pose_processor import TasksPoseProcessor, LegacyPoseProcessor
-    from src.hand_processor import TasksHandProcessor, LegacyHandProcessor
+    from src.pose_processor import TasksPoseProcessor
+    from src.hand_processor import TasksHandProcessor
     from src.holistic_processor import TasksHolisticProcessor
 
     return {
@@ -204,16 +175,6 @@ def scenarios():
             ('result', tasks_hand_result([None])),
             ('result', tasks_hand_result([])),
         ], letterbox=True, output_factory=f),
-        'legacy_pose': lambda f: _run_legacy(LegacyPoseProcessor, [
-            legacy_pose_result(True),
-            legacy_pose_result(False),
-            legacy_pose_result(False),
-        ], letterbox=True, output_factory=f),
-        'legacy_hand': lambda f: _run_legacy(LegacyHandProcessor, [
-            legacy_hand_result(['Left', 'Right']),
-            legacy_hand_result([]),
-            legacy_hand_result([]),
-        ], letterbox=False, output_factory=f),
         'holistic': lambda f: _run_tasks(TasksHolisticProcessor, [
             ('result', holistic_result()),
             ('result', holistic_result(right=False)),

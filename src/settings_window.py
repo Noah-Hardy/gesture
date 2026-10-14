@@ -24,7 +24,6 @@ from src import theme
 from src.config import OSC_PROTOCOLS, Config, valid_unit_float
 
 FORCE_GPU_WARNING = "Force GPU has a known memory leak on Apple Silicon - use with caution."
-FORCE_LEGACY_WARNING = "Deprecated - will be removed in a future release."
 OSC_PROTOCOL_NOTE = ("float = one float message per landmark (default, Isadora); json = JSON v2; "
                      "legacy = 0.2.x JSON (deprecated). See Help > OSC Reference.")
 
@@ -43,7 +42,6 @@ class SettingsWindow:
     def __init__(self, parent: tk.Misc, config: Config, *,
                 var_force_cpu: tk.BooleanVar,
                 var_force_gpu: tk.BooleanVar,
-                var_force_legacy: tk.BooleanVar,
                 var_no_holistic: tk.BooleanVar,
                 var_show_fps: tk.BooleanVar,
                 on_open_config: Callable[[], None],
@@ -63,7 +61,6 @@ class SettingsWindow:
         # same variables rather than owning private copies that could drift.
         self.var_force_cpu = var_force_cpu
         self.var_force_gpu = var_force_gpu
-        self.var_force_legacy = var_force_legacy
         self.var_no_holistic = var_no_holistic
         self.var_show_fps = var_show_fps
 
@@ -280,15 +277,13 @@ class SettingsWindow:
         row = self._row_combo(frame, row, "Model:", 'mediapipe', 'pose_model_type',
                               ('lite', 'full', 'heavy'))
         row = self._row_int(frame, row, "Number of poses:", 'mediapipe', 'num_poses', width=6,
-                            note="Tasks API only; >1 disables the combined holistic model.")
+                            note=">1 disables the combined holistic model.")
         row = self._row_float(frame, row, "Min detection confidence:",
                               'mediapipe', 'min_detection_confidence')
         row = self._row_float(frame, row, "Min tracking confidence:",
                               'mediapipe', 'min_tracking_confidence')
         row = self._row_float(frame, row, "Min pose presence confidence:",
                               'mediapipe', 'min_pose_presence_confidence')
-        row = self._row_check(frame, row, "Smooth landmarks", 'mediapipe', 'smooth_landmarks',
-                              note="Legacy API only; has no effect unless Force Legacy is enabled.")
 
         row += 1
         ttk.Separator(frame, orient='horizontal').grid(
@@ -393,13 +388,6 @@ class SettingsWindow:
         ttk.Label(frame, text=FORCE_GPU_WARNING, style='Dim.TLabel').grid(
             row=row, column=0, columnspan=2, sticky='w', padx=(20, 0))
         row += 1
-        ttk.Checkbutton(frame, text="Force legacy MediaPipe API",
-                        variable=self.var_force_legacy).grid(row=row, column=0, columnspan=2,
-                                                             sticky='w', pady=2)
-        row += 1
-        ttk.Label(frame, text=FORCE_LEGACY_WARNING, style='Dim.TLabel').grid(
-            row=row, column=0, columnspan=2, sticky='w', padx=(20, 0))
-        row += 1
         ttk.Checkbutton(frame, text='No holistic (separate pose + hand models in "all" mode)',
                         variable=self.var_no_holistic).grid(row=row, column=0, columnspan=2,
                                                             sticky='w', pady=2)
@@ -473,7 +461,6 @@ class SettingsWindow:
 
         self.config.set('performance', 'force_cpu', bool(self.var_force_cpu.get()))
         self.config.set('performance', 'force_gpu', bool(self.var_force_gpu.get()))
-        self.config.set('performance', 'force_legacy', bool(self.var_force_legacy.get()))
         self.config.set('performance', 'no_holistic', bool(self.var_no_holistic.get()))
         self.config.set('performance', 'show_fps', bool(self.var_show_fps.get()))
 

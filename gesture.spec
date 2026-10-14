@@ -113,6 +113,7 @@ a = Analysis(
         'src.osc_protocol',
         'src.pose_utils',
         'src.model_downloader',
+        'src.landmarker_processor',
         'src.pose_processor',
         'src.hand_processor',
         'src.holistic_processor',
