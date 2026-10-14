@@ -2,7 +2,7 @@
 
 ## Output formats
 
-Select the format in the **OSC Output** pane (**Output format**, `osc.protocol`), or with `--osc-protocol legacy|json|float`. The format is a restart setting: apply it and the engine restarts, or it takes effect at the next **Start**.
+Select the format in the **OSC Output** pane (**Output format**: `Legacy (0.2.x)`, `JSON` or `Float`; `osc.protocol`), or with `--osc-protocol legacy|json|float`. The format is a restart setting: apply it and the engine restarts, or it takes effect at the next **Start**.
 
 | Format | Landmark encoding | Transport | Intended use |
 |---|---|---|---|
@@ -34,7 +34,7 @@ In `float`, each landmark message is 36–56 bytes and no bundle exceeds 1400 by
 
 ## Host, port and tracking mode
 
-The **OSC Output** pane sets the destination **Host** and **Port** and the **Send queue size**; these apply live, without restarting the engine. The **Live** pane's OSC column shows what is being sent.
+The **OSC Output** pane sets the destination **Host** and **Port** and the **Send queue size**; these apply live, without restarting the engine. Its **Address map** and **Payload sample** show what will be sent for the pending format and tracking mode, and the **Live** pane's OSC column shows what is being sent.
 
 **Tracking mode** (a restart setting) determines which channels are sent:
 
@@ -51,7 +51,7 @@ By default, `all` uses MediaPipe's combined Holistic landmarker, which is faster
 ## Status, tracking and heartbeat
 
 - **Status** (`/gesture/pose/status`, `/gesture/hand/status`; `legacy`: `/mp/status`, `/hand/status` as `{"status": N}`) is the number of poses or hands in the current frame's result. Detection runs asynchronously and does not produce a result on every frame, so status is `0` on intermediate frames even while tracking is continuous.
-- **Tracking** (`/gesture/pose/tracking`, `/gesture/hand/tracking`; `legacy`: `/mp/tracking`, `/hand/tracking`) is the highest status value over the last 0.3 seconds. It rises immediately on detection and falls only after detection stops. Use tracking, not status, for presence detection. The hold time is set by the optional `osc.tracking_hold` key, in seconds.
+- **Tracking** (`/gesture/pose/tracking`, `/gesture/hand/tracking`; `legacy`: `/mp/tracking`, `/hand/tracking`) is the highest status value over the last 0.3 seconds. It rises immediately on detection and falls only after detection stops. Use tracking, not status, for presence detection. The hold time is **Tracking hold** in the **Advanced** pane (`osc.tracking_hold`, in seconds, 0 to 5).
 - **Heartbeat** (`/gesture/heartbeat`; `legacy`: `/mp/heartbeat`) is sent once per second with four arguments: processing rate in FPS (float), send queue depth, total dropped packets and total sent packets (integers). It is sent regardless of whether anyone is in frame or the source is reconnecting. A missing heartbeat indicates that the engine has stopped.
 
 ## Clear messages

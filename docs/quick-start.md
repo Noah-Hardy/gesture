@@ -25,7 +25,7 @@ The first time Gesture opens, a short setup asks for camera access, then for the
 Without the setup:
 
 1. Open **OSC Output** and set **Host** to the IP address of the receiving machine. The default, `127.0.0.1`, is correct when the receiver runs on the same Mac. Set **Port** to the port the receiver listens on.
-2. Open **Input** and select **Camera** with device ID `0` (the built-in or first external camera). See **Camera & NDI** for other sources.
+2. Open **Input** and select **Camera** and `Camera 0` (the built-in or first external camera). See **Camera & NDI** for other sources.
 3. Leave **Tracking mode** set to `all` to track pose and both hands.
 4. Apply the changes (⌘S), then click **Start** (⌘↩).
 

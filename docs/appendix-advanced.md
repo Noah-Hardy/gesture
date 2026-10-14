@@ -39,11 +39,11 @@ Flags override `config.json`. `python main.py --help` lists the current flags.
 
 ## config.json
 
-Most keys are editable in the settings panes (**Input**, **OSC Output**, **Tracking**, **Preview**, **Advanced**). Some keys, such as `osc.tracking_hold`, are available only in the file.
+Most keys are editable in the settings panes (**Input**, **OSC Output**, **Tracking**, **Preview**, **Advanced**). Keys without a pane are available only in the file.
 
 | Section | Keys |
 |---|---|
-| `osc` | `host`, `port`, `queue_size` (packets queued before the oldest is dropped; minimum 32), `protocol` (`float`, `json` or `legacy`; unknown values fall back to `float`), `protocol_migrated` (set by the one-time 0.4.0 migration; do not edit), `tracking_hold` (optional; tracking hold time in seconds, default 0.3) |
+| `osc` | `host`, `port`, `queue_size` (packets queued before the oldest is dropped; minimum 32), `protocol` (`float`, `json` or `legacy`; unknown values fall back to `float`), `protocol_migrated` (set by the one-time 0.4.0 migration; do not edit), `tracking_hold` (seconds, default 0.3; **Advanced** pane) |
 | `camera` | `device_id`, `width` / `height` (capture resolution), `processing_width` / `processing_height` (see **Camera & NDI**), `use_ndi`, `ndi_source`, `ndi_bandwidth` (`lowest` or `highest`, default `lowest`), `reconnect_timeout` (seconds, default 30, `0` for no limit) |
 | `mediapipe` | `pose_model_type`, `num_poses` (values above 1 disable the Holistic model in `all` mode), confidence thresholds |
 | `hand` | `num_hands`, confidence thresholds, preview colours |
@@ -55,7 +55,60 @@ Most keys are editable in the settings panes (**Input**, **OSC Output**, **Track
 
 ## Settings reference
 
-<!-- TODO(#75): generate this table (key, pane, type, range, restart-class) from the declarative row spec in src/ui/panes/spec.py (#68) once it merges, so it cannot drift from the panes. Until then, the section table above is the reference. -->
+Every setting in the panes, with its `config.json` key (`section.key`). **Restart** settings are read when the engine starts; **live** settings apply to a running engine when applied; **app** settings are read by the app itself, not the engine. This table is generated from the panes by `scripts/gen_config_table.py`; do not edit it by hand.
+
+<!-- BEGIN GENERATED: config-table (scripts/gen_config_table.py) -->
+
+| Key | Pane | Type | Range or options | Default | Restart |
+|---|---|---|---|---|---|
+| `camera.use_ndi` | Input | choice | `false` (Camera), `true` (NDI) | `false` | restart |
+| `camera.device_id` | Input | choice | device index | `0` | restart |
+| `camera.ndi_source` | Input | choice | source name | `""` | restart |
+| `camera.ndi_bandwidth` | Input | choice | `lowest`, `highest` | `lowest` | restart |
+| `camera.width` | Input | integer | 160 to 3840 | `640` | restart |
+| `camera.height` | Input | integer | 120 to 2160 | `480` | restart |
+| `camera.fps` | Input | integer | 1 to 240 | `30` | restart |
+| `camera.processing_width` | Input | integer | 160 to 3840 | `640` | restart |
+| `camera.processing_height` | Input | integer | 120 to 2160 | `480` | restart |
+| `camera.buffer_size` | Input | integer | 1 to 16 | `1` | restart |
+| `camera.reconnect_timeout` | Input | integer | 0 to 3600 | `30` | restart |
+| `osc.host` | OSC Output | string | host name or IP address | `127.0.0.1` | live |
+| `osc.port` | OSC Output | integer | 1 to 65535 | `1234` | live |
+| `osc.queue_size` | OSC Output | integer | 32 to 1000 | `32` | live |
+| `osc.protocol` | OSC Output | choice | `legacy`, `json`, `float` | `float` | restart |
+| `ui.mode` | OSC Output | choice | `pose`, `hand`, `all` | `all` | restart |
+| `mediapipe.pose_model_type` | Tracking | choice | `lite`, `full`, `heavy` | `lite` | restart |
+| `mediapipe.num_poses` | Tracking | integer | 1 to 4 | `1` | restart |
+| `mediapipe.min_detection_confidence` | Tracking | number | 0 to 1 | `0.7` | live |
+| `mediapipe.min_tracking_confidence` | Tracking | number | 0 to 1 | `0.5` | live |
+| `mediapipe.min_pose_presence_confidence` | Tracking | number | 0 to 1 | `0.5` | live |
+| `hand.num_hands` | Tracking | integer | 0 to 2 | `2` | restart |
+| `hand.min_detection_confidence` | Tracking | number | 0 to 1 | `0.5` | live |
+| `hand.min_presence_confidence` | Tracking | number | 0 to 1 | `0.5` | live |
+| `hand.min_tracking_confidence` | Tracking | number | 0 to 1 | `0.5` | live |
+| `display.draw_landmarks` | Preview | boolean |  | `true` | live |
+| `display.mirror_preview` | Preview | boolean |  | `false` | live |
+| `display.render_in_background` | Preview | boolean |  | `false` | live |
+| `display.landmark_color` | Preview | colour (BGR list) |  | `[245, 117, 66]` | live |
+| `display.landmark_thickness` | Preview | integer | 1 to 10 | `1` | live |
+| `display.landmark_radius` | Preview | integer | 1 to 20 | `2` | live |
+| `display.connection_color` | Preview | colour (BGR list) |  | `[245, 66, 230]` | live |
+| `display.connection_thickness` | Preview | integer | 1 to 10 | `1` | live |
+| `display.connection_radius` | Preview | integer | 1 to 20 | `1` | live |
+| `performance.target_fps` | Advanced | integer | 0 to 240 | `0` | live |
+| `performance.show_fps` | Advanced | boolean |  | `false` | live |
+| `performance.gc_enabled` | Advanced | boolean |  | `true` | restart |
+| `performance.max_pending_frames` | Advanced | integer | 1 to 8 | `1` | restart |
+| `osc.tracking_hold` | Advanced | number | 0 to 5 | `0.3` | live |
+| `performance.force_cpu` | Advanced | boolean |  | `false` | restart |
+| `performance.force_gpu` | Advanced | boolean |  | `false` | restart |
+| `performance.no_holistic` | Advanced | boolean |  | `false` | restart |
+| `updates.check_on_launch` | Advanced | boolean |  | `true` | app |
+| `updates.include_prereleases` | Advanced | boolean |  | `false` | app |
+
+<!-- END GENERATED: config-table -->
+
+Keys that have no pane, such as `ui.*` window state and `updates` bookkeeping, are listed in the section table above.
 
 ## Environment variables
 
