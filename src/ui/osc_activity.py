@@ -6,10 +6,9 @@ Qt-free logic behind the Live pane's OSC activity column (#66): which address
 rows to show for a protocol and tracking mode, and per-second rates computed
 from the status channel's cumulative `per_address` counts.
 
-`predict_families()` is a private stand-in for the shared address map that #68
-(`src/osc_preview.py`) provides. It derives the rows by running the real
-`OscEmitter` on a synthetic frame, so it cannot drift from the wire format.
-Swap its body for `osc_preview.addresses()` once that module lands.
+`predict_families()` takes its rows from the shared address map in
+`src/osc_preview.py`, which runs the real `OscEmitter` on a synthetic frame, so
+it cannot drift from the wire format.
 """
 
 # ============================================================================
@@ -22,7 +21,7 @@ from collections import deque
 from types import SimpleNamespace
 from typing import Dict, Iterable, List, Optional
 
-from src.osc_protocol import DEFAULT_OSC_PROTOCOL, OscEmitter
+from src.osc_protocol import DEFAULT_OSC_PROTOCOL
 
 # ============================================================================
 # CONSTANTS
@@ -68,36 +67,19 @@ def predict_families(protocol: str, mode: str) -> List[str]:
     """
     The address rows a receiver sees for a protocol and tracking mode.
 
-    Runs the real emitter on a synthetic full frame (every tracked part
-    present, then the heartbeat), so status, tracking and heartbeat channels
-    appear alongside the data addresses.
+    Delegates to the shared address map (`src/osc_preview.py`), which runs the
+    real emitter on a synthetic frame, so status, tracking and heartbeat
+    channels appear alongside the data addresses.
 
     Args:
         protocol: osc.protocol value (legacy, json or float).
         mode: ui.mode value (pose, hand or all).
 
     Returns:
-        Family strings in first-sent order (per-landmark addresses collapsed).
+        Family strings in send order (per-landmark addresses collapsed to `.../lm/*`).
     """
-    emitter = OscEmitter(_Capture(), protocol or DEFAULT_OSC_PROTOCOL)
-    emitter.heartbeat(fps=30.0)
-    emitter.begin_frame(0.0)
-    if mode in ('pose', 'all'):
-        emitter.pose(0, _landmarks(POSE_LANDMARKS), _landmarks(POSE_LANDMARKS, True))
-        emitter.pose_status(1)
-    if mode in ('hand', 'all'):
-        emitter.hand('Left', _landmarks(HAND_LANDMARKS), _landmarks(HAND_LANDMARKS, True),
-                     legacy_type='hand_left')
-        emitter.hand('Right', _landmarks(HAND_LANDMARKS), _landmarks(HAND_LANDMARKS, True),
-                     legacy_type='hand_right')
-        emitter.hand_status(2)
-    emitter.end_frame()
-    families: List[str] = []
-    for address in emitter.address_counts:
-        fam = family_of(address)
-        if fam not in families:
-            families.append(fam)
-    return families
+    from src.osc_preview import addresses
+    return [address for address, _payload, _rate in addresses(protocol or DEFAULT_OSC_PROTOCOL, mode)]
 
 
 # ============================================================================

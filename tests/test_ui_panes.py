@@ -9,6 +9,7 @@ import pytest
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 pytest.importorskip('PySide6.QtWidgets')
 
+from PySide6.QtCore import QEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from src.config import Config  # noqa: E402
@@ -36,6 +37,8 @@ def window(tmp_path, monkeypatch):
     yield w
     w.engine.stop_and_wait()
     w.close()
+    w.deleteLater()
+    app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     app.processEvents()
 
 
@@ -134,13 +137,13 @@ def test_restart_rows_show_the_chip_when_dirty(window):
     edits = window.edits
     for b in _all_bound(window):
         edits.edit(b.fid, _new_value(b, edits.saved(b.fid)))
-        assert b.field_row.chip_visible() == b.row.restart, b.fid
+        assert b.field_row.chip_visible() == edits.field(b.fid).restart, b.fid
         edits.revert()
         assert not b.field_row.chip_visible()
-    restart = {b.row.key for b in _all_bound(window) if b.row.restart}
+    restart = {b.row.key for b in _all_bound(window) if edits.field(b.fid).restart}
     assert {'osc.protocol', 'ui.mode', 'mediapipe.pose_model_type', 'mediapipe.num_poses',
             'hand.num_hands', 'performance.force_cpu', 'performance.force_gpu',
-            'performance.no_holistic'} <= restart
+            'performance.no_holistic', 'performance.gc_enabled', 'performance.max_pending_frames'} <= restart
     assert {k for k in restart if k.startswith('camera.')} == {
         b.row.key for b in window.pane('input').bound.values()}
     assert 'osc.host' not in restart and 'osc.port' not in restart

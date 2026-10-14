@@ -387,7 +387,8 @@ class SettingsPane(QScrollArea):
     def _build_editable(self, row: Row) -> QWidget:
         fid = self._register(row)
         control, bound = self._control_for(row, fid)
-        field_row = FieldRow(row.label, control, note=row.note, warn=row.warn, restart=row.restart)
+        field_row = FieldRow(row.label, control, note=row.note, warn=row.warn,
+                             restart=self.edits.field(fid).restart)
         bound.field_row = field_row
         self.bound[fid] = bound
         self._rows[row.key] = field_row
