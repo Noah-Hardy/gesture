@@ -130,7 +130,6 @@ a = Analysis(
         'PyQt5',
         'PyQt6',
         'PySide2',
-        'PySide6',
         'IPython',
         'jupyter',
         'pandas',

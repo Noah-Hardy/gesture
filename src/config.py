@@ -200,10 +200,6 @@ class Config:
         },
         "ui": {
             "mode": "all",  # Last-used tracking mode (pose, hand or all) - the launcher reopens with it
-            "input_section_open": True,
-            "osc_section_open": True,
-            "model_section_open": False,
-            "log_section_open": True,
             "console_open": True,            # Console drawer open/closed (0.4.0 window)
             "console_height": 160,           # Console drawer height in px, 90-360
             "first_run_complete": False,     # First-run wizard finished or skipped
@@ -304,6 +300,11 @@ class Config:
         ('mediapipe', 'smooth_landmarks'),
         ('hand', 'model_complexity'),
         ('performance', 'force_legacy'),
+        # Collapsible sections of the retired Tk launcher (0.4.0 has panes)
+        ('ui', 'input_section_open'),
+        ('ui', 'osc_section_open'),
+        ('ui', 'model_section_open'),
+        ('ui', 'log_section_open'),
     )
 
     def _sanitize(self, config: Dict[str, Any]) -> Dict[str, Any]:
