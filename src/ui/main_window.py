@@ -38,7 +38,8 @@ from PySide6.QtWidgets import (
 from src import docs
 from src.config import Config
 
-from . import menus
+from . import menus, pending_bar
+from .edits import EditModel
 from .engine import EngineController
 from .icon import paint_mark
 from .overlays import about as overlay_about
@@ -878,7 +879,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.config = config
         self.engine = engine or EngineController(config, self)
-        self.edits = None                      # EditModel (#64)
+        self.edits = EditModel(config, self.engine, self)   # pending settings edits (#64)
         self.actions: dict[str, QAction] = {}
         self._layout_mode = layout_mode_for(DEFAULT_SIZE[0])
         self._pane_keys = [k for k, _, _ in PANES]
@@ -908,7 +909,7 @@ class MainWindow(QMainWindow):
         self.centralWidget().setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.centralWidget().setFocus()
 
-        for module in (overlay_about, overlay_update, overlay_first_run, overlay_faults, menus):
+        for module in (overlay_about, overlay_update, overlay_first_run, overlay_faults, menus, pending_bar):
             module.install(self)
 
     # ------------------------------------------------------------------------
