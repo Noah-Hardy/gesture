@@ -46,7 +46,7 @@ from .overlays import faults as overlay_faults
 from .overlays import first_run as overlay_first_run
 from .overlays import update as overlay_update
 from .panes import PANES
-from .tokens import Font, Radius, color
+from .tokens import Font, Radius, Spacing, color
 from .widgets import Button
 
 # ============================================================================
@@ -70,7 +70,8 @@ MODES = ('comfortable', 'narrow', 'minimum')
 CONSOLE_MIN = 90
 CONSOLE_MAX = 360
 CONSOLE_DEFAULT = 160
-STAGE_MIN = 240                  # the stage never shrinks below this
+STAGE_MIN = 240                  # panes are never laid out shorter than this
+STAGE_FLOOR = 120                # splitter minimum for the stage (the drawer overlays below 240)
 CONSOLE_MAX_LINES = 3000
 SAVE_DEBOUNCE_MS = 600
 
@@ -117,7 +118,8 @@ class RunButton(QAbstractButton):
         self._state = 'stopped'
         self._hover = False
         self.setText('Start')
-        self.setFixedSize(RUN_BUTTON_WIDTH, 30)
+        m = Spacing.FOCUS_MARGIN
+        self.setFixedSize(RUN_BUTTON_WIDTH + 2 * m, 30 + 2 * m)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAccessibleName('Start or stop the engine')
@@ -153,7 +155,8 @@ class RunButton(QAbstractButton):
     def paintEvent(self, _e) -> None:
         p = QPainter(self)
         _aa(p)
-        r = QRectF(self.rect()).adjusted(.5, .5, -.5, -.5)
+        m = Spacing.FOCUS_MARGIN
+        r = QRectF(self.rect()).adjusted(m + .5, m + .5, -m - .5, -m - .5)
         live = self._state in ('starting', 'running', 'stopping')
         base = color('error' if live else 'accent')
         if not self.isEnabled():
@@ -228,6 +231,60 @@ class _Divider(QWidget):
         p.fillRect(self.rect(), g)
 
 
+class _Readout(QWidget):
+    """
+    A faint KEY followed by a value, e.g. `IN  Camera 0`. The value is elided
+    when the toolbar is tight, so a long NDI source or host name gives way
+    before anything else moves.
+    """
+
+    MIN_VALUE = 48
+
+    def __init__(self, key: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._key = key
+        self._value = ''
+        self._key_font = Font.ui(12)
+        self._value_font = Font.ui(12, 500)
+        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)   # shrinks, never grows
+        self.setFixedHeight(20)
+
+    def value(self) -> str:
+        """The full (unelided) value."""
+        return self._value
+
+    def set_value(self, value: str) -> None:
+        """Set the value text."""
+        self._value = value
+        self.setToolTip(value)
+        self.setAccessibleName('{} {}'.format(self._key, value))
+        self.updateGeometry()
+        self.update()
+
+    def _prefix_width(self) -> int:
+        return QFontMetrics(self._key_font).horizontalAdvance(self._key) + 7
+
+    def sizeHint(self) -> QSize:
+        return QSize(self._prefix_width() + QFontMetrics(self._value_font).horizontalAdvance(self._value) + 2, 20)
+
+    def minimumSizeHint(self) -> QSize:
+        full = QFontMetrics(self._value_font).horizontalAdvance(self._value) + 2
+        return QSize(self._prefix_width() + min(self.MIN_VALUE, full), 20)
+
+    def paintEvent(self, _e) -> None:
+        p = QPainter(self)
+        p.setFont(self._key_font)
+        p.setPen(color('faint'))
+        offset = self._prefix_width()
+        p.drawText(QRectF(0, 0, offset, self.height()), Qt.AlignmentFlag.AlignVCenter, self._key)
+        p.setFont(self._value_font)
+        p.setPen(color('text'))
+        text = QFontMetrics(self._value_font).elidedText(
+            self._value, Qt.TextElideMode.ElideMiddle, max(0, self.width() - offset))
+        p.drawText(QRectF(offset, 0, self.width() - offset, self.height()),
+                   Qt.AlignmentFlag.AlignVCenter, text)
+
+
 class Toolbar(QFrame):
     """
     The 76px toolbar. Left to right: Start/Stop, MODE / IN / OUT readouts, a
@@ -241,8 +298,8 @@ class Toolbar(QFrame):
         self.setObjectName('toolbar')
         self.setFixedHeight(TOOLBAR_HEIGHT)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(20, 0, 20, 0)
-        lay.setSpacing(14)
+        lay.setContentsMargins(20 - Spacing.FOCUS_MARGIN, 0, 20 - Spacing.FOCUS_MARGIN, 0)
+        lay.setSpacing(14 - Spacing.FOCUS_MARGIN)
 
         self.run = RunButton()
         lay.addWidget(self.run)
@@ -250,13 +307,9 @@ class Toolbar(QFrame):
         self.readouts = {}
         lay.addSpacing(8)
         for key in ('MODE', 'IN', 'OUT'):
-            label = QLabel()
-            label.setFont(Font.ui(12))
-            label.setTextFormat(Qt.TextFormat.RichText)
-            label.setStyleSheet('background: transparent;')
-            label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-            self.readouts[key] = label
-            lay.addWidget(label)
+            readout = _Readout(key)
+            self.readouts[key] = readout
+            lay.addWidget(readout)
             lay.addSpacing(4)
         lay.addStretch(1)
 
@@ -279,11 +332,7 @@ class Toolbar(QFrame):
 
     def set_readout(self, key: str, value: str) -> None:
         """Set the MODE / IN / OUT value text."""
-        faint, text = color('faint').name(), color('text').name()
-        safe = value.replace('&', '&amp;').replace('<', '&lt;')
-        self.readouts[key].setText(
-            f'<span style="color:{faint}">{key}</span>&nbsp;&nbsp;'
-            f'<span style="color:{text}; font-weight:500">{safe}</span>')
+        self.readouts[key].set_value(value)
 
     def paintEvent(self, e) -> None:
         p = QPainter(self)
@@ -680,6 +729,42 @@ class ConsoleDrawer(QFrame):
 
 
 # ============================================================================
+# STAGE
+# ============================================================================
+class StageContainer(QWidget):
+    """
+    Holds the pane stack and the pending-change bar slot.
+
+    The stack is laid out at no less than STAGE_MIN (240px) tall, anchored at
+    the top. When the console drawer takes more than the window can spare, the
+    splitter shrinks this container below 240px and the drawer therefore
+    overlays the bottom of the stack instead of squeezing the pane. The pending
+    bar stays pinned just above the drawer.
+    """
+
+    def __init__(self, stack: QStackedWidget, pending_slot: QWidget):
+        super().__init__()
+        self.stack = stack
+        self.pending_slot = pending_slot
+        stack.setParent(self)
+        pending_slot.setParent(self)
+        self.setMinimumHeight(STAGE_FLOOR)
+
+    def relayout(self) -> None:
+        """Position the stack and the pending slot for the current size."""
+        w, vh = self.width(), self.height()
+        bar_h = self.pending_slot.sizeHint().height() if not self.pending_slot.isHidden() else 0
+        self.pending_slot.setGeometry(0, vh - bar_h, w, bar_h)
+        self.stack.setGeometry(0, 0, w, max(STAGE_MIN, vh - bar_h))
+        if bar_h:
+            self.pending_slot.raise_()
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        self.relayout()
+
+
+# ============================================================================
 # OVERLAY HOST / TOAST
 # ============================================================================
 class OverlayHost(QWidget):
@@ -819,6 +904,9 @@ class MainWindow(QMainWindow):
         self.set_stats(None, None)
         self.show_pane(self._current)
         self._apply_layout_mode(self._layout_mode, initial=True)
+        # Initial focus on the window body, so a stray Space/Return cannot start the engine
+        self.centralWidget().setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.centralWidget().setFocus()
 
         for module in (overlay_about, overlay_update, overlay_first_run, overlay_faults, menus):
             module.install(self)
@@ -855,18 +943,13 @@ class MainWindow(QMainWindow):
         self.splitter.setChildrenCollapsible(False)
         self.splitter.setHandleWidth(5)
         self.splitter.setStyleSheet('QSplitter::handle { background: transparent; }')
-        stage = QWidget()
-        stage.setMinimumHeight(STAGE_MIN)
-        stage_lay = QVBoxLayout(stage)
-        stage_lay.setContentsMargins(0, 0, 0, 0)
-        stage_lay.setSpacing(0)
         self.stack = QStackedWidget()
-        stage_lay.addWidget(self.stack, 1)
         self._pending_slot = QWidget()
         self._pending_lay = QVBoxLayout(self._pending_slot)
         self._pending_lay.setContentsMargins(0, 0, 0, 0)
         self._pending_slot.setVisible(False)
-        stage_lay.addWidget(self._pending_slot)
+        stage = StageContainer(self.stack, self._pending_slot)
+        self._stage = stage
         self.splitter.addWidget(stage)
 
         self.console = ConsoleDrawer()
@@ -1030,6 +1113,7 @@ class MainWindow(QMainWindow):
         if widget is not None:
             self._pending_lay.addWidget(widget)
         self._pending_slot.setVisible(widget is not None)
+        self._stage.relayout()
 
     def set_update_available(self, release) -> None:
         """
@@ -1142,13 +1226,13 @@ class MainWindow(QMainWindow):
             self.consoleToggled.emit(visible)
 
     def _fit_console(self) -> None:
-        """Size the splitter: the drawer gets its height, but the stage keeps 240px."""
+        """Size the splitter: the drawer gets its full height; panes keep 240px (the drawer overlays the rest)."""
         if not self.console.isVisibleTo(self):
             return
         total = self.splitter.height()
         if total <= 0:
             return
-        h = max(CONSOLE_MIN, min(self._console_height, total - STAGE_MIN))
+        h = max(CONSOLE_MIN, min(self._console_height, total - STAGE_FLOOR))
         self.splitter.setSizes([total - h, h])
 
     def _on_splitter_moved(self, _pos: int, _index: int) -> None:

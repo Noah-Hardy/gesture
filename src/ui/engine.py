@@ -35,7 +35,7 @@ from src.config import Config, valid_port
 TERMINATE_AFTER = 5.0         # Seconds after SIGINT before SIGTERM
 KILL_AFTER = 8.0              # Seconds after SIGINT before SIGKILL
 WATCHDOG_INTERVAL_MS = 250    # Stop-escalation check interval
-READY_MARKERS = ('Engine ready',)   # main.py prints "🟢 Engine ready" before its loop
+READY_MARKERS = ('Engine ready',)   # main.py prints "Ready" (startup phase) then "🟢 Engine ready"
 
 STATES = ('stopped', 'starting', 'running', 'stopping')
 
@@ -307,7 +307,7 @@ class EngineController(QObject):
     def _handle_line(self, line: str) -> None:
         # Until #65 reports phases over the status channel, the ready line
         # printed right before the processing loop is the running signal.
-        if self._state == 'starting' and any(m in line for m in READY_MARKERS):
+        if self._state == 'starting' and (line.strip() == 'Ready' or any(m in line for m in READY_MARKERS)):
             self._set_state('running')
         self.output.emit(line)
 

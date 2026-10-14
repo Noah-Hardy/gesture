@@ -112,6 +112,24 @@ def test_run_button_and_stats_do_not_move(app, window):
     assert anchors() == base
 
 
+def test_long_readouts_elide_instead_of_pushing_the_toolbar(app, window):
+    _resize(app, window, 980)
+    window.set_restart_required(True)
+    run = window.toolbar.run
+    stats = window.toolbar.stats
+    before = (run.mapTo(window, run.rect().topLeft()).x(),
+              window.width() - stats.mapTo(window, stats.rect().topRight()).x())
+    window.config.set('camera', 'use_ndi', True)
+    window.config.set('camera', 'ndi_source', 'STUDIO-MAC (OBS Virtual Camera and Friends)')
+    window.config.set('osc', 'host', 'a-very-long-hostname.example.studio.internal')
+    window.refresh_readouts()
+    app.processEvents()
+    after = (run.mapTo(window, run.rect().topLeft()).x(),
+             window.width() - stats.mapTo(window, stats.rect().topRight()).x())
+    assert after == before
+    assert stats.mapTo(window, stats.rect().topLeft()).x() >= window.toolbar.chip.geometry().right()
+
+
 def test_restart_chip_and_stats_text(window):
     assert window.toolbar.chip.isHidden()
     window.set_restart_required(True)
@@ -130,7 +148,7 @@ def test_readouts_come_from_config(app, config_path):
     cfg.set('osc', 'host', '10.0.0.2')
     cfg.set('osc', 'port', 9000)
     w = MainWindow(cfg)
-    text = ' '.join(lbl.text() for lbl in w.toolbar.readouts.values())
+    text = ' '.join(r.value() for r in w.toolbar.readouts.values())
     assert 'pose' in text and 'STUDIO (OBS)' in text and '10.0.0.2:9000' in text
     w._save_timer.stop()
 
@@ -256,12 +274,42 @@ def test_console_height_is_clamped(window):
     assert window.console_height() == 360
 
 
-def test_console_never_shrinks_stage_below_240(app, window):
+def test_console_overlays_instead_of_shrinking_stage_below_240(app, window):
     window.set_console_height(360)
     _resize(app, window, 1240, 620)
-    stage_h, console_h = window.splitter.sizes()
-    assert stage_h >= 240
-    assert console_h >= 90
+    assert window.splitter.sizes()[1] == 360               # the drawer keeps its height...
+    assert window.stack.height() >= 240                    # ...and the pane is not squeezed
+    assert window.stack.y() == 0
+    stage = window._stage
+    assert stage.height() < 240                            # the drawer covers the overflow
+    window.set_console_height(160)
+    _resize(app, window, 1240, 816)
+    assert window.stack.height() == window._stage.height()
+
+
+def test_pending_bar_stays_above_the_console(app, window):
+    from PySide6.QtWidgets import QLabel
+    bar = QLabel('pending')
+    bar.setFixedHeight(40)
+    window.set_pending_bar(bar)
+    window.set_console_height(360)
+    _resize(app, window, 1240, 620)
+    stage = window._stage
+    assert bar.mapTo(stage, bar.rect().bottomLeft()).y() + 1 == stage.height()
+
+
+def test_console_open_state_and_height_apply_on_relaunch(app, config_path):
+    w = MainWindow(Config(config_path))
+    w.show()
+    app.processEvents()
+    w.set_console_height(220)
+    w.close()
+    w2 = MainWindow(Config(config_path))
+    w2.show()
+    app.processEvents()
+    assert w2.console_open()
+    assert w2.splitter.sizes()[1] == 220
+    w2._save_timer.stop()
 
 
 def test_section_open_keys_are_retired(config_path):
@@ -354,6 +402,7 @@ def test_engine_lifecycle_with_a_fake_engine(app, config_path, tmp_path, monkeyp
         QTest.qWait(50)
     assert 'running' in states
     assert any('hello from engine' in ln for ln in lines)
+    assert 'Ready' not in states  # (sanity: states are lifecycle names, not phases)
 
     assert ctl.stop_and_wait(timeout=10)
     assert states[-1] == 'stopped' and codes == [0]
@@ -361,6 +410,15 @@ def test_engine_lifecycle_with_a_fake_engine(app, config_path, tmp_path, monkeyp
     assert not ctl.is_running()
     assert ctl.set_live('tracking.min_detection_confidence', 0.5) is False
     ctl.send({'cmd': 'noop'})  # inert until #65
+
+
+def test_ready_line_marks_the_engine_running(app, config_path):
+    ctl = EngineController(Config(config_path))
+    ctl._set_state('starting')
+    ctl._handle_line('Warming up...')
+    assert ctl.state == 'starting'
+    ctl._handle_line('Ready')
+    assert ctl.state == 'running'
 
 
 def test_engine_start_refuses_a_bad_port(app, config_path):
