@@ -2,7 +2,7 @@
 """
 Preview Pane
 
-Placeholder until #68 replaces this module's `create()`.
+Rendered from the row spec in spec.py by the generic settings renderer.
 """
 
 # ============================================================================
@@ -12,10 +12,8 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QWidget
 
-from ._placeholder import placeholder
-
-TITLE = 'Preview'
-BLURB = 'Display only - never affects OSC.'
+from ._render import SettingsPane
+from .spec import PANES
 
 
 def create(window) -> QWidget:
@@ -23,9 +21,9 @@ def create(window) -> QWidget:
     Build the Preview pane.
 
     Args:
-        window: The MainWindow (config, engine, actions, toast, ...).
+        window: The MainWindow (config, edits, engine, reveal_config, ...).
 
     Returns:
-        The pane widget.
+        The pane widget; it implements `scroll_to_anchor(key)`.
     """
-    return placeholder(TITLE, BLURB)
+    return SettingsPane(window, PANES['preview'])
