@@ -77,10 +77,17 @@ fi
 # submission if any one of them is missing either.
 #
 # That matters here more than it would for a normal app. A PyInstaller bundle
-# of this project carries ~176 Mach-O files - CPython extension modules and
-# dylibs shipped inside third-party wheels - none of which are build products
+# of this project carries ~208 Mach-O files (0.4.0; 0.3 had ~176) - CPython extension
+# modules and dylibs shipped inside third-party wheels - none of which are build products
 # this script produced. Each is signed on its own, then any framework bundles,
 # then the .app last so the outer seal covers the finished contents.
+#
+# Qt's .framework bundles (PySide6/Qt/lib/*.framework, Versions/A layout with
+# Current and top-level symlinks) are handled by that order: the real binary
+# under Versions/A is a regular file and gets signed in the first loop (the
+# symlinks are not `-type f`), then each framework directory is sealed. The
+# build must not leave dangling symlinks in the bundle - `codesign --strict`
+# rejects them (gesture.spec drops unused Qt frameworks together with theirs).
 #
 # Entitlements are applied only to the outer bundle. They govern the process
 # that actually runs (Contents/MacOS/gesture); a dylib does not get its own
