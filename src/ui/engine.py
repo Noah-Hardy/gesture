@@ -7,10 +7,13 @@ the Config, streams its console output, stops it with SIGINT (escalating to
 SIGTERM and SIGKILL if it hangs), and reports lifecycle changes as Qt signals.
 
 The engine is a separate process of the same executable (cv2 and MediaPipe
-must not share the GUI's main thread), exactly as the Tk launcher did it.
-The status/control/frame channel (#65, src/engine_link.py) plugs into the
-`_link_*` seams below; until it is wired the signals and methods it will own
-(`phaseChanged`, `statusReceived`, `frameReady`, `send`, `set_live`) stay inert.
+must not share the GUI's main thread). It is spawned with subprocess so the
+IPC socket (src/engine_link.py, #65) can be inherited through pass_fds, which
+QProcess cannot do. A reader thread turns its merged stdout/stderr into
+`output` lines; the link's reader thread turns status and replies into
+`statusReceived`, `phaseChanged` and `liveReply`; a timer polls the shared
+preview buffer into `frameReady`. All of it reaches the GUI thread through
+queued signals.
 """
 
 # ============================================================================
@@ -20,14 +23,18 @@ from __future__ import annotations
 
 import os
 import signal
+import subprocess
 import sys
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QObject, QTimer, Signal
 from PySide6.QtGui import QImage
 
 from src.config import Config, valid_port
+from src.engine_link import EngineLink
+from src.live_keys import is_live
 
 # ============================================================================
 # CONSTANTS
@@ -35,7 +42,7 @@ from src.config import Config, valid_port
 TERMINATE_AFTER = 5.0         # Seconds after SIGINT before SIGTERM
 KILL_AFTER = 8.0              # Seconds after SIGINT before SIGKILL
 WATCHDOG_INTERVAL_MS = 250    # Stop-escalation check interval
-READY_MARKERS = ('Engine ready',)   # main.py prints "Ready" (startup phase) then "🟢 Engine ready"
+FRAME_POLL_MS = 33            # Preview poll interval (~30 Hz); only copies when frame_seq advanced
 
 STATES = ('stopped', 'starting', 'running', 'stopping')
 
@@ -107,7 +114,6 @@ def build_argv(config: Config) -> List[str]:
 
     # Always explicit: the config, not the engine's own default, decides
     cmd.append('--mirror' if config.get('display', 'mirror_preview', False) else '--no-mirror')
-    cmd.append('--preview' if config.get('display', 'show_window', True) else '--no-preview')
 
     # Backend toggles are mutually exclusive; CPU wins
     if config.get('performance', 'force_cpu', False):
@@ -119,15 +125,11 @@ def build_argv(config: Config) -> List[str]:
     return cmd
 
 
-def engine_env() -> QProcessEnvironment:
-    """Environment for the engine child (unbuffered stdout, accessory-app hint)."""
-    env = QProcessEnvironment.systemEnvironment()
-    env.insert('PYTHONUNBUFFERED', '1')
-    # Tells the engine to run as a macOS accessory app so its preview window
-    # doesn't add a second Dock icon (see src.macos_app). The pre-rename name
-    # is set too, for an engine that predates GESTURE_*.
-    env.insert('GESTURE_LAUNCHED_FROM_GUI', '1')
-    env.insert('MPOSC_LAUNCHED_FROM_GUI', '1')
+def engine_env() -> Dict[str, str]:
+    """Environment for the engine child (unbuffered stdout so console lines stream)."""
+    env = dict(os.environ)
+    env['PYTHONUNBUFFERED'] = '1'
+    env.setdefault('MPLBACKEND', 'Agg')
     return env
 
 
@@ -136,31 +138,43 @@ def engine_env() -> QProcessEnvironment:
 # ============================================================================
 class EngineController(QObject):
     """
-    Supervises the engine subprocess.
+    Supervises the engine subprocess and its IPC link.
 
     Signals:
         stateChanged(str): 'stopped' | 'starting' | 'running' | 'stopping'.
-        phaseChanged(str, str): startup phase and reason (status channel, #65).
-        statusReceived(dict): every status message (#65).
-        frameReady(QImage): a preview frame (#65).
+            'running' begins when the engine reports the 'ready' phase.
+        phaseChanged(str, str): engine phase and reason, on change only.
+        statusReceived(dict): every status message.
+        frameReady(QImage): a preview frame (a new image per frame, owns its pixels).
+        liveReply(dict): {"ack": key} / {"error": msg, "key": key} for control commands.
         output(str): console text, one line per emit.
-        exited(int): the engine's return code.
+        exited(int): the engine's return code (negative: killed by that signal).
     """
 
     stateChanged = Signal(str)
     phaseChanged = Signal(str, str)
     statusReceived = Signal(dict)
     frameReady = Signal(QImage)
+    liveReply = Signal(dict)
     output = Signal(str)
     exited = Signal(int)
+
+    # Thread -> GUI hops (emitted from reader threads, delivered queued)
+    _lineRead = Signal(str)
+    _procEnded = Signal(int)
+    _statusIn = Signal(object, dict)
+    _replyIn = Signal(object, dict)
 
     def __init__(self, config: Config, parent: QObject | None = None):
         super().__init__(parent)
         self.config = config
         self.last_status: Dict[str, Any] = {}
         self._state = 'stopped'
-        self._proc: Optional[QProcess] = None
-        self._buffer = ''
+        self._proc: Optional[subprocess.Popen] = None
+        self._link: Optional[EngineLink] = None
+        self._phase = ('', '')
+        self._last_frame_seq = 0
+        self._preview_visible = True
         self._stop_requested_at: Optional[float] = None
         self._terminated = False
         self._killed = False
@@ -168,6 +182,13 @@ class EngineController(QObject):
         self._watchdog = QTimer(self)
         self._watchdog.setInterval(WATCHDOG_INTERVAL_MS)
         self._watchdog.timeout.connect(self._escalate_stop)
+        self._frame_timer = QTimer(self)
+        self._frame_timer.setInterval(FRAME_POLL_MS)
+        self._frame_timer.timeout.connect(self._poll_frame)
+        self._lineRead.connect(self.output)
+        self._procEnded.connect(self._on_finished)
+        self._statusIn.connect(self._on_status)
+        self._replyIn.connect(self._on_reply)
 
     # ------------------------------------------------------------------------
     # State
@@ -179,7 +200,7 @@ class EngineController(QObject):
 
     def is_running(self) -> bool:
         """True while the engine process is alive (starting, running or stopping)."""
-        return self._proc is not None and self._proc.state() != QProcess.ProcessState.NotRunning
+        return self._proc is not None and self._proc.poll() is None
 
     def _set_state(self, state: str) -> None:
         if state != self._state:
@@ -191,7 +212,9 @@ class EngineController(QObject):
     # ------------------------------------------------------------------------
     def start(self) -> None:
         """Spawn the engine. No-op while one is already alive."""
-        if self.is_running():
+        if self._proc is not None:
+            if self._proc.poll() is not None:
+                self._restart_pending = True  # exited, its exit is still being processed
             return
         host = str(self.config.get('osc', 'host', '') or '').strip()
         if not host:
@@ -202,26 +225,48 @@ class EngineController(QObject):
             return
 
         argv = build_argv(self.config)
-        proc = QProcess(self)
-        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        proc.setProcessEnvironment(engine_env())
-        # From source, run in the repo root so the child resolves the same
-        # relative config.json. Frozen builds use an absolute config path, and
-        # the working directory must not point inside the bundle.
-        if not getattr(sys, 'frozen', False):
-            proc.setWorkingDirectory(_REPO_ROOT)
-        proc.readyReadStandardOutput.connect(self._on_ready_read)
-        proc.errorOccurred.connect(self._on_error)
-        proc.finished.connect(self._on_finished)
+        # Callbacks carry their link so a late message from a previous run is ignored
+        mine = {}
+        link = EngineLink(on_status=lambda m: self._statusIn.emit(mine['link'], m),
+                          on_reply=lambda m: self._replyIn.emit(mine['link'], m))
+        mine['link'] = link
+        self.output.emit('Launching: ' + ' '.join(argv))
+        try:
+            # From source, run in the repo root so the child resolves the same
+            # relative config.json. Frozen builds use an absolute config path,
+            # and the working directory must not point inside the bundle.
+            proc = subprocess.Popen(
+                argv + link.argv, pass_fds=link.pass_fds, env=engine_env(),
+                cwd=None if getattr(sys, 'frozen', False) else _REPO_ROOT,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        except OSError as exc:
+            link.close()
+            self.output.emit('Failed to start engine: {}'.format(exc))
+            self.exited.emit(-1)
+            return
+        link.spawned()
 
         self._proc = proc
-        self._buffer = ''
+        self._link = link
+        self._phase = ('', '')
+        self._last_frame_seq = 0
         self._stop_requested_at = None
         self._terminated = self._killed = False
         self.last_status = {}
-        self.output.emit('Launching: ' + ' '.join(argv))
+        link.send({'cmd': 'visible', 'value': self._preview_visible})
+        threading.Thread(target=self._pump, args=(proc,), name='engine-output', daemon=True).start()
         self._set_state('starting')
-        proc.start(argv[0], argv[1:])
+        self._frame_timer.start()
+
+    def _pump(self, proc: subprocess.Popen) -> None:
+        """Reader thread: stream the engine's output line by line, then report its exit."""
+        try:
+            for raw in iter(proc.stdout.readline, b''):
+                self._lineRead.emit(raw.decode('utf-8', 'replace').rstrip('\r\n'))
+        except (OSError, ValueError):
+            pass
+        code = proc.wait()
+        self._procEnded.emit(int(code))
 
     def stop(self) -> None:
         """Ask the engine to stop with SIGINT so it runs its normal cleanup path."""
@@ -255,22 +300,26 @@ class EngineController(QObject):
         if self._state != 'stopping':
             self._request_stop()
         deadline = time.monotonic() + timeout
-        proc = self._proc
-        while proc is not None and proc.state() != QProcess.ProcessState.NotRunning:
-            if time.monotonic() > deadline:
-                proc.kill()
-            proc.waitForFinished(250)
+        while self.is_running():
+            if time.monotonic() > deadline and not self._killed:
+                self._killed = True
+                self._proc.kill()
             self._escalate_stop()
+            QCoreApplication.processEvents()
+            time.sleep(0.02)
+        # Let the exit report (queued from the reader thread) land
+        settle = time.monotonic() + 2.0
+        while self._proc is not None and time.monotonic() < settle:
+            QCoreApplication.processEvents()
+            time.sleep(0.01)
         return not self.is_running()
 
     def _request_stop(self) -> None:
         proc = self._proc
         if proc is None:
             return
-        pid = int(proc.processId())
         try:
-            if pid > 0:
-                os.kill(pid, signal.SIGINT)
+            proc.send_signal(signal.SIGINT)
         except OSError as exc:
             self.output.emit('Failed to signal engine: {}'.format(exc))
         self._stop_requested_at = time.monotonic()
@@ -283,49 +332,32 @@ class EngineController(QObject):
         if self._stop_requested_at is None or proc is None or not self.is_running():
             return
         elapsed = time.monotonic() - self._stop_requested_at
-        if elapsed > KILL_AFTER and not self._killed:
-            self._killed = True
-            self.output.emit('Engine unresponsive - sending SIGKILL')
-            proc.kill()
-        elif elapsed > TERMINATE_AFTER and not self._terminated:
-            self._terminated = True
-            self.output.emit('Engine still running - sending SIGTERM')
-            proc.terminate()
+        try:
+            if elapsed > KILL_AFTER and not self._killed:
+                self._killed = True
+                self.output.emit('Engine unresponsive - sending SIGKILL')
+                proc.kill()
+            elif elapsed > TERMINATE_AFTER and not self._terminated:
+                self._terminated = True
+                self.output.emit('Engine still running - sending SIGTERM')
+                proc.terminate()
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------------
-    # Process callbacks
+    # Process exit
     # ------------------------------------------------------------------------
-    def _on_ready_read(self) -> None:
-        proc = self._proc
-        if proc is None:
-            return
-        self._buffer += bytes(proc.readAllStandardOutput()).decode('utf-8', 'replace')
-        *lines, self._buffer = self._buffer.split('\n')
-        for line in lines:
-            self._handle_line(line.rstrip('\r'))
-
-    def _handle_line(self, line: str) -> None:
-        # Until #65 reports phases over the status channel, the ready line
-        # printed right before the processing loop is the running signal.
-        if self._state == 'starting' and (line.strip() == 'Ready' or any(m in line for m in READY_MARKERS)):
-            self._set_state('running')
-        self.output.emit(line)
-
-    def _on_error(self, error) -> None:
-        if error == QProcess.ProcessError.FailedToStart and self._proc is not None:
-            self.output.emit('Failed to start engine: {}'.format(self._proc.errorString()))
-            self._cleanup()
-            self._set_state('stopped')
-            self.exited.emit(-1)
-
-    def _on_finished(self, code: int, status) -> None:
-        if self._buffer:  # flush an unterminated tail
-            self.output.emit(self._buffer.rstrip('\r'))
-            self._buffer = ''
-        crashed = status == QProcess.ExitStatus.CrashExit
-        if crashed:
-            # A signal death (SIGTERM / SIGKILL / crash); report as -signal when known
-            code = -15 if self._terminated and not self._killed else (-9 if self._killed else -1)
+    def _on_finished(self, code: int) -> None:
+        link = self._link
+        if link is not None:
+            # The engine is gone, so only now is it safe to close the link. Its
+            # reader has delivered everything it will; take the final status
+            # directly (queued copies are dropped once self._link is cleared)
+            link.close()
+            if link.last_status:
+                self._on_status(link, link.last_status)
+        self._frame_timer.stop()
+        if code < 0:
             if self._terminated or self._killed:
                 self.output.emit('Engine had to be force-stopped')
             else:
@@ -344,18 +376,55 @@ class EngineController(QObject):
     def _cleanup(self) -> None:
         self._watchdog.stop()
         self._restart_pending = False
-        if self._proc is not None:
-            self._proc.deleteLater()
         self._proc = None
+        self._link = None
         self._stop_requested_at = None
         self._terminated = self._killed = False
 
     # ------------------------------------------------------------------------
-    # Control channel seams (#65)
+    # Status, replies and frames (#65)
+    # ------------------------------------------------------------------------
+    def _on_status(self, link, msg: dict) -> None:
+        if link is not self._link:
+            return  # a straggler from a previous run
+        self.last_status = msg
+        self.statusReceived.emit(msg)
+        phase, reason = str(msg.get('phase', '')), str(msg.get('reason', ''))
+        if (phase, reason) != self._phase:
+            self._phase = (phase, reason)
+            if phase == 'ready' and self._state == 'starting':
+                self._set_state('running')
+            self.phaseChanged.emit(phase, reason)
+
+    def _on_reply(self, link, msg: dict) -> None:
+        # Only `set` results are interesting; 'visible' and 'stop' acks are plumbing
+        if link is self._link and msg.get('ack') not in ('visible', 'stop'):
+            self.liveReply.emit(msg)
+
+    def _poll_frame(self) -> None:
+        link = self._link
+        if link is None:
+            return
+        seq = int(link.last_status.get('frame_seq', 0) or 0)
+        if seq <= self._last_frame_seq:
+            return
+        got = link.read_frame()
+        if got is None:
+            return
+        self._last_frame_seq, frame = got
+        height, width = frame.shape[:2]
+        # QImage over the array's memory, then copied once so the image owns
+        # its pixels and outlives the array (consumers may keep it)
+        self.frameReady.emit(QImage(frame.data, width, height, frame.strides[0],
+                                    QImage.Format.Format_BGR888).copy())
+
+    # ------------------------------------------------------------------------
+    # Control channel
     # ------------------------------------------------------------------------
     def send(self, cmd: dict) -> None:
-        """Send a control message to the engine. No-op until the link (#65) is wired."""
-        return None
+        """Send a control command ({"cmd": "stop" | "set" | "visible", ...}). No-op when not running."""
+        if self._link is not None and self.is_running():
+            self._link.send(cmd)
 
     def set_live(self, key: str, value) -> bool:
         """
@@ -366,7 +435,18 @@ class EngineController(QObject):
             value: New value.
 
         Returns:
-            True if it was sent as a live 'set'; False for restart-class keys or
-            when the engine is not running. Always False until the link (#65) is wired.
+            True if it was sent as a live 'set' (the result arrives on
+            liveReply); False for restart-class keys or when the engine is
+            not running.
         """
-        return False
+        if not self.is_running() or self._link is None or not is_live(key):
+            return False
+        return self._link.send({'cmd': 'set', 'key': key, 'value': value})
+
+    def set_preview_visible(self, visible: bool) -> None:
+        """Tell the engine whether the preview is on screen (it skips drawing and frames when hidden)."""
+        visible = bool(visible)
+        if visible == self._preview_visible:
+            return
+        self._preview_visible = visible
+        self.send({'cmd': 'visible', 'value': visible})

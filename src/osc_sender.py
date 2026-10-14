@@ -127,6 +127,20 @@ class ThreadedOSCSender:
             builder.add_arg(value)
         self.send_packet(builder.build())
 
+    def set_queue_size(self, size):
+        """
+        Resize the packet queue in place (live osc.queue_size)
+
+        Counters and queued packets are untouched; packets already queued
+        beyond a smaller size drain normally and new arrivals evict as usual.
+
+        Args:
+            size: New maximum number of queued packets
+        """
+        with self.message_queue.mutex:
+            self.message_queue.maxsize = size
+            self.message_queue.not_full.notify_all()
+
     def get_stats(self):
         """Get sender statistics"""
         return {

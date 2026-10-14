@@ -94,7 +94,7 @@ def measure_once(args):
         (seconds, phases) - phases maps each phase to seconds since launch;
         seconds is None when the engine exited or timed out before ready
     """
-    cmd = [sys.executable, "-u", os.path.join(ROOT, "main.py"), "--no-preview",
+    cmd = [sys.executable, "-u", os.path.join(ROOT, "main.py"),
            "--camera", str(args.camera), args.mode]
     start = time.monotonic()
     proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

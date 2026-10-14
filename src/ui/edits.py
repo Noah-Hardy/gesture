@@ -21,9 +21,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from ..config import Config
+from ..live_keys import is_live
 
 # ============================================================================
 # VALIDATION
@@ -103,6 +104,10 @@ def validate_decimal(text: Any, limits: Optional[tuple] = None) -> Optional[str]
 # ============================================================================
 # FIELD
 # ============================================================================
+#: How often Config is checked for changes made outside the model
+EXTERNAL_POLL_MS = 500
+
+
 def _identity(v):
     return v
 
@@ -168,6 +173,12 @@ class EditModel(QObject):
         self.engine = engine
         self._fields: dict[str, Field] = {}
         self._edits: dict[str, Any] = {}
+        self._seen: dict[str, Any] = {}     # last saved value observed per field
+        # Other parts of the UI (the Live pane's Mirror chip) write Config directly
+        self._watch = QTimer(self)
+        self._watch.setInterval(EXTERNAL_POLL_MS)
+        self._watch.timeout.connect(self.sync_external)
+        self._watch.start()
 
     # -- registration -----------------------------------------------------
     def register(self, pane: str, pane_title: str, label: str, path: str, *, kind: str = 'text',
@@ -182,7 +193,8 @@ class EditModel(QObject):
             label: Row label.
             path: Config path `section.key`.
             kind: num, text, choice, toggle, range or color.
-            restart: Restart-class field.
+            restart: Restart-class field. Any key the engine cannot apply live
+            (not in live_keys.LIVE_KEYS) is restart-class regardless.
             limits: (low, high[, message]) for num fields.
             decode, encode: Config <-> edit-form conversions (default: str for
                 num, identity otherwise).
@@ -193,6 +205,7 @@ class EditModel(QObject):
             The field id `<pane>.<path>`.
         """
         section, key = path.split('.', 1)
+        restart = bool(restart) or not is_live(path)
         if decode is None:
             decode = (lambda v: str(v)) if kind in ('num', 'decimal') else _identity
         if encode is None:
@@ -201,6 +214,7 @@ class EditModel(QObject):
         fid = '{}.{}'.format(pane, path)
         self._fields[fid] = Field(fid, pane, pane_title, label, section, key, kind, restart,
                                   limits, decode, encode, validator, extra)
+        self._seen[fid] = self.saved(fid)
         return fid
 
     def field(self, fid: str) -> Field:
@@ -214,6 +228,20 @@ class EditModel(QObject):
         """The saved (applied) value in edit form."""
         f = self._fields[fid]
         return f.decode(self.config.get(f.section, f.key))
+
+    def sync_external(self) -> None:
+        """
+        Pick up Config changes made outside the model (e.g. the Live pane's
+        Mirror chip): emit `changed` for each field whose saved value moved, and
+        drop a pending edit that now equals it.
+        """
+        for fid in self._fields:
+            now = self.saved(fid)
+            if now != self._seen.get(fid):
+                self._seen[fid] = now
+                if fid in self._edits and self._edits[fid] == now:
+                    del self._edits[fid]
+                self.changed.emit(fid)
 
     def value(self, fid: str) -> Any:
         """The pending value if edited, else the saved one."""
@@ -304,6 +332,8 @@ class EditModel(QObject):
             self.config.set(f.section, f.key, f.encode(d['value']))
         self.config.save()
         self._edits.clear()
+        for d in dirty:
+            self._seen[d['fid']] = self.saved(d['fid'])
 
         running = bool(self.engine is not None and self.engine.is_running())
         restarted = False

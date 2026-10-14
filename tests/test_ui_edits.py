@@ -113,3 +113,26 @@ def test_restart_class_restarts_running_engine(window, monkeypatch):
     e.edit('t_input.camera.width', '1280')
     assert e.apply() is True
     assert calls[-1] == 'restart'
+    monkeypatch.undo()
+
+
+def test_restart_class_follows_live_keys(window):
+    e = window.edits
+    gc = e.register('advanced', 'Advanced', 'GC', 'performance.gc_enabled', kind='toggle')
+    assert e.field(gc).restart            # not in LIVE_KEYS
+    assert not e.field('osc.osc.port').restart
+    assert e.field('input.camera.width').restart
+
+
+def test_external_config_changes_reach_the_model(window):
+    e = window.edits
+    fid = e.register('preview', 'Preview', 'Mirror', 'display.mirror_preview', kind='toggle')
+    seen = []
+    e.changed.connect(seen.append)
+    window.config.set('display', 'mirror_preview', True)
+    e.sync_external()
+    assert fid in seen and e.value(fid) is True and not e.is_dirty(fid)
+    e.edit(fid, False)
+    window.config.set('display', 'mirror_preview', False)
+    e.sync_external()
+    assert not e.is_dirty(fid)

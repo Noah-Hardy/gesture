@@ -102,6 +102,9 @@ class LandmarkerProcessor:
         self._has_fresh_results = False  # Callback delivered new results
         self._display_results = None  # Main-thread-only copy of last taken results for stale drawing
         self._model_path = None
+        # Drawing is display-only: off skips the (comparatively costly) skeleton
+        # rendering when nothing will look at the frame. Set live (#65)
+        self.draw_enabled = True
         self._warmup_pending = 0  # Warm-up results still to come (swallowed by the callback)
 
         # Lock protecting results/pending_frames shared with MediaPipe's worker thread
@@ -163,6 +166,9 @@ class LandmarkerProcessor:
     def _report_idle(self):
         """Send status 0 on this processor's channels (no fresh detection)"""
         raise NotImplementedError
+
+    def refresh_display_specs(self):
+        """Rebuild cached DrawingSpecs from the config after a live display.* change"""
 
     def _before_setup(self):
         """
@@ -258,6 +264,52 @@ class LandmarkerProcessor:
         except Exception as e:
             print(f"❌ Failed to initialize MediaPipe Tasks ({self.label.lower()}): {e}")
             return SETUP_FAILED
+
+    def set_show_fps(self, enabled):
+        """Turn the periodic FPS log line on or off (live performance.show_fps)"""
+        self.show_fps = enabled
+        self.fps_counter = 0
+        self.fps_start_time = time.time() if enabled else None
+
+    def rebuild_landmarker(self, old):
+        """
+        Replace the landmarker with one built from the current config
+
+        MediaPipe Tasks options are immutable, so a live change to a
+        confidence threshold means a new landmarker with the same delegate.
+        Runs on the processing thread; tracking pauses while it builds. The
+        old landmarker is only closed once the new one exists, so a failed
+        rebuild leaves tracking running with the old thresholds.
+
+        Args:
+            old: The landmarker currently in use
+
+        Returns:
+            The new, warmed-up landmarker
+
+        Raises:
+            Exception: the new landmarker could not be created (old is untouched)
+        """
+        Landmarker, _ = self._landmarker_types()
+        delegate = (mp.tasks.BaseOptions.Delegate.GPU if self.use_gpu
+                    else mp.tasks.BaseOptions.Delegate.CPU)
+        new = Landmarker.create_from_options(self.build_options(delegate))
+        try:
+            old.close()
+        except Exception:
+            pass
+        # Results the closed landmarker never delivered would leave
+        # pending_frames above the limit and skip every frame from now on
+        with self._results_lock:
+            self.pending_frames = 0
+            self._warmup_pending = 0
+            self.results = None
+            self._has_fresh_results = False
+        try:
+            self.warm_up(new)
+        except Exception as e:
+            print(f"⚠️  Warm-up failed: {e}")
+        return new
 
     def share_frame_prep(self, other):
         """
@@ -493,6 +545,8 @@ class LandmarkerProcessor:
             connections: POSE_CONNECTIONS or HAND_CONNECTIONS
             landmark_spec, connection_spec: DrawingSpecs for points and lines
         """
+        if not self.draw_enabled:
+            return
         proto = landmark_pb2.NormalizedLandmarkList()
         proto.landmark.extend([
             landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z)
