@@ -626,16 +626,29 @@ class OscEmitter:
 
         self._last_heartbeat = None
         self._frames_since_heartbeat = 0
+        self._last_fps = 0.0
+
+        # Status-channel counters (#65): messages built per OSC address, and
+        # processed frames. Cumulative; a reader on another thread takes copies
+        self.address_counts = {}
+        self.frames_total = 0
 
     # ------------------------------------------------------------------------
     # Packet output
     # ------------------------------------------------------------------------
+
+    def _count_addresses(self, messages):
+        """Add a batch of (address, args) tuples to the per-address counters"""
+        counts = self.address_counts
+        for address, _ in messages:
+            counts[address] = counts.get(address, 0) + 1
 
     def _emit(self, messages):
         """Queue or send a formatter's (address, args) tuples"""
         if not messages:
             return
         if not self.formatter.bundled:
+            self._count_addresses(messages)
             for address, args in messages:
                 self.sender.send_packet(build_message(address, args))
         elif self._frame_open:
@@ -644,6 +657,7 @@ class OscEmitter:
             self._send_bundles(messages)
 
     def _send_bundles(self, messages):
+        self._count_addresses(messages)
         built = [build_message(address, args) for address, args in messages]
         for bundle in pack_bundles(built, self.max_bundle_bytes):
             self.sender.send_packet(bundle)
@@ -680,6 +694,7 @@ class OscEmitter:
 
         self._frame_open = False
         self._frames_since_heartbeat += 1
+        self.frames_total += 1
         pending, self._pending = self._pending, []
         if pending:
             self._send_bundles(pending)
@@ -748,6 +763,7 @@ class OscEmitter:
             fps = self._frames_since_heartbeat / elapsed if elapsed > 0 else 0.0
         self._last_heartbeat = now
         self._frames_since_heartbeat = 0
+        self._last_fps = fps
         stats = self.sender.get_stats()
         self._emit(self.formatter.heartbeat(fps, stats['queued'], stats['dropped'], stats['sent']))
         return True
@@ -778,3 +794,35 @@ class OscEmitter:
     def get_stats(self):
         """Sender statistics (sent/dropped/queued) - for the processors' FPS log line"""
         return self.sender.get_stats()
+
+    def set_tracking_hold(self, hold):
+        """Change the /…/tracking debounce window for both channels (live osc.tracking_hold)"""
+        for tracker in self._trackers.values():
+            tracker.hold = hold
+
+    def tracking_counts(self):
+        """
+        Debounced {"pose": n, "hand": n} - the same values /…/tracking carries,
+        so the UI matches what receivers see. 0 whenever nothing has been
+        reported within the hold window; never a cached last count.
+        """
+        return {channel: tracker.value for channel, tracker in self._trackers.items()}
+
+    def stats(self):
+        """
+        Snapshot for the launcher's status channel (#65), taken from the same
+        counters the heartbeat reports
+
+        Returns:
+            {"fps": last heartbeat's rate, "queue", "dropped", "sent",
+             "frames": processed frames, "per_address": copy of the counts}
+        """
+        sender = self.sender.get_stats()
+        return {
+            'fps': self._last_fps,
+            'queue': sender['queued'],
+            'dropped': sender['dropped'],
+            'sent': sender['sent'],
+            'frames': self.frames_total,
+            'per_address': self.address_counts.copy(),
+        }

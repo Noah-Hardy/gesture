@@ -22,8 +22,12 @@ from src import TasksHolisticProcessor
 from src import OscEmitter
 from src.config import DEFAULT_OSC_PROTOCOL, OSC_PROTOCOLS
 from src import NDICapture, list_ndi_sources, NDI_AVAILABLE
-from src.config import getenv
-from src.runtime import FrameClock, ParentWatch, ReconnectingCapture, install_sigterm_handler, report_phase
+from src.camera_permission import camera_permission_denied
+from src.engine_channel import EngineChannel, NullChannel, exit_on_launcher_loss
+from src.ipc_protocol import IPC_FD_FLAG, IPC_SHM_FLAG
+from src.live_settings import LiveSettings
+from src.runtime import (FrameClock, ReconnectingCapture, install_sigterm_handler,
+                         report_phase, set_phase_handler)
 
 
 # ============================================================================
@@ -49,12 +53,11 @@ EXIT_CRASH = 3             # Unhandled exception inside the processing loop
 # ============================================================================
 # PREVIEW WINDOW TITLE
 # ============================================================================
-# Matches src.config.Config.DEFAULT_CONFIG['display']['window_title']. Used
-# as the fallback/initializer here whenever display.window_title comes back
-# empty (config default is never empty, so that's a manually-edited config
-# only) - kept unambiguous rather than mode-specific so it never regresses
-# to a name that sounds like the OSC output (see issue #60).
-DEFAULT_WINDOW_TITLE = "Gesture Preview — not the OSC output"
+# Title of the --preview-window cv2 window (CLI use only; under the launcher
+# the preview is drawn in-app from the shared frame buffer, #65). Kept
+# unambiguous rather than mode-specific so it never regresses to a name that
+# sounds like the OSC output (see issue #60).
+PREVIEW_WINDOW_TITLE = "Gesture Preview — not the OSC output"
 
 
 # ============================================================================
@@ -90,11 +93,14 @@ def build_parser():
                               help='Mirror the preview window horizontally (display only - OSC coordinates are unchanged)')
     mirror_group.add_argument('--no-mirror', dest='mirror_preview', action='store_false',
                               help='Do not mirror the preview window (overrides the config value)')
-    preview_group = parser.add_mutually_exclusive_group()
-    preview_group.add_argument('--preview', dest='show_window', action='store_true', default=None,
-                               help='Show the preview window (local confirmation only, not the OSC output)')
-    preview_group.add_argument('--no-preview', dest='show_window', action='store_false',
-                               help='Do not show the preview window (overrides the config value)')
+    parser.add_argument('--preview-window', '--preview', dest='preview_window', action='store_true',
+                        help='Show a local OpenCV preview window (CLI use; local confirmation only, not the OSC output). Off by default - the launcher draws the preview in-app')
+    # 0.3 spelling, kept so existing scripts and the Tk launcher still parse; headless is now the default
+    parser.add_argument('--no-preview', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument(IPC_FD_FLAG, type=int, default=None, metavar='FD',
+                        help='Launcher IPC: inherited socket file descriptor for status, control and exit detection (set by the launcher)')
+    parser.add_argument(IPC_SHM_FLAG, default=None, metavar='NAME',
+                        help='Launcher IPC: name of the shared-memory segment the engine creates for preview frames (set by the launcher)')
     parser.add_argument('mode', choices=['pose', 'hand', 'all'], help='Tracking mode: pose, hand, or all (both)')
     return parser
 
@@ -144,8 +150,6 @@ def apply_config_overrides(args, config):
         config.set('performance', 'target_fps', args.fps_cap)
     if args.mirror_preview is not None:
         config.set('display', 'mirror_preview', args.mirror_preview)
-    if args.show_window is not None:
-        config.set('display', 'show_window', args.show_window)
 
 
 # ============================================================================
@@ -330,6 +334,52 @@ def reopen_capture(config, old_cap, use_ndi=False, ndi_source=None):
 
 
 # ============================================================================
+# CAMERA FAULT REPORTING
+# ============================================================================
+CAMERA_DENIED_REASON = "Camera access is off for Gesture - allow it in System Settings > Privacy & Security > Camera"
+
+
+def report_camera_unavailable(config):
+    """
+    Report why a webcam could not be opened: macOS blocking access
+    (permission_denied) or anything else (no_camera)
+
+    Args:
+        config: Configuration object (for the device id in the message)
+    """
+    if camera_permission_denied():
+        print("❌ Camera access is denied")
+        print("   Allow it in System Settings > Privacy & Security > Camera, then start again")
+        report_phase('permission_denied', reason=CAMERA_DENIED_REASON)
+    else:
+        device_id = config.get('camera', 'device_id', 0)
+        print(f"❌ Camera {device_id} could not be opened")
+        print("   Check the camera device ID, and that no other app is using the camera")
+        report_phase('no_camera', reason=f"Camera {device_id} could not be opened")
+
+
+def report_capture_state(config, using_ndi, state, reason):
+    """
+    Map a ReconnectingCapture state change onto the status channel's phases
+
+    Args:
+        config: Configuration object
+        using_ndi: The session reads an NDI source (no permission check then)
+        state: 'reconnecting', 'recovered' or 'gave_up'
+        reason: Detail from the capture wrapper
+    """
+    if state == 'reconnecting':
+        report_phase('reconnecting', reason=reason)
+    elif state == 'recovered':
+        report_phase('ready')
+    elif state == 'gave_up':
+        if not using_ndi and camera_permission_denied():
+            report_phase('permission_denied', reason=CAMERA_DENIED_REASON)
+        else:
+            report_phase('no_camera', reason=reason)
+
+
+# ============================================================================
 # PREVIEW WINDOW
 # ============================================================================
 def show_preview(image, window_title, mirror):
@@ -352,7 +402,7 @@ def show_preview(image, window_title, mirror):
 # ============================================================================
 # MAIN APPLICATION FUNCTION
 # ============================================================================
-def run(args, config):
+def run(args, config, channel=None):
     """
     Main application loop
     Initializes OSC, camera, and pose processor, then runs processing loop
@@ -360,6 +410,8 @@ def run(args, config):
     Args:
         args: Parsed command line arguments
         config: Configuration object
+        channel: EngineChannel to the launcher (status, control, preview
+            frames), or None when running standalone
 
     Returns:
         Process exit code (0 on success)
@@ -369,25 +421,10 @@ def run(args, config):
     # ------------------------------------------------------------------------
     osc_config = config.get('osc')
     performance_config = config.get('performance')
-    display_config = config.get('display')
 
-    # ------------------------------------------------------------------------
-    # Dock policy reassert (macOS, launcher-spawned only)
-    # ------------------------------------------------------------------------
-    # HighGUI resets the Accessory policy set in main() the moment it creates
-    # its first preview window, so the loops below re-apply it right after
-    # their first cv2.waitKey() following the first cv2.imshow(). Lazily
-    # imported and gated the same way as set_accessory_policy() so CLI/
-    # non-GUI runs never touch libobjc.
-    launched_from_gui = bool(getenv('GESTURE_LAUNCHED_FROM_GUI', 'MPOSC_LAUNCHED_FROM_GUI'))
-    reassert_dock_policy = None
-    if launched_from_gui:
-        from src.macos_app import reassert_accessory_policy
-        reassert_dock_policy = reassert_accessory_policy
-
-    # Recorded now, while the launcher is certainly still our parent - the
-    # loops poll it so a force-quit launcher can't orphan the engine (#34)
-    parent_watch = ParentWatch(enabled=launched_from_gui)
+    if channel is None:
+        channel = NullChannel()
+    preview_window = bool(getattr(args, 'preview_window', False))
 
     # ------------------------------------------------------------------------
     # Initialize OSC communication
@@ -428,6 +465,10 @@ def run(args, config):
     if cap is None:
         # setup_camera already printed a specific ❌ error (NDI was requested
         # and definitively failed) - do not fall back to the webcam.
+        report_phase('no_camera', reason="NDI source unavailable")
+        return 1
+    if not using_ndi and not cap.isOpened():
+        report_camera_unavailable(config)
         return 1
 
     # ------------------------------------------------------------------------
@@ -448,7 +489,6 @@ def run(args, config):
     hand_landmarker = None
 
     backend_names = []
-    window_title = DEFAULT_WINDOW_TITLE
 
     # ------------------------------------------------------------------------
     # Setup Holistic Processor (preferred for 'all' mode - pose + hands in
@@ -549,21 +589,12 @@ def run(args, config):
         print("🛑 Cannot initialize any processing backend")
         return 1
 
-    # Default window title (overridden below if display.window_title is set,
-    # which it is by default - see DEFAULT_WINDOW_TITLE)
-    window_title = DEFAULT_WINDOW_TITLE
-    
-    # ------------------------------------------------------------------------
-    # Configure display window
-    # ------------------------------------------------------------------------
-    if display_config.get('window_title'):
-        window_title = display_config['window_title']
-    
     backend_str = " + ".join(backend_names) if backend_names else "None"
     print(f"🚀 Mode: {tracking_mode.upper()}")
     print(f"🚀 Backend(s): {backend_str}")
-    print(f"🖼️  Window: {window_title}")
-    if display_config.get('mirror_preview', False):
+    if preview_window:
+        print(f"🖼️  Window: {PREVIEW_WINDOW_TITLE}")
+    if config.get('display', 'mirror_preview', False):
         print("🪞 Preview mirrored (display only - OSC coordinates are unchanged)")
 
     # In all mode without holistic, pose and hand read the same frame -
@@ -593,8 +624,9 @@ def run(args, config):
         gc.disable()
 
     report_phase('ready')
-    # Sentinel the launcher watches for to end its startup spinner (the Tk
-    # launcher depends on it; the status channel replaces it in #65)
+    # The launcher's ready signal is the status channel's 'ready' phase; this
+    # line is kept only because the Tk launcher (src/gui.py, going away) still
+    # scrapes stdout for it
     print("🟢 Engine ready")
 
     # ========================================================================
@@ -604,6 +636,7 @@ def run(args, config):
     # `finally:` cleanup) can tell a clean stop from capture loss from an
     # unhandled crash, instead of always reporting success.
     exit_reason = EXIT_OK
+    live = None
     try:
         # Failed reads back off and reopen instead of busy-spinning, and
         # only a loss lasting camera.reconnect_timeout seconds ends the
@@ -613,28 +646,41 @@ def run(args, config):
             cap,
             reopen=lambda old_cap: reopen_capture(config, old_cap, args.ndi, args.ndi_source),
             timeout=config.get('camera', 'reconnect_timeout', 30),
+            on_state=lambda state, reason: report_capture_state(config, using_ndi, state, reason),
         )
 
         if not cap.isOpened():
             print("❌ Video capture is not open - nothing to process")
             print("   Check the camera device ID or NDI source name")
             print("   On macOS, confirm camera access in System Settings > Privacy & Security > Camera")
+            report_phase('no_camera', reason="Video capture is not open")
             return 1
-        
+
         # Tasks processing with async callback
         frame_clock = FrameClock(frame_interval)
-        mirror_preview = display_config.get('mirror_preview', False)
+        live = LiveSettings(config, osc_emitter, threaded_osc, frame_clock,
+                            pose_processor, hand_processor, pose_landmarker, hand_landmarker,
+                            channel, preview_window=preview_window)
 
         # Not `while cap.isOpened()` - during a reconnect the capture can be
         # closed for a while, and the loop has to keep iterating through it
         while True:
-            # Launcher force-quit or crashed - don't keep holding the camera
-            if parent_watch.parent_gone():
-                print("🛑 Launcher is gone - stopping")
+            # The launcher asked to stop, or closed its end of the socket
+            # (quit, crash, force-quit): don't keep holding the camera
+            if channel.should_stop:
+                if channel.closed.is_set():
+                    print("🛑 Launcher is gone - stopping")
+                else:
+                    print("🛑 Stop requested by the launcher")
                 break
 
             # 1 Hz heartbeat first, so it keeps going through frame-read failures
             osc_emitter.heartbeat()
+
+            # Live `set` commands, applied between frames (may rebuild the landmarkers)
+            live.apply_pending()
+            live.update_draw_state()
+            channel.tick(osc_emitter)
 
             # Frame rate limiting (deadline-based - see FrameClock)
             frame_clock.wait()
@@ -648,6 +694,7 @@ def run(args, config):
                     exit_reason = EXIT_CAPTURE_LOST
                     break
                 continue
+            frame_read_at = time.perf_counter()
 
             try:
                 timestamp_counter += 1
@@ -665,29 +712,29 @@ def run(args, config):
                 display = None
                 osc_emitter.begin_frame(time.time())
                 if pose_processor:
-                    display = pose_processor.process_frame(frame, pose_landmarker, "Pose", timestamp_counter, draw_target=display)
+                    display = pose_processor.process_frame(frame, live.pose_landmarker, "Pose", timestamp_counter, draw_target=display)
 
                 if hand_processor:
-                    display = hand_processor.process_frame(frame, hand_landmarker, "Hand", timestamp_counter, draw_target=display)
+                    display = hand_processor.process_frame(frame, live.hand_landmarker, "Hand", timestamp_counter, draw_target=display)
                 osc_emitter.end_frame()
+                # Frame read -> packets queued; what the status channel calls latency
+                channel.frame_done((time.perf_counter() - frame_read_at) * 1000.0)
 
-                if display_config.get('show_window', True):
-                    show_preview(display, window_title, mirror_preview)
+                # Preview: the launcher's shared buffer, and/or the CLI window.
+                # The mirror flip is display-only - OSC stays in source space.
+                if live.publish_frames:
+                    channel.publish_frame(display, live.mirror)
+
+                if preview_window:
+                    show_preview(display, PREVIEW_WINDOW_TITLE, live.mirror)
 
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         break
-                    # Re-fight HighGUI for the Dock policy right after
-                    # it has had its chance to reset it on window
-                    # creation. Called every frame, unconditionally -
-                    # see macos_app.py for why a fixed call budget
-                    # isn't enough (that was #43).
-                    if reassert_dock_policy is not None:
-                        reassert_dock_policy()
                     # The red close button destroys the window; without
                     # this check the loop would keep running and imshow
                     # would recreate it on the next frame.
                     try:
-                        if cv2.getWindowProperty(window_title, cv2.WND_PROP_VISIBLE) < 1:
+                        if cv2.getWindowProperty(PREVIEW_WINDOW_TITLE, cv2.WND_PROP_VISIBLE) < 1:
                             print("🛑 Preview window closed - stopping")
                             break
                     except cv2.error:
@@ -711,6 +758,10 @@ def run(args, config):
     # CLEANUP
     # ========================================================================
     finally:
+        # The live settings own the landmarkers once a threshold change has
+        # rebuilt them
+        if live is not None:
+            pose_landmarker, hand_landmarker = live.pose_landmarker, live.hand_landmarker
         # Release MediaPipe landmarkers (Tasks API holds native graph resources)
         for landmarker in (pose_landmarker, hand_landmarker):
             try:
@@ -733,7 +784,7 @@ def run(args, config):
         except:
             pass
         try:
-            if display_config.get('show_window', True):
+            if preview_window:
                 cv2.destroyAllWindows()
         except:
             pass
@@ -748,6 +799,30 @@ def run(args, config):
 # ============================================================================
 # APPLICATION ENTRY POINT
 # ============================================================================
+def open_channel(args, config):
+    """
+    Adopt the launcher's IPC socket, if it passed one
+
+    Args:
+        args: Parsed command line arguments
+        config: Configuration object (for the preview frame size)
+
+    Returns:
+        EngineChannel, or a no-op NullChannel when running standalone
+    """
+    if args.ipc_fd is None:
+        return NullChannel()
+    camera = config.get('camera')
+    frame_size = (camera.get('processing_width', 640), camera.get('processing_height', 480))
+    # Socket closed = launcher gone: interrupt the loop, with a watchdog for
+    # when the main thread is stuck in native code
+    holder = {}
+    channel = EngineChannel.from_fd(args.ipc_fd, shm_name=args.ipc_shm, frame_size=frame_size,
+                                    on_close=lambda: holder['exit']() if 'exit' in holder else None)
+    holder['exit'] = exit_on_launcher_loss(channel)
+    return channel
+
+
 def main(argv=None):
     """
     Parse arguments, load configuration, and start tracking
@@ -764,12 +839,6 @@ def main(argv=None):
     # run()'s cleanup like a SIGINT Stop instead of dying mid-frame
     install_sigterm_handler()
 
-    # When the launcher spawns us, drop out of the Dock before any window
-    # exists so the engine doesn't get a second identical Dock tile.
-    if getenv('GESTURE_LAUNCHED_FROM_GUI', 'MPOSC_LAUNCHED_FROM_GUI'):
-        from src.macos_app import set_accessory_policy
-        set_accessory_policy()
-
     config = get_config()
     apply_config_overrides(args, config)
 
@@ -778,7 +847,22 @@ def main(argv=None):
 
     print_platform_info()
 
-    return run(args, config)
+    channel = open_channel(args, config)
+    set_phase_handler(channel.on_phase)
+    code = EXIT_OK
+    reason = ""
+    try:
+        code = run(args, config, channel)
+        reason = {EXIT_CAPTURE_LOST: "capture_lost", EXIT_CRASH: "crash", 1: "startup_failed"}.get(code, "")
+    except KeyboardInterrupt:
+        # A stop signal that landed before run()'s own handler was in place
+        code = EXIT_OK
+    finally:
+        if channel.closed.is_set():
+            reason = "launcher_gone"
+        set_phase_handler(None)
+        channel.close(reason)
+    return code
 
 
 if __name__ == "__main__":

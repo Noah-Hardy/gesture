@@ -39,7 +39,11 @@ class TasksPoseProcessor(LandmarkerProcessor):
         super().__init__(osc, show_fps, config, force_cpu, force_gpu, is_apple_silicon)
 
         # Pre-build DrawingSpec objects for landmark rendering
-        display_config = config.get('display') if config else {}
+        self.refresh_display_specs()
+
+    def refresh_display_specs(self):
+        """Rebuild the drawing specs from the display config (also the live-apply path)"""
+        display_config = self.config.get('display') if self.config else {}
         self._landmark_spec = self._make_spec(
             display_config.get('landmark_color', [245, 117, 66]),
             display_config.get('landmark_thickness', 1),

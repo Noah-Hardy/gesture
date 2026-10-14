@@ -47,7 +47,7 @@ def test_last_used_form_round_trips_through_a_relaunch(tmp_path):
     assert reopened.var_pose_model.get() == 'full'
     assert reopened.var_fps_cap.get() == '30'
     assert reopened.var_mirror.get() is True
-    assert reopened.var_show_preview.get() is False
+    # (the preview checkbox is no longer persisted: display.show_window is retired, #65)
     assert reopened.var_force_cpu.get() is True
     assert reopened.var_no_holistic.get() is True
 

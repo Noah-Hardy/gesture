@@ -200,18 +200,19 @@ def test_sanitize_repairs_non_numeric_queue_size(config_path):
     assert cfg.get('osc', 'queue_size') == Config.MIN_OSC_QUEUE_SIZE
 
 
-def test_sanitize_replaces_legacy_window_title(config_path):
+def test_retired_preview_window_keys_are_dropped_on_load(config_path):
     with open(config_path, 'w') as f:
-        json.dump({'display': {'window_title': 'MediaPipe OSC Pose Detection'}}, f)
+        json.dump({'display': {'show_window': False, 'window_title': 'My Custom Title',
+                               'mirror_preview': True}}, f)
     cfg = Config(config_path)
-    assert cfg.get('display', 'window_title') == Config.DEFAULT_CONFIG['display']['window_title']
+    assert 'show_window' not in cfg.get('display')
+    assert 'window_title' not in cfg.get('display')
+    assert cfg.get('display', 'mirror_preview') is True
 
 
-def test_sanitize_preserves_custom_window_title(config_path):
-    with open(config_path, 'w') as f:
-        json.dump({'display': {'window_title': 'My Custom Title'}}, f)
-    cfg = Config(config_path)
-    assert cfg.get('display', 'window_title') == 'My Custom Title'
+def test_retired_keys_are_not_in_the_defaults():
+    assert 'show_window' not in Config.DEFAULT_CONFIG['display']
+    assert 'window_title' not in Config.DEFAULT_CONFIG['display']
 
 
 def test_corrupt_json_falls_back_to_defaults(config_path):
@@ -251,14 +252,6 @@ def test_getenv_order_and_default(monkeypatch):
     assert getenv('GESTURE_X', 'MPOSC_X') == 'legacy'
     monkeypatch.setenv('GESTURE_X', 'new')
     assert getenv('GESTURE_X', 'MPOSC_X') == 'new'
-
-
-def test_previous_default_window_title_is_retitled(config_path):
-    with open(config_path, 'w') as f:
-        json.dump({'display': {'window_title': 'MP-OSC Preview — not the OSC output'}}, f)
-    cfg = Config(config_path)
-    assert cfg.get('display', 'window_title') == Config.DEFAULT_CONFIG['display']['window_title']
-    assert cfg.get('display', 'window_title').startswith('Gesture')
 
 
 # ----------------------------------------------------------------------------

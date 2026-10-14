@@ -117,13 +117,12 @@ class Config:
     # Settings window's spinner minimum.
     MIN_OSC_QUEUE_SIZE = 32
 
-    # window_title values previous releases shipped as the default -
-    # _sanitize replaces an exact match with the current default so
-    # existing configs pick up a retitle. A user's custom title never
-    # matches one of these and is left alone.
-    _LEGACY_WINDOW_TITLES = (
-        "MediaPipe OSC Pose Detection",
-        "MP-OSC Preview — not the OSC output",
+    # Keys retired from config.json. The engine no longer owns a preview window
+    # (the launcher draws the preview in-app; `--preview-window` is a CLI
+    # flag), so these do nothing - _sanitize drops them from loaded configs.
+    _RETIRED_KEYS = (
+        ("display", "show_window"),
+        ("display", "window_title"),
     )
 
     # Default configuration values
@@ -175,8 +174,6 @@ class Config:
             "no_holistic": False  # In "all" mode, use separate pose+hand models instead of holistic (launch-time)
         },
         "display": {
-            "show_window": True,
-            "window_title": "Gesture Preview — not the OSC output",
             "mirror_preview": False,  # Flip the preview horizontally (display only - OSC data is unaffected)
             "landmark_color": [245, 117, 66],
             "connection_color": [245, 66, 230],
@@ -347,11 +344,10 @@ class Config:
         if config['camera'].get('ndi_bandwidth') not in ('lowest', 'highest'):
             config['camera']['ndi_bandwidth'] = self.DEFAULT_CONFIG['camera']['ndi_bandwidth']
 
-        # A saved window_title exactly matching a previous release's
-        # default is a config that never customized it - pick up the
-        # retitle. A real custom title never matches and is untouched.
-        if config['display'].get('window_title') in self._LEGACY_WINDOW_TITLES:
-            config['display']['window_title'] = self.DEFAULT_CONFIG['display']['window_title']
+        # Retired keys (see _RETIRED_KEYS) would otherwise be written back on
+        # the next save and linger in hand-edited files
+        for section, key in self._RETIRED_KEYS:
+            config.get(section, {}).pop(key, None)
 
         return config
     
