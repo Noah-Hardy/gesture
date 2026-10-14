@@ -245,3 +245,39 @@ def test_window_hide_show_and_minimize_tell_the_engine(app, tmp_path):
         window._save_timer.stop()
         window.engine.stop_and_wait()
         window.hide()
+
+
+def test_frame_to_image_is_native_format_and_keeps_channels():
+    import numpy as np
+    frame = np.zeros((6, 9, 3), np.uint8)
+    frame[..., 0], frame[..., 1], frame[..., 2] = 10, 20, 30   # B, G, R
+    frame[2, 3] = (1, 2, 3)
+    image = engine_mod.frame_to_image(frame)
+    assert image.format() == QImage.Format.Format_RGB32  # blits without a per-paint conversion
+    assert (image.width(), image.height()) == (9, 6)
+    c = image.pixelColor(0, 0)
+    assert (c.red(), c.green(), c.blue(), c.alpha()) == (30, 20, 10, 255)
+    c = image.pixelColor(3, 2)
+    assert (c.red(), c.green(), c.blue()) == (3, 2, 1)
+
+
+def test_frames_are_pulled_without_waiting_for_a_status(controller):
+    import numpy as np
+
+    class FakeLink:
+        last_status = {}  # no status ever arrives: frame_seq stays absent
+
+        def __init__(self):
+            self.seq = 0
+
+        def read_frame(self):
+            self.seq += 1
+            return self.seq, np.full((4, 5, 3), 7, np.uint8)
+
+    controller._link = FakeLink()
+    got = []
+    controller.frameReady.connect(got.append)
+    controller._poll_frame()
+    controller._poll_frame()
+    assert len(got) == 2 and controller._last_frame_seq == 2
+    assert controller._frame_timer.interval() <= 16

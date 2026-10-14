@@ -29,7 +29,9 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QCoreApplication, QObject, QTimer, Signal
+import numpy as np
+
+from PySide6.QtCore import QCoreApplication, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QImage
 
 from src.config import Config, valid_port
@@ -42,7 +44,7 @@ from src.live_keys import is_live
 TERMINATE_AFTER = 5.0         # Seconds after SIGINT before SIGTERM
 KILL_AFTER = 8.0              # Seconds after SIGINT before SIGKILL
 WATCHDOG_INTERVAL_MS = 250    # Stop-escalation check interval
-FRAME_POLL_MS = 33            # Preview poll interval (~30 Hz); only copies when frame_seq advanced
+FRAME_POLL_MS = 8             # Preview poll interval; reads the shm header's latest_seq and copies only a new frame
 
 STATES = ('stopped', 'starting', 'running', 'stopping')
 
@@ -134,6 +136,31 @@ def engine_env() -> Dict[str, str]:
 
 
 # ============================================================================
+# FRAMES
+# ============================================================================
+def frame_to_image(frame) -> QImage:
+    """
+    Convert a BGR preview frame to a QImage the painter can blit as is
+
+    Format_RGB32 is the raster paint engine's native format, so painting it
+    needs no per-paint conversion (Format_BGR888 is converted on every draw).
+
+    Args:
+        frame: HxWx3 uint8 BGR array.
+
+    Returns:
+        A QImage (Format_RGB32) that owns its pixels.
+    """
+    height, width = frame.shape[:2]
+    image = QImage(width, height, QImage.Format.Format_RGB32)
+    # Little-endian RGB32 is B, G, R, X in memory: the BGR channels drop straight in
+    dst = np.frombuffer(image.bits(), np.uint8).reshape(height, image.bytesPerLine() // 4, 4)
+    dst[:, :width, :3] = frame
+    dst[:, :width, 3] = 255
+    return image
+
+
+# ============================================================================
 # CONTROLLER
 # ============================================================================
 class EngineController(QObject):
@@ -184,6 +211,8 @@ class EngineController(QObject):
         self._watchdog.timeout.connect(self._escalate_stop)
         self._frame_timer = QTimer(self)
         self._frame_timer.setInterval(FRAME_POLL_MS)
+        # Precise: a coarse timer rounds to ~33 ms steps and beats against a 30 fps source
+        self._frame_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._frame_timer.timeout.connect(self._poll_frame)
         self._lineRead.connect(self.output)
         self._procEnded.connect(self._on_finished)
@@ -402,21 +431,15 @@ class EngineController(QObject):
             self.liveReply.emit(msg)
 
     def _poll_frame(self) -> None:
+        """Pull the newest frame straight from the shared buffer (not gated on the 10 Hz status)."""
         link = self._link
         if link is None:
-            return
-        seq = int(link.last_status.get('frame_seq', 0) or 0)
-        if seq <= self._last_frame_seq:
             return
         got = link.read_frame()
         if got is None:
             return
         self._last_frame_seq, frame = got
-        height, width = frame.shape[:2]
-        # QImage over the array's memory, then copied once so the image owns
-        # its pixels and outlives the array (consumers may keep it)
-        self.frameReady.emit(QImage(frame.data, width, height, frame.strides[0],
-                                    QImage.Format.Format_BGR888).copy())
+        self.frameReady.emit(frame_to_image(frame))
 
     # ------------------------------------------------------------------------
     # Control channel
