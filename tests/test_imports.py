@@ -59,7 +59,25 @@ def test_spec_hiddenimports_cover_every_lazy_export():
         tree = ast.parse(f.read())
     hidden = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.keyword) and node.arg == 'hiddenimports':
+        # The explicit list lives in `_HIDDEN_IMPORTS = [...]` (later `+=`
+        # additions are computed, not literal, and are ignored here)
+        if (isinstance(node, ast.Assign) and isinstance(node.value, ast.List)
+                and any(isinstance(t, ast.Name) and t.id == '_HIDDEN_IMPORTS' for t in node.targets)):
             hidden |= set(ast.literal_eval(node.value))
     needed = {f'src.{name}' for name in src._EXPORTS.values()}
     assert not needed - hidden, f"add to gesture.spec hiddenimports: {sorted(needed - hidden)}"
+
+
+def test_selftest_imports_flag_passes_from_source():
+    # The frozen-app smoke test (`gesture --selftest-imports`); from source it
+    # proves every src.* module imports and matplotlib is pinned to Agg.
+    import os
+    root = os.path.dirname(os.path.dirname(__file__))
+    env = dict(os.environ, QT_QPA_PLATFORM='offscreen')
+    env.pop('MPLBACKEND', None)
+    result = subprocess.run(
+        [sys.executable, os.path.join(root, 'app.py'), '--selftest-imports'],
+        capture_output=True, text=True, timeout=120, env=env, cwd=root,
+    )
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert ' 0 failed' in result.stdout

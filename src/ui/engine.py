@@ -129,6 +129,7 @@ def engine_env() -> Dict[str, str]:
     """Environment for the engine child (unbuffered stdout so console lines stream)."""
     env = dict(os.environ)
     env['PYTHONUNBUFFERED'] = '1'
+    env.setdefault('MPLBACKEND', 'Agg')
     return env
 
 
