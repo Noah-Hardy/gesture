@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QAbstractButton, QGridLayout, QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
 
+from ..overlays.faults import holistic_active
 from ..osc_activity import ActivityTracker, format_uptime, landmark_points, predict_families
 from ..tokens import Font, Radius, color
 from ..widgets import Meter, Sparkline
@@ -119,6 +120,7 @@ class Stage(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._frame: QImage | None = None
         self._stats: list[str] = []
+        self._overlay: QWidget | None = None
 
         self.source_chip = Chip('', 'dim', parent=self)
         self.holistic_chip = Chip('holistic', 'accent', parent=self)
@@ -134,6 +136,11 @@ class Stage(QWidget):
         """Show a preview frame (None clears it)."""
         self._frame = image
         self.update()
+
+    def set_overlay(self, overlay: QWidget) -> None:
+        """Host a full-stage overlay (the fault cards, #67) beneath the chips."""
+        self._overlay = overlay
+        self._place()
 
     def has_frame(self) -> bool:
         """True when a frame is being shown."""
@@ -181,6 +188,9 @@ class Stage(QWidget):
         self.world_chip.move(14 + self.mirror_chip.width() + 6, h - 12 - self.world_chip.height())
         self.note.adjustSize()
         self.note.move(self.width() - 14 - self.note.width(), h - 12 - self.note.height())
+        if self._overlay is not None:
+            self._overlay.setGeometry(self.rect())
+            self._overlay.raise_()
         for w in (self.source_chip, self.holistic_chip, self.mirror_chip, self.world_chip, self.note):
             w.raise_()
 
@@ -683,9 +693,7 @@ class LivePane(QWidget):
     # ------------------------------------------------------------------------
     def holistic_active(self) -> bool:
         """True when the holistic model is in use (all mode, not disabled, one pose)."""
-        return (_cfg(self.window_, 'ui', 'mode', 'all') == 'all'
-                and not _cfg(self.window_, 'performance', 'no_holistic', False)
-                and int(_cfg(self.window_, 'mediapipe', 'num_poses', 1) or 1) == 1)
+        return holistic_active(self.config)
 
     def source_text(self) -> str:
         """Top-left chip text: camera description or the NDI source name."""
