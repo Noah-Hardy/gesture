@@ -2,20 +2,20 @@
 
 ## Camera
 
-In the **Input** pane, select **Camera** and choose the device. `0` is normally the built-in camera or the first camera detected; additional cameras use `1`, `2` and so on. Changing the source needs a restart.
+In the **Input** pane, select **Camera** and choose the device from **Camera device**, where each entry reads `Camera N — name`. `0` is normally the built-in camera or the first camera detected; additional cameras use `1`, `2` and so on. Changing the source needs a restart.
 
 macOS requests camera permission on first use. If permission was denied, the **Camera access needed** card appears; enable it under **System Settings → Privacy & Security → Camera**, then click **Recheck**. See **Troubleshooting**.
 
 ## NDI
 
-Select **NDI** to receive video from an NDI sender, such as a video switcher, another computer or OBS with the NDI plugin. The **NDI source** list fills in as sources are found (this takes a few seconds); select one.
+Select **NDI** to receive video from an NDI sender, such as a video switcher, another computer or OBS with the NDI plugin. The **NDI source** list fills in as sources are found (this takes a few seconds); select one, or leave it at `Any (first found)`.
 
 Source matching:
 
 - Names are case-insensitive. An exact match takes precedence.
 - A partial name is accepted only if it matches exactly one source. For example, `switcher` selects `Switcher-1 (Program)` only if no other source name contains "switcher".
 - If the name matches no source, or more than one, the engine stops and the **NDI source not found** card appears. It does not fall back to a different source or to the camera.
-- If no name is set, the first source found is used.
+- If the source is left at `Any (first found)`, the first source found is used.
 
 **NDI bandwidth** (**Input** pane, `camera.ndi_bandwidth`) selects the received stream. `lowest` (the default) requests the sender's proxy stream, about 640×360, which is sufficient for tracking and uses less network bandwidth. `highest` requests full resolution.
 

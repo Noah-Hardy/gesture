@@ -144,3 +144,16 @@ def test_no_stale_launcher_era_statements():
         text = open(path, encoding='utf-8').read().lower()
         assert 'until 0.4.0' not in text, topic.filename
         assert 'show preview window' not in text, topic.filename
+
+
+def test_appendix_config_table_matches_the_pane_spec():
+    """The committed table equals the generator output, so it cannot drift from the panes"""
+    import importlib.util
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location('gen_config_table', os.path.join(root, 'scripts', 'gen_config_table.py'))
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    text = open(os.path.join(root, 'docs', 'appendix-advanced.md'), encoding='utf-8').read()
+    block = text[text.index(gen.BEGIN):text.index(gen.END) + len(gen.END)]
+    assert block == gen.render(), 'run: uv run python scripts/gen_config_table.py --write'
