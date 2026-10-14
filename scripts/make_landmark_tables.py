@@ -10,19 +10,19 @@ Usage:
     uv run python scripts/make_landmark_tables.py
 """
 
-import mediapipe as mp
+from mediapipe.python.solutions import hands, pose
 
 
 def pose_table():
     rows = ['| Index | Name |', '|---|---|']
-    for lm in mp.solutions.pose.PoseLandmark:
+    for lm in pose.PoseLandmark:
         rows.append(f'| {lm.value} | `{lm.name}` |')
     return '\n'.join(rows)
 
 
 def hand_table():
     rows = ['| Index | Name |', '|---|---|']
-    for lm in mp.solutions.hands.HandLandmark:
+    for lm in hands.HandLandmark:
         rows.append(f'| {lm.value} | `{lm.name}` |')
     return '\n'.join(rows)
 

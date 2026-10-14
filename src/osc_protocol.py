@@ -214,7 +214,8 @@ class OscFormatter:
     def hand_cleared(self, ts, handedness):
         """
         Hand tracking was lost. handedness "Left"/"Right" clears one hand;
-        None clears both (the legacy mp.solutions path's all-hands clear).
+        None clears both hands at once (no processor sends it since the
+        Solutions path was removed; the wire output is kept as is).
         """
         raise NotImplementedError
 
@@ -306,7 +307,7 @@ class LegacyFormatter(OscFormatter):
 
     def hand_cleared(self, ts, handedness):
         if handedness is None:
-            # mp.solutions path: both hands, no handedness key, plus a status 0
+            # All-hands clear: both hands, no handedness key, plus a status 0
             empty = compact_json({"timestamp": ts, "landmarks": []})
             out = []
             for prefix in ("left_hand", "right_hand"):

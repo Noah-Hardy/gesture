@@ -16,8 +16,8 @@ import time
 from pythonosc import udp_client
 
 # Import modular components
-from src import ThreadedOSCSender, TasksPoseProcessor, LegacyPoseProcessor, get_config
-from src import TasksHandProcessor, LegacyHandProcessor
+from src import ThreadedOSCSender, TasksPoseProcessor, get_config
+from src import TasksHandProcessor
 from src import TasksHolisticProcessor
 from src import OscEmitter
 from src.config import OSC_PROTOCOLS
@@ -36,7 +36,7 @@ IS_APPLE_SILICON = platform.system() == "Darwin" and platform.machine() == "arm6
 # EXIT CODES
 # ============================================================================
 # Setup failures that happen before the processing loop even starts (camera
-# open failure, no processor could be constructed, mismatched backends, bad
+# open failure, no processor could be constructed, bad
 # OSC target, ...) keep using the bare `1` they already used - that's out of
 # scope here. These are specifically for how run() reports *why the
 # processing loop itself ended*, so the launcher can tell a clean stop from
@@ -79,7 +79,6 @@ def build_parser():
     parser.add_argument('--camera', type=int, help='Camera device ID (overrides config)')
     parser.add_argument('--force-cpu', action='store_true', help='Force CPU delegate (skip GPU)')
     parser.add_argument('--force-gpu', action='store_true', help='Force GPU delegate (WARNING: has memory leak on Apple Silicon)')
-    parser.add_argument('--force-legacy', action='store_true', help='Force Legacy MediaPipe (skip Tasks API)')
     parser.add_argument('--ndi', action='store_true', help='Use NDI input instead of camera')
     parser.add_argument('--ndi-source', type=str, help='NDI source name to connect to')
     parser.add_argument('--list-ndi', action='store_true', help='List available NDI sources and exit')
@@ -351,115 +350,6 @@ def show_preview(image, window_title, mirror):
 
 
 # ============================================================================
-# LEGACY PROCESSING LOOP HELPER
-# ============================================================================
-def _legacy_loop(cap, pose_processor, pose_ctx, hand_processor, hand_ctx,
-                 display_config, window_title, show_fps, tracking_mode,
-                 frame_interval=0, reassert_dock_policy=None, parent_watch=None):
-    """
-    Helper function to run the legacy processing loop
-    Handles both single and combined processor modes
-
-    Args:
-        cap: ReconnectingCapture - a failed read is retried with backoff
-            and only ends the loop once cap.gave_up is set
-        reassert_dock_policy: Optional callable (macOS, launcher-spawned only)
-            that re-applies the Accessory Dock policy after HighGUI's first
-            window creation resets it. None elsewhere.
-        frame_interval: Minimum time between frames (0 = uncapped)
-        parent_watch: Optional ParentWatch - the loop stops cleanly once
-            the launcher that spawned it is gone (#34)
-
-    Returns:
-        One of the EXIT_* constants indicating why the loop ended, so run()
-        (which invokes this three different ways depending on which
-        processors are active) can report the real reason instead of
-        assuming every exit was a clean one.
-    """
-    frame_clock = FrameClock(frame_interval)
-    mirror_preview = display_config.get('mirror_preview', False)
-    exit_reason = EXIT_OK
-    # Both processors share run()'s one emitter
-    osc_emitter = (pose_processor or hand_processor).osc
-
-    # Not `while cap.isOpened()`: during a reconnect the capture can be
-    # closed for a while, and the loop has to keep iterating through it
-    while True:
-        # Launcher force-quit or crashed - don't keep holding the camera
-        if parent_watch is not None and parent_watch.parent_gone():
-            print("🛑 Launcher is gone - stopping")
-            break
-
-        # 1 Hz heartbeat first, so it keeps going through frame-read failures
-
-        osc_emitter.heartbeat()
-
-
-        # Frame rate limiting (deadline-based - see FrameClock)
-        frame_clock.wait()
-
-        # A failed read returns immediately (after at most a short backoff
-        # slice) so this loop - and anything at its top - keeps running
-        # while the capture reconnects
-        ret, frame = cap.read()
-        if not ret:
-            if cap.gave_up:
-                exit_reason = EXIT_CAPTURE_LOST
-                break
-            continue
-
-        try:
-            # Each processor's inference always reads the clean source
-            # `frame` directly, never a previous processor's annotated
-            # output - otherwise the second processor's model would see the
-            # first processor's skeleton painted over the pixels it's about
-            # to analyze, and would letterbox an already-letterboxed frame
-            # (an identity transform) instead of the true source frame,
-            # breaking its OSC coordinate mapping when processing/source
-            # aspect ratios differ. `display` accumulates both processors'
-            # overlays onto one shared array instead.
-            display = None
-            osc_emitter.begin_frame(time.time())
-
-            # Process pose if enabled
-            if pose_processor and pose_ctx:
-                display = pose_processor.process_frame(frame, pose_ctx, "Pose", draw_target=display)
-
-            # Process hand if enabled
-            if hand_processor and hand_ctx:
-                display = hand_processor.process_frame(frame, hand_ctx, "Hand", draw_target=display)
-
-            osc_emitter.end_frame()
-
-            if display_config.get('show_window', True):
-                show_preview(display, window_title, mirror_preview)
-
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-                # Re-fight HighGUI for the Dock policy right after it has
-                # had its chance to reset it on window creation. Called
-                # every frame, unconditionally - see macos_app.py for why a
-                # fixed call budget isn't enough (that was #43).
-                if reassert_dock_policy is not None:
-                    reassert_dock_policy()
-                # The red close button destroys the window; without this
-                # check the loop would keep running and imshow would
-                # recreate it on the next frame.
-                try:
-                    if cv2.getWindowProperty(window_title, cv2.WND_PROP_VISIBLE) < 1:
-                        print("🛑 Preview window closed - stopping")
-                        break
-                except cv2.error:
-                    break
-
-        except Exception as frame_error:
-            print(f"⚠️  Legacy frame processing error: {frame_error}")
-            continue
-
-    return exit_reason
-
-
-# ============================================================================
 # MAIN APPLICATION FUNCTION
 # ============================================================================
 def run(args, config):
@@ -542,31 +432,27 @@ def run(args, config):
     # ------------------------------------------------------------------------
     show_fps = performance_config['show_fps']
     tracking_mode = args.mode
-    
-    # Determine processing strategy
-    use_tasks = not args.force_legacy
+
     force_cpu = args.force_cpu
     force_gpu = args.force_gpu
     timestamp_counter = 0
-    
+
     # Processor containers
     pose_processor = None
     pose_landmarker = None
-    pose_is_tasks = False
-    
+
     hand_processor = None
     hand_landmarker = None
-    hand_is_tasks = False
-    
+
     backend_names = []
     window_title = DEFAULT_WINDOW_TITLE
-    
+
     # ------------------------------------------------------------------------
     # Setup Holistic Processor (preferred for 'all' mode - pose + hands in
     # a single model pass instead of two landmarkers per frame)
     # ------------------------------------------------------------------------
     holistic_active = False
-    if tracking_mode == 'all' and use_tasks and not args.no_holistic:
+    if tracking_mode == 'all' and not args.no_holistic:
         num_poses = config.get('mediapipe', 'num_poses', 1)
         if num_poses > 1:
             print("⚠️  Holistic landmarker is single-person (num_poses > 1 configured)")
@@ -588,7 +474,6 @@ def run(args, config):
                     # it publishes both pose and hand OSC channels itself
                     pose_processor = holistic_processor
                     pose_landmarker = holistic_landmarker
-                    pose_is_tasks = True
                     holistic_active = True
                     backend_names.append(holistic_backend)
                     print("✅ Using MediaPipe Tasks (Holistic)")
@@ -603,44 +488,29 @@ def run(args, config):
     # ------------------------------------------------------------------------
     if tracking_mode in ['pose', 'all'] and not holistic_active:
         print("🏃 Initializing pose tracking...")
-        if use_tasks:
-            try:
-                pose_processor = TasksPoseProcessor(
-                    osc_emitter,
-                    show_fps=show_fps,  # Enable FPS for pose in all modes
-                    config=config,
-                    force_cpu=force_cpu,
-                    force_gpu=force_gpu,
-                    is_apple_silicon=IS_APPLE_SILICON
-                )
-                pose_landmarker, pose_backend, _, success = pose_processor.setup_processor()
-                if success:
-                    pose_is_tasks = True
-                    backend_names.append(pose_backend)
-                    print("✅ Using MediaPipe Tasks (Pose)")
-                else:
-                    pose_processor = None
-            except Exception as e:
-                print(f"⚠️  Tasks pose processor failed: {e}")
-                pose_processor = None
-        
-        if pose_processor is None:
-            try:
-                pose_processor = LegacyPoseProcessor(
-                    osc_emitter,
-                    show_fps=show_fps,  # Enable FPS for pose in all modes
-                    config=config
-                )
-                pose_landmarker, pose_backend, _ = pose_processor.setup_processor()
-                pose_is_tasks = False
+        try:
+            pose_processor = TasksPoseProcessor(
+                osc_emitter,
+                show_fps=show_fps,  # Enable FPS for pose in all modes
+                config=config,
+                force_cpu=force_cpu,
+                force_gpu=force_gpu,
+                is_apple_silicon=IS_APPLE_SILICON
+            )
+            pose_landmarker, pose_backend, _, success = pose_processor.setup_processor()
+            if success:
                 backend_names.append(pose_backend)
-                print("✅ Using Legacy MediaPipe (Pose)")
-            except Exception as e:
-                print(f"❌ Legacy pose processor setup failed: {e}")
-                if tracking_mode == 'pose':
-                    print("🛑 Cannot initialize pose processing backend")
-                    return 1
-    
+                print("✅ Using MediaPipe Tasks (Pose)")
+            else:
+                pose_processor = None
+        except Exception as e:
+            print(f"⚠️  Tasks pose processor failed: {e}")
+            pose_processor = None
+
+        if pose_processor is None and tracking_mode == 'pose':
+            print("🛑 Cannot initialize pose processing backend")
+            return 1
+
     # ------------------------------------------------------------------------
     # Setup Hand Processor (if mode is 'hand' or 'all')
     # ------------------------------------------------------------------------
@@ -648,64 +518,34 @@ def run(args, config):
         print("✋ Initializing hand tracking...")
         # Only enable FPS on hand if pose is not running (to avoid duplicate output)
         hand_show_fps = show_fps if tracking_mode == 'hand' else False
-        if use_tasks:
-            try:
-                hand_processor = TasksHandProcessor(
-                    osc_emitter,
-                    show_fps=hand_show_fps,
-                    config=config,
-                    force_cpu=force_cpu,
-                    force_gpu=force_gpu,
-                    is_apple_silicon=IS_APPLE_SILICON
-                )
-                hand_landmarker, hand_backend, _, success = hand_processor.setup_processor()
-                if success:
-                    hand_is_tasks = True
-                    backend_names.append(hand_backend)
-                    print("✅ Using MediaPipe Tasks (Hand)")
-                else:
-                    hand_processor = None
-            except Exception as e:
-                print(f"⚠️  Tasks hand processor failed: {e}")
-                hand_processor = None
-        
-        if hand_processor is None:
-            try:
-                hand_processor = LegacyHandProcessor(
-                    osc_emitter,
-                    show_fps=show_fps if tracking_mode == 'hand' else False,
-                    config=config
-                )
-                hand_landmarker, hand_backend, _ = hand_processor.setup_processor()
-                hand_is_tasks = False
+        try:
+            hand_processor = TasksHandProcessor(
+                osc_emitter,
+                show_fps=hand_show_fps,
+                config=config,
+                force_cpu=force_cpu,
+                force_gpu=force_gpu,
+                is_apple_silicon=IS_APPLE_SILICON
+            )
+            hand_landmarker, hand_backend, _, success = hand_processor.setup_processor()
+            if success:
                 backend_names.append(hand_backend)
-                print("✅ Using Legacy MediaPipe (Hand)")
-            except Exception as e:
-                print(f"❌ Legacy hand processor setup failed: {e}")
-                if tracking_mode == 'hand':
-                    print("🛑 Cannot initialize hand processing backend")
-                    return 1
-    
+                print("✅ Using MediaPipe Tasks (Hand)")
+            else:
+                hand_processor = None
+        except Exception as e:
+            print(f"⚠️  Tasks hand processor failed: {e}")
+            hand_processor = None
+
+        if hand_processor is None and tracking_mode == 'hand':
+            print("🛑 Cannot initialize hand processing backend")
+            return 1
+
     # Verify at least one processor initialized for 'all' mode
     if tracking_mode == 'all' and pose_processor is None and hand_processor is None:
         print("🛑 Cannot initialize any processing backend")
         return 1
 
-    # Guard against mixed-backend mode: the main loop below picks a single
-    # loop style (Tasks vs. Legacy) for both processors, so if one processor
-    # landed on Tasks and the other fell back to Legacy, whichever one isn't
-    # on the chosen loop's backend never gets its process_frame() called -
-    # its OSC output silently goes dark even though startup printed success
-    # for it. Fail loudly instead of shipping a half-working session.
-    if pose_processor is not None and hand_processor is not None and pose_is_tasks != hand_is_tasks:
-        fallback_tracker = "hand" if pose_is_tasks else "pose"
-        print(f"❌ Pose and hand landed on different backends (pose_is_tasks={pose_is_tasks}, hand_is_tasks={hand_is_tasks})")
-        print(f"   The {fallback_tracker} tracker fell back to the Legacy MediaPipe API while the other stayed on Tasks")
-        print("   These two backends can't currently run together in one processing loop")
-        print("   --force-legacy forces both trackers onto the same (Legacy) backend, but it's")
-        print("   deprecated and will be removed in a future release - treat this as a stopgap, not a fix")
-        return 1
-    
     # Default window title (overridden below if display.window_title is set,
     # which it is by default - see DEFAULT_WINDOW_TITLE)
     window_title = DEFAULT_WINDOW_TITLE
@@ -722,9 +562,6 @@ def run(args, config):
     print(f"🖼️  Window: {window_title}")
     if display_config.get('mirror_preview', False):
         print("🪞 Preview mirrored (display only - OSC coordinates are unchanged)")
-    if args.force_legacy:
-        print("⚠️  --force-legacy is deprecated and will be removed in a future release; "
-              "the legacy MediaPipe Solutions API is being replaced by the unified Tasks-only pipeline")
 
     # In all mode without holistic, pose and hand read the same frame -
     # letterbox and colour-convert it once for both (#36)
@@ -768,107 +605,81 @@ def run(args, config):
             print("   On macOS, confirm camera access in System Settings > Privacy & Security > Camera")
             return 1
         
-        # Determine if we're using Tasks API (all processors must use same mode for simplicity)
-        # For 'all' mode, we process both sequentially on same frame
-        use_tasks_loop = (pose_is_tasks if pose_processor else False) or (hand_is_tasks if hand_processor else False)
-        
-        if use_tasks_loop:
-            # Tasks processing with async callback
-            frame_clock = FrameClock(frame_interval)
-            mirror_preview = display_config.get('mirror_preview', False)
-            
-            # Not `while cap.isOpened()` - see _legacy_loop
-            while True:
-                # Launcher force-quit or crashed - don't keep holding the camera
-                if parent_watch.parent_gone():
-                    print("🛑 Launcher is gone - stopping")
+        # Tasks processing with async callback
+        frame_clock = FrameClock(frame_interval)
+        mirror_preview = display_config.get('mirror_preview', False)
+
+        # Not `while cap.isOpened()` - during a reconnect the capture can be
+        # closed for a while, and the loop has to keep iterating through it
+        while True:
+            # Launcher force-quit or crashed - don't keep holding the camera
+            if parent_watch.parent_gone():
+                print("🛑 Launcher is gone - stopping")
+                break
+
+            # 1 Hz heartbeat first, so it keeps going through frame-read failures
+            osc_emitter.heartbeat()
+
+            # Frame rate limiting (deadline-based - see FrameClock)
+            frame_clock.wait()
+
+            # A failed read returns immediately (after at most a short backoff
+            # slice) so this loop - and anything at its top - keeps running
+            # while the capture reconnects
+            ret, frame = cap.read()
+            if not ret:
+                if cap.gave_up:
+                    exit_reason = EXIT_CAPTURE_LOST
                     break
+                continue
 
-                # 1 Hz heartbeat first, so it keeps going through frame-read failures
+            try:
+                timestamp_counter += 1
 
-                osc_emitter.heartbeat()
+                # Each processor's inference always reads the clean
+                # source `frame` directly, never a previous processor's
+                # annotated output - otherwise the second processor's
+                # model would see the first processor's skeleton painted
+                # over the pixels it's about to analyze, and would
+                # letterbox an already-letterboxed frame (an identity
+                # transform) instead of the true source frame, breaking
+                # its OSC coordinate mapping when processing/source
+                # aspect ratios differ. `display` accumulates both
+                # processors' overlays onto one shared array instead.
+                display = None
+                osc_emitter.begin_frame(time.time())
+                if pose_processor:
+                    display = pose_processor.process_frame(frame, pose_landmarker, "Pose", timestamp_counter, draw_target=display)
 
+                if hand_processor:
+                    display = hand_processor.process_frame(frame, hand_landmarker, "Hand", timestamp_counter, draw_target=display)
+                osc_emitter.end_frame()
 
-                # Frame rate limiting (deadline-based - see FrameClock)
-                frame_clock.wait()
+                if display_config.get('show_window', True):
+                    show_preview(display, window_title, mirror_preview)
 
-                # Returns promptly during a reconnect - see _legacy_loop
-                ret, frame = cap.read()
-                if not ret:
-                    if cap.gave_up:
-                        exit_reason = EXIT_CAPTURE_LOST
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
                         break
-                    continue
-
-                try:
-                    timestamp_counter += 1
-
-                    # Each processor's inference always reads the clean
-                    # source `frame` directly, never a previous processor's
-                    # annotated output - otherwise the second processor's
-                    # model would see the first processor's skeleton painted
-                    # over the pixels it's about to analyze, and would
-                    # letterbox an already-letterboxed frame (an identity
-                    # transform) instead of the true source frame, breaking
-                    # its OSC coordinate mapping when processing/source
-                    # aspect ratios differ. `display` accumulates both
-                    # processors' overlays onto one shared array instead.
-                    display = None
-                    osc_emitter.begin_frame(time.time())
-                    if pose_processor and pose_is_tasks:
-                        display = pose_processor.process_frame(frame, pose_landmarker, "Pose", timestamp_counter, draw_target=display)
-
-                    if hand_processor and hand_is_tasks:
-                        display = hand_processor.process_frame(frame, hand_landmarker, "Hand", timestamp_counter, draw_target=display)
-                    osc_emitter.end_frame()
-
-                    if display_config.get('show_window', True):
-                        show_preview(display, window_title, mirror_preview)
-
-                        if cv2.waitKey(1) & 0xFF == ord('q'):
+                    # Re-fight HighGUI for the Dock policy right after
+                    # it has had its chance to reset it on window
+                    # creation. Called every frame, unconditionally -
+                    # see macos_app.py for why a fixed call budget
+                    # isn't enough (that was #43).
+                    if reassert_dock_policy is not None:
+                        reassert_dock_policy()
+                    # The red close button destroys the window; without
+                    # this check the loop would keep running and imshow
+                    # would recreate it on the next frame.
+                    try:
+                        if cv2.getWindowProperty(window_title, cv2.WND_PROP_VISIBLE) < 1:
+                            print("🛑 Preview window closed - stopping")
                             break
-                        # Re-fight HighGUI for the Dock policy right after
-                        # it has had its chance to reset it on window
-                        # creation. Called every frame, unconditionally -
-                        # see macos_app.py for why a fixed call budget
-                        # isn't enough (that was #43).
-                        if reassert_dock_policy is not None:
-                            reassert_dock_policy()
-                        # The red close button destroys the window; without
-                        # this check the loop would keep running and imshow
-                        # would recreate it on the next frame.
-                        try:
-                            if cv2.getWindowProperty(window_title, cv2.WND_PROP_VISIBLE) < 1:
-                                print("🛑 Preview window closed - stopping")
-                                break
-                        except cv2.error:
-                            break
+                    except cv2.error:
+                        break
 
-                except Exception as frame_error:
-                    print(f"⚠️  Tasks frame processing error: {frame_error}")
-                    continue
-        else:
-            # Legacy processing with context manager
-            # Create context managers for active processors
-            pose_ctx = pose_landmarker if pose_processor and not pose_is_tasks else None
-            hand_ctx = hand_landmarker if hand_processor and not hand_is_tasks else None
-            
-            # Handle legacy context managers
-            if pose_ctx and hand_ctx:
-                with pose_ctx as pose, hand_ctx as hand:
-                    exit_reason = _legacy_loop(cap, pose_processor, pose, hand_processor, hand,
-                                display_config, window_title, show_fps, tracking_mode,
-                                frame_interval, reassert_dock_policy, parent_watch)
-            elif pose_ctx:
-                with pose_ctx as pose:
-                    exit_reason = _legacy_loop(cap, pose_processor, pose, None, None,
-                                display_config, window_title, show_fps, tracking_mode,
-                                frame_interval, reassert_dock_policy, parent_watch)
-            elif hand_ctx:
-                with hand_ctx as hand:
-                    exit_reason = _legacy_loop(cap, None, None, hand_processor, hand,
-                                display_config, window_title, show_fps, tracking_mode,
-                                frame_interval, reassert_dock_policy, parent_watch)
+            except Exception as frame_error:
+                print(f"⚠️  Frame processing error: {frame_error}")
+                continue
 
     except KeyboardInterrupt:
         # This is how the launcher stops the engine cleanly (it sends SIGINT

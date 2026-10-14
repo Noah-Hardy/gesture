@@ -4,7 +4,7 @@ Gesture tracks body pose and hand landmarks from a camera or [NDI](https://ndi.v
 
 ## Features
 
-- Real-time pose and hand tracking with the MediaPipe Tasks API, with automatic fallback to the Solutions API.
+- Real-time pose and hand tracking with the MediaPipe Tasks API.
 - Camera or NDI input.
 - Three OSC output formats: `legacy` (JSON strings, the default), `json` (compact bundled JSON) and `float` (one numeric message per landmark, for receivers such as Isadora). Bounds, status, debounced tracking and a 1 Hz heartbeat are sent in every format.
 - A preview window with landmark overlay.

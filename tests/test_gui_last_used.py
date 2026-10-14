@@ -22,7 +22,7 @@ class Var:
 def _stub(tmp_path, **overrides):
     form = dict(mode='hand', source='camera', camera='2', ndi_source='', host='10.0.0.5',
                 port='9000', pose_model='full', fps_cap='30', show_fps=True, show_preview=False,
-                mirror=True, force_cpu=True, force_gpu=False, force_legacy=False, no_holistic=True)
+                mirror=True, force_cpu=True, force_gpu=False, no_holistic=True)
     form.update(overrides)
     gui = SimpleNamespace(config=Config(str(tmp_path / 'config.json')), _int_or_none=None)
     for key, value in form.items():

@@ -316,3 +316,23 @@ def test_get_config_returns_the_same_instance(monkeypatch, config_path):
     a = get_config()
     b = get_config()
     assert a is b
+
+
+def test_sanitize_drops_keys_of_the_removed_solutions_path(config_path):
+    """#35: legacy-only keys in an old config are dropped on load, not carried forward"""
+    with open(config_path, 'w') as f:
+        json.dump({
+            'mediapipe': {'model_complexity': 2, 'enable_segmentation': True,
+                          'smooth_landmarks': False, 'pose_model_type': 'full'},
+            'hand': {'model_complexity': 0, 'num_hands': 1},
+            'performance': {'force_legacy': True, 'force_cpu': True},
+        }, f)
+    cfg = Config(config_path)
+    for section, key in (('mediapipe', 'model_complexity'), ('mediapipe', 'enable_segmentation'),
+                         ('mediapipe', 'smooth_landmarks'), ('hand', 'model_complexity'),
+                         ('performance', 'force_legacy')):
+        assert key not in cfg.get(section)
+    # Neighbouring keys are untouched
+    assert cfg.get('mediapipe', 'pose_model_type') == 'full'
+    assert cfg.get('hand', 'num_hands') == 1
+    assert cfg.get('performance', 'force_cpu') is True

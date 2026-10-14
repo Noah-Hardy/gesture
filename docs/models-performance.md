@@ -39,14 +39,6 @@ Detection runs asynchronously from capture. When the number of frames in progres
 
 Gesture selects the delegate automatically. Apple Silicon Macs use the CPU, because MediaPipe's GPU delegate leaks memory on Apple Silicon. **Force CPU delegate** and **Force GPU delegate** (**Settings → Advanced**) override this at the next **Start**. Force CPU is saved to `config.json`; Force GPU is not.
 
-## Force legacy MediaPipe API
-
-**Deprecated.** `--force-legacy` will be removed in a future release.
-
-This option switches from MediaPipe's Tasks API to the older synchronous Solutions API. It disables GPU acceleration, limits pose detection to one person, and replaces the Holistic model in `all` mode with separate models. Gesture falls back to this API automatically if the Tasks API fails to initialize, so manual selection is rarely needed.
-
-The `mediapipe.model_complexity`, `mediapipe.enable_segmentation`, `mediapipe.smooth_landmarks` and `hand.model_complexity` keys apply only to the legacy API.
-
 ## Garbage collection
 
 After the models load, Gesture performs one full garbage collection and freezes the loaded objects, so the collector does not traverse MediaPipe and OpenCV state during tracking. `performance.gc_interval` is no longer used.

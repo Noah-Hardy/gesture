@@ -174,7 +174,6 @@ class LauncherGui:
         # they're actually edited (see _build_advanced_tab).
         self.var_force_cpu = tk.BooleanVar()
         self.var_force_gpu = tk.BooleanVar()
-        self.var_force_legacy = tk.BooleanVar()
         self.var_no_holistic = tk.BooleanVar()
 
         self._seed_vars_from_config()
@@ -218,7 +217,6 @@ class LauncherGui:
 
         self.var_force_cpu.set(bool(cfg.get('performance', 'force_cpu', False)))
         self.var_force_gpu.set(bool(cfg.get('performance', 'force_gpu', False)))
-        self.var_force_legacy.set(bool(cfg.get('performance', 'force_legacy', False)))
         self.var_no_holistic.set(bool(cfg.get('performance', 'no_holistic', False)))
 
     def _reload_form_from_config(self) -> None:
@@ -340,7 +338,7 @@ class LauncherGui:
     def _build_model_frame(self, parent: ttk.Frame, row: int) -> None:
         """Pose model selection and frame rate cap
 
-        Show FPS / Force CPU / Force legacy / No holistic used to live here
+        Show FPS / Force CPU / No holistic used to live here
         as always-visible checkboxes. They're launch-time toggles most
         sessions never touch, so they moved to Settings -> Advanced
         (src.settings_window), leaving this section - and the window - short.
@@ -584,7 +582,6 @@ class LauncherGui:
             self.root, self.config,
             var_force_cpu=self.var_force_cpu,
             var_force_gpu=self.var_force_gpu,
-            var_force_legacy=self.var_force_legacy,
             var_no_holistic=self.var_no_holistic,
             var_show_fps=self.var_show_fps,
             on_open_config=self._open_config_file,
@@ -893,8 +890,6 @@ class LauncherGui:
             cmd.append('--force-cpu')
         elif self.var_force_gpu.get():
             cmd.append('--force-gpu')
-        if self.var_force_legacy.get():
-            cmd.append('--force-legacy')
         if self.var_no_holistic.get():
             cmd.append('--no-holistic')
 
@@ -1218,7 +1213,6 @@ class LauncherGui:
         self.config.set('performance', 'show_fps', bool(self.var_show_fps.get()))
         self.config.set('performance', 'force_cpu', bool(self.var_force_cpu.get()))
         self.config.set('performance', 'force_gpu', bool(self.var_force_gpu.get()))
-        self.config.set('performance', 'force_legacy', bool(self.var_force_legacy.get()))
         self.config.set('performance', 'no_holistic', bool(self.var_no_holistic.get()))
         self.config.set('display', 'mirror_preview', bool(self.var_mirror.get()))
         self.config.set('display', 'show_window', bool(self.var_show_preview.get()))

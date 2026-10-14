@@ -31,7 +31,6 @@ The positional `mode` argument is required.
 | `--no-holistic` | In `all` mode, use separate pose and hand models |
 | `--force-cpu` | Force the CPU delegate |
 | `--force-gpu` | Force the GPU delegate (leaks memory on Apple Silicon) |
-| `--force-legacy` | Use the MediaPipe Solutions API (deprecated) |
 | `--config PATH` | Use the specified configuration file |
 | `--create-config` | Write a default `config.json` and exit |
 | `--show-config` | Print the resolved configuration and exit |
@@ -46,8 +45,8 @@ Most keys are editable in the **Settings** window. OSC host and port, tracking m
 |---|---|
 | `osc` | `host`, `port`, `queue_size` (packets queued before the oldest is dropped; minimum 32), `protocol` (`legacy`, `json` or `float`; unknown values fall back to `legacy`), `tracking_hold` (optional; tracking hold time in seconds, default 0.3) |
 | `camera` | `device_id`, `width` / `height` (capture resolution), `processing_width` / `processing_height` (see **Camera & NDI**), `use_ndi`, `ndi_source`, `ndi_bandwidth` (`lowest` or `highest`, default `lowest`), `reconnect_timeout` (seconds, default 30, `0` for no limit) |
-| `mediapipe` | `pose_model_type`, `num_poses` (Tasks API; values above 1 disable the Holistic model in `all` mode), confidence thresholds, `model_complexity` / `enable_segmentation` / `smooth_landmarks` (legacy API only) |
-| `hand` | `num_hands`, confidence thresholds, preview colours, `model_complexity` (legacy API only) |
+| `mediapipe` | `pose_model_type`, `num_poses` (values above 1 disable the Holistic model in `all` mode), confidence thresholds |
+| `hand` | `num_hands`, confidence thresholds, preview colours |
 | `performance` | `target_fps`, `show_fps`, `gc_enabled`, `max_pending_frames` (default and minimum 1); see **Models & Performance** |
 | `display` | `show_window`, `window_title`, `mirror_preview`, preview colours and stroke sizes |
 | `updates` | Update checker state; see **Updates** |
