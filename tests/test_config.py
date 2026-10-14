@@ -50,6 +50,17 @@ def test_0_3_legacy_config_is_migrated_once_with_notice(config_path, capsys):
     assert 'Legacy (0.2.x)' in capsys.readouterr().out
 
 
+def test_fresh_config_runs_first_run(config_path):
+    assert Config(config_path).get('ui', 'first_run_complete') is False
+
+
+@pytest.mark.parametrize('protocol', ['legacy', 'json', 'float'])
+def test_pre_0_4_config_skips_first_run(config_path, protocol):
+    # Someone upgrading has already set Gesture up, whatever format they use
+    _write(config_path, {'osc': {'protocol': protocol}})
+    assert Config(config_path).get('ui', 'first_run_complete') is True
+
+
 def test_migration_does_not_repeat_after_save(config_path):
     _write(config_path, {'osc': {'protocol': 'legacy'}})
     cfg = Config(config_path)

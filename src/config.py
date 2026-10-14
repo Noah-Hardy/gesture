@@ -279,13 +279,17 @@ class Config:
         if osc.get('protocol_migrated'):
             return file_config
 
+        # A file from before 0.4 belongs to someone who has already set
+        # Gesture up; the first-run wizard is for fresh installs only
+        ui = file_config.get('ui')
+        if not isinstance(ui, dict):
+            ui = file_config['ui'] = {}
+        ui.setdefault('first_run_complete', True)
+
         # No key at all is a pre-0.3 file, which was sending legacy too
         protocol = osc.get('protocol', 'legacy')
         if isinstance(protocol, str) and protocol.strip().lower() == 'legacy':
             osc['protocol'] = DEFAULT_OSC_PROTOCOL
-            ui = file_config.get('ui')
-            if not isinstance(ui, dict):
-                ui = file_config['ui'] = {}
             ui['protocol_notice_pending'] = True
             print(f"🔀 OSC output format moved from Legacy (0.2.x) to {DEFAULT_OSC_PROTOCOL} "
                   f"(new default in {PROTOCOL_MIGRATION_VERSION}); switch back in Settings or with --osc-protocol legacy")
