@@ -16,7 +16,7 @@ A blank or `0` **FPS cap** runs uncapped. A value such as `30` limits how often 
 
 ## Show FPS
 
-**Show FPS** (**Settings → Advanced**) writes a stats line to the log approximately every 30 frames:
+**Show FPS** (**Advanced** pane) writes a stats line to the console approximately every 30 frames:
 
 ```
 CPU (MediaPipe Tasks) FPS: 28.41 | Memory: 412.3MB | OSC Sent: 8420 Dropped: 0 Queued: 2 | MP Pending: 0 Skipped: 3
@@ -33,19 +33,11 @@ Detection runs asynchronously from capture. When the number of frames in progres
 
 ## Max pending frames
 
-**Max pending frames** (**Settings → Advanced → Performance**, `performance.max_pending_frames`, default and minimum 1) is the number of frames MediaPipe may process concurrently. `1` gives the lowest latency. Higher values can increase throughput on fast machines, at the cost of added latency.
+**Max pending frames** (**Advanced** pane, **Performance**, `performance.max_pending_frames`, default and minimum 1) is the number of frames MediaPipe may process concurrently. `1` gives the lowest latency. Higher values can increase throughput on fast machines, at the cost of added latency.
 
 ## Delegate selection
 
-Gesture selects the delegate automatically. Apple Silicon Macs use the CPU, because MediaPipe's GPU delegate leaks memory on Apple Silicon. **Force CPU delegate** and **Force GPU delegate** (**Settings → Advanced**) override this at the next **Start**. Force CPU is saved to `config.json`; Force GPU is not.
-
-## Force legacy MediaPipe API
-
-**Deprecated.** `--force-legacy` will be removed in a future release.
-
-This option switches from MediaPipe's Tasks API to the older synchronous Solutions API. It disables GPU acceleration, limits pose detection to one person, and replaces the Holistic model in `all` mode with separate models. Gesture falls back to this API automatically if the Tasks API fails to initialize, so manual selection is rarely needed.
-
-The `mediapipe.model_complexity`, `mediapipe.enable_segmentation`, `mediapipe.smooth_landmarks` and `hand.model_complexity` keys apply only to the legacy API.
+Gesture selects the delegate automatically. Apple Silicon Macs use the CPU, because MediaPipe's GPU delegate leaks memory on Apple Silicon. **Force CPU delegate** and **Force GPU delegate** (**Advanced** pane) override this when the engine restarts. Force CPU is saved to `config.json`; Force GPU is not.
 
 ## Garbage collection
 

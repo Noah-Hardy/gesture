@@ -9,16 +9,11 @@ Used for 'all' mode to halve inference work vs separate pose + hand landmarkers
 # ============================================================================
 # IMPORTS
 # ============================================================================
-import os
-import time
 import mediapipe as mp
 from mediapipe.framework.formats import landmark_pb2
 
+from .landmarker_processor import LandmarkerProcessor, POSE_CONNECTIONS, HAND_CONNECTIONS
 from .model_downloader import download_holistic_model
-from .pose_processor import PoseProcessor
-
-# MediaPipe hand connections for drawing
-HAND_CONNECTIONS = mp.solutions.hands.HAND_CONNECTIONS
 
 
 # ============================================================================
@@ -102,15 +97,20 @@ def _install_holistic_empty_packet_fix():
     return True
 
 
+
+
 # ============================================================================
 # MEDIAPIPE TASKS HOLISTIC PROCESSOR
 # ============================================================================
-class TasksHolisticProcessor(PoseProcessor):
+class TasksHolisticProcessor(LandmarkerProcessor):
     """
     MediaPipe Tasks holistic processor
     Single-person pose + hand detection in one model pass
     Publishes on the same OSC channels as the separate pose/hand processors
     """
+
+    label = "Holistic"
+    backend_suffix = " - Holistic"
 
     def __init__(self, osc, show_fps=False, config=None, force_cpu=False, force_gpu=False, is_apple_silicon=None):
         """
@@ -124,323 +124,148 @@ class TasksHolisticProcessor(PoseProcessor):
             force_gpu: Force GPU delegate (WARNING: memory leak on Apple Silicon)
             is_apple_silicon: Override Apple Silicon detection
         """
-        super().__init__(osc, show_fps, config)
-        self.force_cpu = force_cpu
-        self.force_gpu = force_gpu
-        from .pose_processor import IS_APPLE_SILICON
-        self.is_apple_silicon = is_apple_silicon if is_apple_silicon is not None else IS_APPLE_SILICON
-        self.use_gpu = False
+        super().__init__(osc, show_fps, config, force_cpu, force_gpu, is_apple_silicon)
 
         # Per-hand detection state for transition-to-empty clearing
         self._last_left_hand_state = False
         self._last_right_hand_state = False
 
-        # Pre-build hand DrawingSpec pairs (left = green, right = red by default)
-        display_config = config.get('display') if config else {}
-        hand_config = config.get('hand') if config else {}
-        landmark_thickness = display_config.get('landmark_thickness', 1)
-        landmark_radius = display_config.get('landmark_radius', 2)
-        connection_thickness = display_config.get('connection_thickness', 1)
-        connection_radius = display_config.get('connection_radius', 1)
-        self._left_landmark_spec = mp.solutions.drawing_utils.DrawingSpec(
-            color=tuple(hand_config.get('left_landmark_color', [0, 255, 0])),
-            thickness=landmark_thickness, circle_radius=landmark_radius
+        # Pose DrawingSpecs, then hand pairs (left = green, right = red by default)
+        self.refresh_display_specs()
+
+    def refresh_display_specs(self):
+        """Rebuild the pose and hand drawing specs from the config (also the live-apply path)"""
+        display_config = self.config.get('display') if self.config else {}
+        self._landmark_spec = self._make_spec(
+            display_config.get('landmark_color', [245, 117, 66]),
+            display_config.get('landmark_thickness', 1),
+            display_config.get('landmark_radius', 2)
         )
-        self._left_connection_spec = mp.solutions.drawing_utils.DrawingSpec(
-            color=tuple(hand_config.get('left_connection_color', [0, 200, 0])),
-            thickness=connection_thickness, circle_radius=connection_radius
+        self._connection_spec = self._make_spec(
+            display_config.get('connection_color', [245, 66, 230]),
+            display_config.get('connection_thickness', 1),
+            display_config.get('connection_radius', 1)
         )
-        self._right_landmark_spec = mp.solutions.drawing_utils.DrawingSpec(
-            color=tuple(hand_config.get('right_landmark_color', [255, 0, 0])),
-            thickness=landmark_thickness, circle_radius=landmark_radius
-        )
-        self._right_connection_spec = mp.solutions.drawing_utils.DrawingSpec(
-            color=tuple(hand_config.get('right_connection_color', [200, 0, 0])),
-            thickness=connection_thickness, circle_radius=connection_radius
-        )
+        self._build_hand_specs()
 
     # ------------------------------------------------------------------------
-    # Async result callback
+    # Landmarker hooks
     # ------------------------------------------------------------------------
 
-    def _result_callback(self, result, output_image, timestamp_ms):
+    def _before_setup(self):
+        # Must run before a landmarker exists (see the note above the helper).
+        # If the patch can't be installed, building a HolisticLandmarker would
+        # re-arm the uncatchable C++ abort() it exists to prevent - bail out
+        # instead so the caller falls back to separate pose + hand landmarkers.
+        if not _install_holistic_empty_packet_fix():
+            print("❌ Holistic empty-packet fix could not be installed - skipping holistic tracking")
+            print("   Falling back to separate pose + hand landmarkers")
+            return False
+        return True
+
+    def _download_model(self):
+        return download_holistic_model()
+
+    def _landmarker_types(self):
+        return mp.tasks.vision.HolisticLandmarker, mp.tasks.vision.HolisticLandmarkerOptions
+
+    def build_options(self, delegate):
+        """Build HolisticLandmarkerOptions for the given delegate"""
+        mp_config = self.config.get('mediapipe') if self.config else {}
+        hand_config = self.config.get('hand') if self.config else {}
+        return mp.tasks.vision.HolisticLandmarkerOptions(
+            base_options=mp.tasks.BaseOptions(
+                model_asset_path=self._model_path,
+                delegate=delegate
+            ),
+            running_mode=mp.tasks.vision.RunningMode.LIVE_STREAM,
+            min_pose_detection_confidence=mp_config.get('min_detection_confidence', 0.7),
+            min_pose_landmarks_confidence=mp_config.get('min_pose_presence_confidence', 0.5),
+            min_hand_landmarks_confidence=hand_config.get('min_presence_confidence', 0.5),
+            output_face_blendshapes=False,
+            output_segmentation_mask=False,
+            result_callback=self._result_callback
+        )
+
+    def _publish(self, results, target, timestamp):
         """
-        Callback for async holistic detection results from MediaPipe Tasks
-        Runs on MediaPipe's worker thread - state updates guarded by lock
-        Note: We only store the result, not the output_image to avoid memory leaks
+        Send pose data on /pose/* channels and hand data on /left_hand/*
+        and /right_hand/* channels - same protocol as the separate processors
         """
-        with self._results_lock:
-            self.results = result
-            self._has_fresh_results = True
-            self.pending_frames = max(0, self.pending_frames - 1)
-        # output_image is deliberately not stored - only the result is needed
+        # Snapshot for this call - stable for the duration of process_frame
+        transform = self._letterbox_transform
 
-    # ------------------------------------------------------------------------
-    # Setup
-    # ------------------------------------------------------------------------
+        # ------------------------------------------------------------
+        # Pose (single person - flat landmark list)
+        # ------------------------------------------------------------
+        if results.pose_landmarks:
+            self._last_detection_state = True
+            # World landmarks are already real-world metres - the
+            # emitter never applies the letterbox transform to them
+            self.osc.pose(0, results.pose_landmarks, results.pose_world_landmarks or None,
+                          transform, "pose_0", ts=timestamp)
+            self.osc.pose_status(1)
 
-    def setup_processor(self):
-        """Setup MediaPipe Tasks holistic processor with GPU/CPU fallback"""
-        try:
-            # Must run before a landmarker exists (see the note above the helper).
-            # If the patch can't be installed, building a HolisticLandmarker would
-            # re-arm the uncatchable C++ abort() it exists to prevent - bail out
-            # instead so the caller falls back to separate pose + hand landmarkers.
-            if not _install_holistic_empty_packet_fix():
-                print("❌ Holistic empty-packet fix could not be installed - skipping holistic tracking")
-                print("   Falling back to separate pose + hand landmarkers")
-                return None, None, None, False
+            self._draw_landmarks(target, results.pose_landmarks)
+        else:
+            # Always send status message so receivers know program is running
+            self.osc.pose_status(0)
+            # Only send empty data once when transitioning from detected to not detected
+            if self._last_detection_state:
+                self.osc.pose_cleared(ts=timestamp)
+                self._last_detection_state = False
 
-            # Import MediaPipe Tasks API
-            BaseOptions = mp.tasks.BaseOptions
-            HolisticLandmarker = mp.tasks.vision.HolisticLandmarker
-            HolisticLandmarkerOptions = mp.tasks.vision.HolisticLandmarkerOptions
-            VisionRunningMode = mp.tasks.vision.RunningMode
+        # ------------------------------------------------------------
+        # Hands (holistic provides left/right directly)
+        # ------------------------------------------------------------
+        hand_count = 0
+        for handedness, hand_lms, hand_world_lms, last_state_attr in (
+            ("Left", results.left_hand_landmarks,
+             results.left_hand_world_landmarks, '_last_left_hand_state'),
+            ("Right", results.right_hand_landmarks,
+             results.right_hand_world_landmarks, '_last_right_hand_state'),
+        ):
+            if hand_lms:
+                hand_count += 1
+                setattr(self, last_state_attr, True)
+                self.osc.hand(handedness, hand_lms, hand_world_lms or None, transform,
+                              f"hand_{handedness.lower()}", ts=timestamp)
 
-            # Get configuration sections
-            mp_config = self.config.get('mediapipe') if self.config else {}
-            hand_config = self.config.get('hand') if self.config else {}
-
-            # Download model if needed
-            model_path = download_holistic_model()
-
-            if not model_path or not os.path.exists(model_path):
-                print("❌ Holistic model file not available")
-                return None, None, None, False
-
-            # Determine GPU/CPU delegate strategy
-            if self.force_cpu:
-                print("🔧 Forced CPU delegate via command line")
-                use_gpu_delegate = False
-            elif self.force_gpu:
-                print("⚠️  Forced GPU delegate via command line (WARNING: known memory leak on Apple Silicon)")
-                use_gpu_delegate = True
-            elif self.is_apple_silicon:
-                print("🍎 Apple Silicon detected: Using CPU delegate (GPU has known memory leak)")
-                use_gpu_delegate = False
+                self._draw_hand_landmarks(target, hand_lms, handedness)
             else:
-                use_gpu_delegate = True
+                # Only send empty data once when this hand transitions to not detected
+                if getattr(self, last_state_attr):
+                    self.osc.hand_cleared(handedness, ts=timestamp)
+                    setattr(self, last_state_attr, False)
 
-            def build_options(delegate):
-                return HolisticLandmarkerOptions(
-                    base_options=BaseOptions(
-                        model_asset_path=model_path,
-                        delegate=delegate
-                    ),
-                    running_mode=VisionRunningMode.LIVE_STREAM,
-                    min_pose_detection_confidence=mp_config.get('min_detection_confidence', 0.7),
-                    min_pose_landmarks_confidence=mp_config.get('min_pose_presence_confidence', 0.5),
-                    min_hand_landmarks_confidence=hand_config.get('min_presence_confidence', 0.5),
-                    output_face_blendshapes=False,
-                    output_segmentation_mask=False,
-                    result_callback=self._result_callback
-                )
+        self.osc.hand_status(hand_count)
 
-            landmarker = None
-            backend_name = None
+    def _draw_results(self, results, target):
+        if results.pose_landmarks:
+            self._draw_landmarks(target, results.pose_landmarks)
+        if results.left_hand_landmarks:
+            self._draw_hand_landmarks(target, results.left_hand_landmarks, "Left")
+        if results.right_hand_landmarks:
+            self._draw_hand_landmarks(target, results.right_hand_landmarks, "Right")
 
-            # Try GPU delegate first (unless forced to CPU or on Apple Silicon)
-            if use_gpu_delegate:
-                print("🎯 Attempting GPU delegate for holistic tracking...")
-                try:
-                    landmarker = HolisticLandmarker.create_from_options(
-                        build_options(BaseOptions.Delegate.GPU)
-                    )
-                    backend_name = "GPU (MediaPipe Tasks - Holistic)"
-                    self.use_gpu = True
-                    print("✅ GPU delegate initialized successfully for holistic tracking")
-                    if self.is_apple_silicon:
-                        print("   Using SRGBA image format for Apple Silicon Metal compatibility")
-                except Exception as gpu_error:
-                    print(f"⚠️  GPU delegate failed during initialization: {gpu_error}")
-                    landmarker = None
-
-            # Fallback to CPU delegate if GPU failed or was not attempted
-            if landmarker is None:
-                print("🔄 Using CPU delegate for holistic tracking...")
-                try:
-                    landmarker = HolisticLandmarker.create_from_options(
-                        build_options(BaseOptions.Delegate.CPU)
-                    )
-                    backend_name = "CPU (MediaPipe Tasks - Holistic)"
-                    self.use_gpu = False
-                    print("✅ CPU delegate initialized successfully for holistic tracking")
-                except Exception as cpu_error:
-                    print(f"❌ CPU delegate also failed: {cpu_error}")
-                    return None, None, None, False
-
-            window_title = "MediaPipe Tasks Holistic Detection"
-            print(f"✅ Successfully initialized {backend_name}")
-            return landmarker, backend_name, window_title, True
-
-        except ImportError as e:
-            print(f"⚠️  MediaPipe Tasks Holistic not available: {e}")
-            return None, None, None, False
-        except Exception as e:
-            print(f"❌ Failed to initialize MediaPipe Tasks Holistic: {e}")
-            return None, None, None, False
-
-    # ------------------------------------------------------------------------
-    # Frame processing
-    # ------------------------------------------------------------------------
-
-    def process_frame(self, frame, landmarker, backend_name, timestamp_counter, draw_target=None):
-        """
-        Process a single frame with the MediaPipe Tasks holistic landmarker
-        Sends pose data on /pose/* channels and hand data on /left_hand/*
-        and /right_hand/* channels — same protocol as the separate processors
-
-        Args:
-            frame: Input frame from camera/NDI
-            landmarker: MediaPipe HolisticLandmarker instance
-            backend_name: Backend name for FPS display
-            timestamp_counter: Frame counter for async processing
-            draw_target: Optional shared display array to draw landmarks into
-                instead of the inference frame. Model input is always the
-                clean letterboxed frame, never draw_target. Defaults to
-                None, which falls back to today's behavior: draw into (a
-                copy of, if shared) the letterboxed frame. Holistic always
-                runs alone (never chained with a separate pose/hand
-                processor in the same loop iteration), so callers should
-                not need to pass this - included for interface parity with
-                the other Tasks processors.
-
-        Returns:
-            Annotated frame with landmarks drawn (draw_target, if provided)
-        """
-        try:
-            if frame is None or frame.size == 0:
-                return frame
-
-            # Letterbox to the processing size (aspect-preserving, so OSC
-            # coordinates stay correct relative to the source frame)
-            image, self._letterbox_transform = self._frame_prep.letterbox(frame)
-
-            # `image` is the inference input ONLY - always the clean,
-            # letterboxed frame, never annotated. `target` is what gets
-            # drawn into and returned.
-            target = draw_target if draw_target is not None else self._frame_prep.drawable(image)
-
-            # Check if MediaPipe's async queue is backing up - skip frame if too many pending
-            if self.pending_frames >= self.max_pending_frames:
-                # Skip MediaPipe processing, but keep the preview skeleton
-                # alive by redrawing the last known results - otherwise it
-                # blinks on/off every time the model is the bottleneck
-                self.skipped_frames += 1
-                self.update_fps(backend_name)
-                if self._display_results is not None:
-                    if self._display_results.pose_landmarks:
-                        self._draw_landmarks(target, self._display_results.pose_landmarks)
-                    if self._display_results.left_hand_landmarks:
-                        self._draw_hand_landmarks(target, self._display_results.left_hand_landmarks, "Left")
-                    if self._display_results.right_hand_landmarks:
-                        self._draw_hand_landmarks(target, self._display_results.right_hand_landmarks, "Right")
-                # No OSC here - a skipped frame means "no new information",
-                # not "nothing detected"; sending status would misrepresent one or the other
-                return target
-
-            # On Apple Silicon with GPU, use SRGBA format for Metal compatibility
-            if self.is_apple_silicon and self.use_gpu:
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGBA, data=self._frame_prep.rgba())
-            else:
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=self._frame_prep.rgb())
-
-            # Process with MediaPipe Tasks (async)
-            landmarker.detect_async(mp_image, timestamp_counter)
-            with self._results_lock:
-                self.pending_frames += 1
-
-            timestamp = time.time()
-
-            # Atomically check-and-take fresh results from the callback thread
-            fresh_results = None
-            with self._results_lock:
-                if self._has_fresh_results and self.results is not None:
-                    fresh_results = self.results
-                    self.results = None
-                    self._has_fresh_results = False
-
-            if fresh_results is not None:
-                # Keep for stale drawing on frames before the next callback lands (main thread only)
-                self._display_results = fresh_results
-                # Snapshot for this call - stable for the duration of process_frame
-                transform = self._letterbox_transform
-
-                # ------------------------------------------------------------
-                # Pose (single person - flat landmark list)
-                # ------------------------------------------------------------
-                pose_detected = bool(fresh_results.pose_landmarks)
-                if pose_detected:
-                    self._last_detection_state = True
-                    # World landmarks are already real-world metres - the
-                    # emitter never applies the letterbox transform to them
-                    self.osc.pose(0, fresh_results.pose_landmarks, fresh_results.pose_world_landmarks or None,
-                                  transform, "pose_0", ts=timestamp)
-                    self.osc.pose_status(1)
-
-                    self._draw_landmarks(target, fresh_results.pose_landmarks)
-                else:
-                    # Always send status message so receivers know program is running
-                    self.osc.pose_status(0)
-                    # Only send empty data once when transitioning from detected to not detected
-                    if self._last_detection_state:
-                        self.osc.pose_cleared(ts=timestamp)
-                        self._last_detection_state = False
-
-                # ------------------------------------------------------------
-                # Hands (holistic provides left/right directly)
-                # ------------------------------------------------------------
-                hand_count = 0
-                for handedness, hand_lms, hand_world_lms, last_state_attr in (
-                    ("Left", fresh_results.left_hand_landmarks,
-                     fresh_results.left_hand_world_landmarks, '_last_left_hand_state'),
-                    ("Right", fresh_results.right_hand_landmarks,
-                     fresh_results.right_hand_world_landmarks, '_last_right_hand_state'),
-                ):
-                    if hand_lms:
-                        hand_count += 1
-                        setattr(self, last_state_attr, True)
-                        self.osc.hand(handedness, hand_lms, hand_world_lms or None, transform,
-                                      f"hand_{handedness.lower()}", ts=timestamp)
-
-                        self._draw_hand_landmarks(target, hand_lms, handedness)
-                    else:
-                        # Only send empty data once when this hand transitions to not detected
-                        if getattr(self, last_state_attr):
-                            self.osc.hand_cleared(handedness, ts=timestamp)
-                            setattr(self, last_state_attr, False)
-
-                self.osc.hand_status(hand_count)
-            elif self._display_results is not None:
-                # We have results but they're stale (already processed), just draw landmarks
-                if self._display_results.pose_landmarks:
-                    self._draw_landmarks(target, self._display_results.pose_landmarks)
-                if self._display_results.left_hand_landmarks:
-                    self._draw_hand_landmarks(target, self._display_results.left_hand_landmarks, "Left")
-                if self._display_results.right_hand_landmarks:
-                    self._draw_hand_landmarks(target, self._display_results.right_hand_landmarks, "Right")
-                # No fresh detection this frame - status 0 signals no actively tracked person
-                self.osc.pose_status(0)
-                self.osc.hand_status(0)
-            else:
-                # No results yet - still send status so receivers know program is running
-                self.osc.pose_status(0)
-                self.osc.hand_status(0)
-
-            self.update_fps(backend_name)
-            return target
-
-        except Exception as e:
-            print(f"⚠️  Holistic frame processing error: {e}")
-            with self._results_lock:
-                self.results = None
-                self._has_fresh_results = False
-            self._display_results = None
-            return draw_target if draw_target is not None else frame
+    def _report_idle(self):
+        self.osc.pose_status(0)
+        self.osc.hand_status(0)
 
     # ------------------------------------------------------------------------
     # Drawing
     # ------------------------------------------------------------------------
+
+    def _draw_landmarks(self, image, landmarks):
+        """
+        Draw pose landmarks on image
+
+        Args:
+            image: Image to draw on
+            landmarks: Landmark list to draw
+        """
+        self._draw_connected(image, landmarks, POSE_CONNECTIONS,
+                             self._landmark_spec, self._connection_spec)
 
     def _draw_hand_landmarks(self, image, landmarks, handedness):
         """
@@ -452,22 +277,7 @@ class TasksHolisticProcessor(PoseProcessor):
             handedness: "Left" or "Right" hand indicator
         """
         if handedness == "Left":
-            landmark_spec = self._left_landmark_spec
-            connection_spec = self._left_connection_spec
+            landmark_spec, connection_spec = self._left_landmark_spec, self._left_connection_spec
         else:
-            landmark_spec = self._right_landmark_spec
-            connection_spec = self._right_connection_spec
-
-        hand_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
-        hand_landmarks_proto.landmark.extend([
-            landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z)
-            for landmark in landmarks
-        ])
-
-        mp.solutions.drawing_utils.draw_landmarks(
-            image,
-            hand_landmarks_proto,
-            HAND_CONNECTIONS,
-            landmark_spec,
-            connection_spec
-        )
+            landmark_spec, connection_spec = self._right_landmark_spec, self._right_connection_spec
+        self._draw_connected(image, landmarks, HAND_CONNECTIONS, landmark_spec, connection_spec)

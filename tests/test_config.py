@@ -21,10 +21,84 @@ def test_missing_file_falls_back_to_defaults(config_path):
     assert cfg.get('camera', 'buffer_size') == 1
 
 
-def test_protocol_defaults_to_legacy(config_path):
-    # Legacy (the frozen 0.2.x wire format) stays the default until 0.4.0
+def test_protocol_defaults_to_float(config_path):
+    # float is the default since 0.4.0 (legacy is the deprecated 0.2.x format)
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'protocol') == 'float'
+
+
+# 0.3 -> 0.4 default change (#83): 0.3.x wrote "legacy" into nearly every config
+def _write(path, data):
+    with open(path, 'w') as f:
+        json.dump(data, f)
+
+
+def test_fresh_config_is_float_with_no_notice(config_path):
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'protocol') == 'float'
+    assert cfg.get('osc', 'protocol_migrated') == '0.4.0'
+    assert cfg.get('ui', 'protocol_notice_pending') is False
+
+
+def test_0_3_legacy_config_is_migrated_once_with_notice(config_path, capsys):
+    _write(config_path, {'osc': {'protocol': 'legacy', 'port': 9000}})
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'protocol') == 'float'
+    assert cfg.get('osc', 'port') == 9000
+    assert cfg.get('osc', 'protocol_migrated') == '0.4.0'
+    assert cfg.get('ui', 'protocol_notice_pending') is True
+    assert 'Legacy (0.2.x)' in capsys.readouterr().out
+
+
+def test_fresh_config_runs_first_run(config_path):
+    assert Config(config_path).get('ui', 'first_run_complete') is False
+
+
+@pytest.mark.parametrize('protocol', ['legacy', 'json', 'float'])
+def test_pre_0_4_config_skips_first_run(config_path, protocol):
+    # Someone upgrading has already set Gesture up, whatever format they use
+    _write(config_path, {'osc': {'protocol': protocol}})
+    assert Config(config_path).get('ui', 'first_run_complete') is True
+
+
+def test_migration_does_not_repeat_after_save(config_path):
+    _write(config_path, {'osc': {'protocol': 'legacy'}})
+    cfg = Config(config_path)
+    cfg.save()
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'protocol') == 'float'
+    # The user now deliberately goes back to legacy: it must stick
+    cfg.set('osc', 'protocol', 'legacy')
+    cfg.set('ui', 'protocol_notice_pending', False)
+    cfg.save()
     cfg = Config(config_path)
     assert cfg.get('osc', 'protocol') == 'legacy'
+    assert cfg.get('ui', 'protocol_notice_pending') is False
+
+
+def test_explicit_legacy_after_migration_is_kept(config_path):
+    _write(config_path, {'osc': {'protocol': 'legacy', 'protocol_migrated': '0.4.0'}})
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'protocol') == 'legacy'
+    assert cfg.get('ui', 'protocol_notice_pending') is False
+
+
+@pytest.mark.parametrize('protocol', ['json', 'float'])
+def test_migration_leaves_json_and_float_alone(config_path, protocol):
+    _write(config_path, {'osc': {'protocol': protocol}})
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'protocol') == protocol
+    assert cfg.get('osc', 'protocol_migrated') == '0.4.0'
+    assert cfg.get('ui', 'protocol_notice_pending') is False
+
+
+def test_pre_0_3_config_without_protocol_key_is_migrated_with_notice(config_path):
+    # Before 0.3 there was no osc.protocol; such a file was sending the
+    # legacy format, so it gets the same notice as an explicit legacy
+    _write(config_path, {'osc': {'port': 9000}})
+    cfg = Config(config_path)
+    assert cfg.get('osc', 'protocol') == 'float'
+    assert cfg.get('ui', 'protocol_notice_pending') is True
 
 
 def test_sanitize_normalizes_known_protocol(config_path):
@@ -35,11 +109,11 @@ def test_sanitize_normalizes_known_protocol(config_path):
 
 
 @pytest.mark.parametrize('bad', ['udp-carrier-pigeon', 42, None, ''])
-def test_sanitize_clamps_unknown_protocol_to_legacy(config_path, bad):
+def test_sanitize_clamps_unknown_protocol_to_default(config_path, bad):
     with open(config_path, 'w') as f:
         json.dump({'osc': {'protocol': bad}}, f)
     cfg = Config(config_path)
-    assert cfg.get('osc', 'protocol') == 'legacy'
+    assert cfg.get('osc', 'protocol') == 'float'
 
 
 def test_include_prereleases_defaults_to_false(config_path):
@@ -137,18 +211,19 @@ def test_sanitize_repairs_non_numeric_queue_size(config_path):
     assert cfg.get('osc', 'queue_size') == Config.MIN_OSC_QUEUE_SIZE
 
 
-def test_sanitize_replaces_legacy_window_title(config_path):
+def test_retired_preview_window_keys_are_dropped_on_load(config_path):
     with open(config_path, 'w') as f:
-        json.dump({'display': {'window_title': 'MediaPipe OSC Pose Detection'}}, f)
+        json.dump({'display': {'show_window': False, 'window_title': 'My Custom Title',
+                               'mirror_preview': True}}, f)
     cfg = Config(config_path)
-    assert cfg.get('display', 'window_title') == Config.DEFAULT_CONFIG['display']['window_title']
+    assert 'show_window' not in cfg.get('display')
+    assert 'window_title' not in cfg.get('display')
+    assert cfg.get('display', 'mirror_preview') is True
 
 
-def test_sanitize_preserves_custom_window_title(config_path):
-    with open(config_path, 'w') as f:
-        json.dump({'display': {'window_title': 'My Custom Title'}}, f)
-    cfg = Config(config_path)
-    assert cfg.get('display', 'window_title') == 'My Custom Title'
+def test_retired_keys_are_not_in_the_defaults():
+    assert 'show_window' not in Config.DEFAULT_CONFIG['display']
+    assert 'window_title' not in Config.DEFAULT_CONFIG['display']
 
 
 def test_corrupt_json_falls_back_to_defaults(config_path):
@@ -188,14 +263,6 @@ def test_getenv_order_and_default(monkeypatch):
     assert getenv('GESTURE_X', 'MPOSC_X') == 'legacy'
     monkeypatch.setenv('GESTURE_X', 'new')
     assert getenv('GESTURE_X', 'MPOSC_X') == 'new'
-
-
-def test_previous_default_window_title_is_retitled(config_path):
-    with open(config_path, 'w') as f:
-        json.dump({'display': {'window_title': 'MP-OSC Preview — not the OSC output'}}, f)
-    cfg = Config(config_path)
-    assert cfg.get('display', 'window_title') == Config.DEFAULT_CONFIG['display']['window_title']
-    assert cfg.get('display', 'window_title').startswith('Gesture')
 
 
 # ----------------------------------------------------------------------------
@@ -316,3 +383,23 @@ def test_get_config_returns_the_same_instance(monkeypatch, config_path):
     a = get_config()
     b = get_config()
     assert a is b
+
+
+def test_sanitize_drops_keys_of_the_removed_solutions_path(config_path):
+    """#35: legacy-only keys in an old config are dropped on load, not carried forward"""
+    with open(config_path, 'w') as f:
+        json.dump({
+            'mediapipe': {'model_complexity': 2, 'enable_segmentation': True,
+                          'smooth_landmarks': False, 'pose_model_type': 'full'},
+            'hand': {'model_complexity': 0, 'num_hands': 1},
+            'performance': {'force_legacy': True, 'force_cpu': True},
+        }, f)
+    cfg = Config(config_path)
+    for section, key in (('mediapipe', 'model_complexity'), ('mediapipe', 'enable_segmentation'),
+                         ('mediapipe', 'smooth_landmarks'), ('hand', 'model_complexity'),
+                         ('performance', 'force_legacy')):
+        assert key not in cfg.get(section)
+    # Neighbouring keys are untouched
+    assert cfg.get('mediapipe', 'pose_model_type') == 'full'
+    assert cfg.get('hand', 'num_hands') == 1
+    assert cfg.get('performance', 'force_cpu') is True

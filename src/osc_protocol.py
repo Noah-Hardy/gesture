@@ -8,7 +8,7 @@ packets (single datagrams or MTU-sized bundles) and hands them to the
 ThreadedOSCSender.
 
 Protocols (config key osc.protocol):
-    legacy - the frozen 0.2.x wire format (default until 0.4.0): JSON
+    legacy - the frozen 0.2.x wire format (deprecated; removed in 1.0): JSON
              strings with per-landmark type/id, one datagram per message,
              /mp/* status. Must stay byte-identical to
              tests/fixtures/osc_golden.json.
@@ -155,7 +155,7 @@ def register_formatter(cls):
 
 
 def make_formatter(protocol):
-    """Formatter instance for an osc.protocol value; unknown/unimplemented values fall back to legacy"""
+    """Formatter instance for an osc.protocol value; unknown/unimplemented values fall back to DEFAULT_OSC_PROTOCOL"""
     cls = FORMATTERS.get(protocol)
     if cls is None:
         print(f"⚠️  OSC protocol '{protocol}' not available - using '{DEFAULT_OSC_PROTOCOL}'")
@@ -214,7 +214,8 @@ class OscFormatter:
     def hand_cleared(self, ts, handedness):
         """
         Hand tracking was lost. handedness "Left"/"Right" clears one hand;
-        None clears both (the legacy mp.solutions path's all-hands clear).
+        None clears both hands at once (no processor sends it since the
+        Solutions path was removed; the wire output is kept as is).
         """
         raise NotImplementedError
 
@@ -306,7 +307,7 @@ class LegacyFormatter(OscFormatter):
 
     def hand_cleared(self, ts, handedness):
         if handedness is None:
-            # mp.solutions path: both hands, no handedness key, plus a status 0
+            # All-hands clear: both hands, no handedness key, plus a status 0
             empty = compact_json({"timestamp": ts, "landmarks": []})
             out = []
             for prefix in ("left_hand", "right_hand"):
@@ -625,16 +626,30 @@ class OscEmitter:
 
         self._last_heartbeat = None
         self._frames_since_heartbeat = 0
+        self._last_fps = 0.0
+
+        # Status-channel counters (#65): messages built per OSC address, and
+        # processed frames. Cumulative; a reader on another thread takes copies
+        self.address_counts = {}
+        self.frames_total = 0
+        self._detected = {'pose': 0, 'hand': 0}  # highest raw status count since take_detections()
 
     # ------------------------------------------------------------------------
     # Packet output
     # ------------------------------------------------------------------------
+
+    def _count_addresses(self, messages):
+        """Add a batch of (address, args) tuples to the per-address counters"""
+        counts = self.address_counts
+        for address, _ in messages:
+            counts[address] = counts.get(address, 0) + 1
 
     def _emit(self, messages):
         """Queue or send a formatter's (address, args) tuples"""
         if not messages:
             return
         if not self.formatter.bundled:
+            self._count_addresses(messages)
             for address, args in messages:
                 self.sender.send_packet(build_message(address, args))
         elif self._frame_open:
@@ -643,6 +658,7 @@ class OscEmitter:
             self._send_bundles(messages)
 
     def _send_bundles(self, messages):
+        self._count_addresses(messages)
         built = [build_message(address, args) for address, args in messages]
         for bundle in pack_bundles(built, self.max_bundle_bytes):
             self.sender.send_packet(bundle)
@@ -679,6 +695,7 @@ class OscEmitter:
 
         self._frame_open = False
         self._frames_since_heartbeat += 1
+        self.frames_total += 1
         pending, self._pending = self._pending, []
         if pending:
             self._send_bundles(pending)
@@ -718,6 +735,7 @@ class OscEmitter:
         self._emit(self.formatter.hand_status(n))
 
     def _report_status(self, channel, n):
+        self._detected[channel] = max(self._detected[channel], n)
         self._channels_used.add(channel)
         self._status_this_frame.add(channel)
         self._trackers[channel].update(n)
@@ -747,6 +765,7 @@ class OscEmitter:
             fps = self._frames_since_heartbeat / elapsed if elapsed > 0 else 0.0
         self._last_heartbeat = now
         self._frames_since_heartbeat = 0
+        self._last_fps = fps
         stats = self.sender.get_stats()
         self._emit(self.formatter.heartbeat(fps, stats['queued'], stats['dropped'], stats['sent']))
         return True
@@ -777,3 +796,42 @@ class OscEmitter:
     def get_stats(self):
         """Sender statistics (sent/dropped/queued) - for the processors' FPS log line"""
         return self.sender.get_stats()
+
+    def set_tracking_hold(self, hold):
+        """Change the /…/tracking debounce window for both channels (live osc.tracking_hold)"""
+        for tracker in self._trackers.values():
+            tracker.hold = hold
+
+    def take_detections(self):
+        """
+        What the status channel reports as detections: the highest raw
+        pose/hand count reported since the last call, then reset. 0 for any
+        interval in which nothing was tracked - never a cached last count, and
+        not debounced (unlike /…/tracking, which holds for osc.tracking_hold).
+        Call from the processing thread.
+
+        Returns:
+            {"pose": n, "hand": n}
+        """
+        taken = dict(self._detected)
+        self._detected = {'pose': 0, 'hand': 0}
+        return taken
+
+    def stats(self):
+        """
+        Snapshot for the launcher's status channel (#65), taken from the same
+        counters the heartbeat reports
+
+        Returns:
+            {"fps": last heartbeat's rate, "queue", "dropped", "sent",
+             "frames": processed frames, "per_address": copy of the counts}
+        """
+        sender = self.sender.get_stats()
+        return {
+            'fps': self._last_fps,
+            'queue': sender['queued'],
+            'dropped': sender['dropped'],
+            'sent': sender['sent'],
+            'frames': self.frames_total,
+            'per_address': self.address_counts.copy(),
+        }

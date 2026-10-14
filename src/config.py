@@ -28,13 +28,20 @@ def app_support_dir() -> str:
     """
     ~/Library/Application Support/Gesture - config, models, docs, updates
 
-    The one place that names the folder. On the first launch after the
+    The one place that names the folder. `GESTURE_APP_SUPPORT_DIR` overrides
+    it (for tests and for trying a build without touching the real config). On the first launch after the
     rename it moves the pre-rename mp-osc folder into place (a single
     atomic os.rename, so config, downloaded models and install.log all
     carry over). If that fails for any reason the old folder keeps being
     used rather than starting over with an empty one. Once Gesture exists
     it wins, so a later downgrade that recreates mp-osc is never merged in.
     """
+    override = os.environ.get('GESTURE_APP_SUPPORT_DIR')
+    if override:
+        # Testing / sandboxing: use exactly this folder, no rename migration
+        path = os.path.expanduser(override)
+        os.makedirs(path, exist_ok=True)
+        return path
     base = os.path.expanduser('~/Library/Application Support')
     new = os.path.join(base, APP_SUPPORT_NAME)
     old = os.path.join(base, LEGACY_APP_SUPPORT_NAME)
@@ -68,11 +75,15 @@ def default_config_path() -> str:
 # OSC PROTOCOLS
 # ============================================================================
 # Valid osc.protocol values (see src/osc_protocol.py). legacy is the frozen
-# 0.2.x wire format and stays the default until 0.4.0; json and float are
-# opt-in. Lives here, not in osc_protocol, so the settings UI and argument
-# parsing can list them without importing python-osc/cv2.
+# 0.2.x wire format (the default through 0.3.x, deprecated since 0.4.0 and
+# removed in 1.0); json and float are the current formats. Lives here, not in
+# osc_protocol, so the settings UI and argument parsing can list them without
+# importing python-osc/cv2. Changing the default is this one line (existing
+# configs are handled separately, see Config._migrate_0_4).
 OSC_PROTOCOLS = ("legacy", "json", "float")
-DEFAULT_OSC_PROTOCOL = "legacy"
+DEFAULT_OSC_PROTOCOL = "float"
+# Release that moved the default off legacy; stored in osc.protocol_migrated
+PROTOCOL_MIGRATION_VERSION = "0.4.0"
 
 
 # ============================================================================
@@ -113,13 +124,12 @@ class Config:
     # Settings window's spinner minimum.
     MIN_OSC_QUEUE_SIZE = 32
 
-    # window_title values previous releases shipped as the default -
-    # _sanitize replaces an exact match with the current default so
-    # existing configs pick up a retitle. A user's custom title never
-    # matches one of these and is left alone.
-    _LEGACY_WINDOW_TITLES = (
-        "MediaPipe OSC Pose Detection",
-        "MP-OSC Preview — not the OSC output",
+    # Keys retired from config.json. The engine no longer owns a preview window
+    # (the launcher draws the preview in-app; `--preview-window` is a CLI
+    # flag), so these do nothing - _sanitize drops them from loaded configs.
+    _RETIRED_KEYS = (
+        ("display", "show_window"),
+        ("display", "window_title"),
     )
 
     # Default configuration values
@@ -128,7 +138,8 @@ class Config:
             "host": "127.0.0.1",
             "port": 1234,
             "queue_size": MIN_OSC_QUEUE_SIZE,
-            "protocol": DEFAULT_OSC_PROTOCOL  # legacy (0.2.x format), json or float
+            "protocol": DEFAULT_OSC_PROTOCOL,  # float (default), json or legacy (0.2.x format, removed in 1.0)
+            "protocol_migrated": PROTOCOL_MIGRATION_VERSION  # Set once the 0.3 -> 0.4 default change was applied to this config (see _migrate_0_4)
         },
         "camera": {
             "device_id": 0,
@@ -144,18 +155,14 @@ class Config:
             "reconnect_timeout": 30  # Seconds a lost camera/NDI source may take to come back before the engine gives up (0 = never)
         },
         "mediapipe": {
-            "model_complexity": 0,
             "min_detection_confidence": 0.7,
             "min_tracking_confidence": 0.5,
             "min_pose_presence_confidence": 0.5,
-            "smooth_landmarks": True,
-            "enable_segmentation": False,
             "num_poses": 1,  # Note: Only supported in GPU mode (MediaPipe Tasks), CPU mode limited to 1
             "pose_model_type": "lite"  # lite, full, or heavy
         },
         "hand": {
             "num_hands": 2,
-            "model_complexity": 1,
             "min_detection_confidence": 0.5,
             "min_presence_confidence": 0.5,
             "min_tracking_confidence": 0.5,
@@ -171,19 +178,18 @@ class Config:
             "max_pending_frames": 1,  # Frames MediaPipe may have in flight before new ones are skipped (1 = lowest latency)
             "force_cpu": False,  # Force the CPU delegate (launch-time, GUI/Settings only)
             "force_gpu": False,  # Force the GPU delegate - has a memory leak on Apple Silicon (launch-time)
-            "force_legacy": False,  # Use MediaPipe's legacy synchronous API (launch-time, GUI/Settings only)
             "no_holistic": False  # In "all" mode, use separate pose+hand models instead of holistic (launch-time)
         },
         "display": {
-            "show_window": True,
-            "window_title": "Gesture Preview — not the OSC output",
             "mirror_preview": False,  # Flip the preview horizontally (display only - OSC data is unaffected)
             "landmark_color": [245, 117, 66],
             "connection_color": [245, 66, 230],
             "landmark_thickness": 1,
             "landmark_radius": 2,
             "connection_thickness": 1,
-            "connection_radius": 1
+            "connection_radius": 1,
+            "draw_landmarks": True,          # Draw landmarks over the in-app preview (display only)
+            "render_in_background": False    # Keep rendering preview frames while the window is hidden (tracking continues either way)
         },
         "updates": {
             "check_on_launch": True,      # Silently check GitHub for a newer release on launch
@@ -198,10 +204,11 @@ class Config:
         },
         "ui": {
             "mode": "all",  # Last-used tracking mode (pose, hand or all) - the launcher reopens with it
-            "input_section_open": True,
-            "osc_section_open": True,
-            "model_section_open": False,
-            "log_section_open": True
+            "console_open": True,            # Console drawer open/closed (0.4.0 window)
+            "console_height": 160,           # Console drawer height in px, 90-360
+            "first_run_complete": False,     # First-run wizard finished or skipped
+            "protocol_notice_pending": False,  # A 0.3 config was moved off the Legacy (0.2.x) OSC format; the UI offers "Keep Legacy" once, then clears this
+            "launch_animation": True         # Play the launch animation (every launch; skipped under Reduce Motion)
         }
     }
     
@@ -233,6 +240,7 @@ class Config:
             try:
                 with open(self.config_file, 'r') as f:
                     file_config = json.load(f)
+                file_config = self._migrate_0_4(file_config)
                 config = self._deep_merge(config, file_config)
                 print(f"📋 Loaded configuration from {self.config_file}")
             except (json.JSONDecodeError, IOError) as e:
@@ -248,8 +256,71 @@ class Config:
 
         return config
 
+    def _migrate_0_4(self, file_config: Any) -> Any:
+        """
+        One-time 0.3 -> 0.4 migration of a config loaded from disk
+
+        0.3.x saved osc.protocol "legacy" into nearly every config.json (the
+        default was merged in on every save), so changing the default only
+        reaches fresh installs. A file without osc.protocol_migrated that
+        says legacy is therefore switched to the new default once, and
+        ui.protocol_notice_pending is set so the UI can offer "Keep Legacy
+        (0.2.x) format". Every loaded file is stamped, so a user who then
+        picks legacy deliberately stays on it. Runs on the file's contents,
+        before they are merged over the defaults (which carry the stamp).
+
+        Args:
+            file_config: Parsed config.json contents
+
+        Returns:
+            The same dict, migrated (anything that is not a dict is returned as is)
+        """
+        if not isinstance(file_config, dict):
+            return file_config
+        osc = file_config.get('osc')
+        if not isinstance(osc, dict):
+            osc = file_config['osc'] = {}
+        if osc.get('protocol_migrated'):
+            return file_config
+
+        # A file from before 0.4 belongs to someone who has already set
+        # Gesture up; the first-run wizard is for fresh installs only
+        ui = file_config.get('ui')
+        if not isinstance(ui, dict):
+            ui = file_config['ui'] = {}
+        ui.setdefault('first_run_complete', True)
+
+        # No key at all is a pre-0.3 file, which was sending legacy too
+        protocol = osc.get('protocol', 'legacy')
+        if isinstance(protocol, str) and protocol.strip().lower() == 'legacy':
+            osc['protocol'] = DEFAULT_OSC_PROTOCOL
+            ui['protocol_notice_pending'] = True
+            print(f"🔀 OSC output format moved from Legacy (0.2.x) to {DEFAULT_OSC_PROTOCOL} "
+                  f"(new default in {PROTOCOL_MIGRATION_VERSION}); switch back in Settings or with --osc-protocol legacy")
+        osc['protocol_migrated'] = PROTOCOL_MIGRATION_VERSION
+        return file_config
+
+    #: Keys that only configured the removed MediaPipe Solutions path (#35);
+    #: dropped from loaded configs so they are not carried forward on save
+    _REMOVED_KEYS = (
+        ('mediapipe', 'model_complexity'),
+        ('mediapipe', 'enable_segmentation'),
+        ('mediapipe', 'smooth_landmarks'),
+        ('hand', 'model_complexity'),
+        ('performance', 'force_legacy'),
+        # Collapsible sections of the retired Tk launcher (0.4.0 has panes)
+        ('ui', 'input_section_open'),
+        ('ui', 'osc_section_open'),
+        ('ui', 'model_section_open'),
+        ('ui', 'log_section_open'),
+    )
+
     def _sanitize(self, config: Dict[str, Any]) -> Dict[str, Any]:
         """Repair values that older builds allowed to be saved out of range"""
+        for section, key in self._REMOVED_KEYS:
+            if isinstance(config.get(section), dict):
+                config[section].pop(key, None)
+
         # cv2.CAP_PROP_BUFFERSIZE needs at least 1 frame of buffering
         try:
             buffer_size = int(config['camera'].get('buffer_size', 1))
@@ -285,11 +356,10 @@ class Config:
         if config['camera'].get('ndi_bandwidth') not in ('lowest', 'highest'):
             config['camera']['ndi_bandwidth'] = self.DEFAULT_CONFIG['camera']['ndi_bandwidth']
 
-        # A saved window_title exactly matching a previous release's
-        # default is a config that never customized it - pick up the
-        # retitle. A real custom title never matches and is untouched.
-        if config['display'].get('window_title') in self._LEGACY_WINDOW_TITLES:
-            config['display']['window_title'] = self.DEFAULT_CONFIG['display']['window_title']
+        # Retired keys (see _RETIRED_KEYS) would otherwise be written back on
+        # the next save and linger in hand-edited files
+        for section, key in self._RETIRED_KEYS:
+            config.get(section, {}).pop(key, None)
 
         return config
     

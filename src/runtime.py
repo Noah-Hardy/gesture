@@ -1,17 +1,81 @@
 #!/usr/bin/env python3
 """
 Engine Runtime Helpers
-Process-lifetime and capture-loop plumbing shared by main.py's two
-processing loops: parent-liveness watch, SIGTERM handling, capture
-reconnect with backoff, and deadline-based frame pacing
+Process-lifetime and capture-loop plumbing shared by main.py's processing
+loop: SIGTERM handling, capture reconnect with backoff, deadline-based frame
+pacing, and engine phase reporting (launcher liveness is the IPC socket, see
+src/engine_channel.py)
 """
 
 # ============================================================================
 # IMPORTS
 # ============================================================================
-import os
 import signal
 import time
+
+
+# ============================================================================
+# STARTUP PHASES
+# ============================================================================
+# The engine's progress between Start and the first processed frame, in order.
+# These ids are the status-channel values (#65); the text is the log line.
+PHASES = ('opening_camera', 'loading_model', 'warming_up', 'ready')
+
+# Phases after startup: capture faults and the final state. The engine never
+# emits 'port_busy' - OSC output is an unbound UDP send, which cannot fail on a
+# busy port - but the status vocabulary keeps it so the launcher can decode it.
+FAULT_PHASES = ('reconnecting', 'no_camera', 'permission_denied', 'port_busy')
+ALL_PHASES = PHASES + FAULT_PHASES + ('stopped',)
+_PHASE_TEXT = {
+    'opening_camera': "Opening camera…",
+    'loading_model': "Loading model…",
+    'warming_up': "Warming up…",
+    'ready': "Ready",
+    'reconnecting': "Reconnecting to the camera…",
+    'no_camera': "Camera unavailable",
+    'permission_denied': "Camera access denied",
+    'port_busy': "OSC port busy",
+    'stopped': "Stopped",
+}
+
+_phase_handler = None
+
+
+def set_phase_handler(handler):
+    """
+    Route phase changes somewhere besides the log (the status channel, #65)
+
+    Args:
+        handler: callable(phase, reason) invoked from report_phase, or None
+            to remove it. Errors it raises are swallowed - reporting must
+            never stop the engine from starting.
+    """
+    global _phase_handler
+    _phase_handler = handler
+
+
+def report_phase(phase, reason="", message=None):
+    """
+    The single seam for startup progress: log the phase and notify the handler
+
+    Args:
+        phase: One of ALL_PHASES
+        reason: Detail for the handler (fault and stopped phases; unused by
+            the log line - the caller prints its own explanation)
+        message: Log line override, e.g. "Connecting to NDI source…" or
+            "Loading pose model (lite)…"; defaults to the phase's text
+
+    Raises:
+        ValueError: phase is not one of ALL_PHASES
+    """
+    if phase not in _PHASE_TEXT:
+        raise ValueError(f"unknown startup phase {phase!r}")
+    print(message or _PHASE_TEXT[phase], flush=True)
+    if _phase_handler is not None:
+        try:
+            _phase_handler(phase, reason)
+        except Exception as e:
+            print(f"⚠️  Phase handler failed: {e}")
 
 
 # ============================================================================
@@ -35,41 +99,6 @@ def install_sigterm_handler():
     signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
 
 
-class ParentWatch:
-    """
-    Detects the launcher going away underneath a GUI-spawned engine
-
-    Nothing else ties the engine's lifetime to the launcher's: a force-quit
-    (or crash) of the launcher left the engine holding the camera and
-    streaming OSC with no window to stop it from, and the next Start failed
-    with "Video capture is not open" (#34). When the parent dies the kernel
-    reparents us (to launchd on macOS), so getppid() changing is the signal.
-    """
-
-    CHECK_INTERVAL = 1.0  # Seconds between getppid() checks
-
-    def __init__(self, enabled, clock=time.monotonic):
-        """
-        Args:
-            enabled: Watch only when launched from the GUI - a CLI run's
-                parent is a shell, whose exit shouldn't stop tracking
-            clock: Monotonic time source (injectable for tests)
-        """
-        self._clock = clock
-        self.parent_pid = os.getppid() if enabled else None
-        self._next_check = 0.0
-
-    def parent_gone(self):
-        """True once the original parent has exited (checked ~once a second)"""
-        if self.parent_pid is None:
-            return False
-        now = self._clock()
-        if now < self._next_check:
-            return False
-        self._next_check = now + self.CHECK_INTERVAL
-        return os.getppid() != self.parent_pid
-
-
 # ============================================================================
 # FRAME PACING
 # ============================================================================
@@ -91,6 +120,11 @@ class FrameClock:
         self.interval = interval
         self._clock = clock
         self._sleep = sleep
+        self._next_deadline = None
+
+    def set_interval(self, interval):
+        """Change the cap while running (live performance.target_fps); 0 = uncapped"""
+        self.interval = interval
         self._next_deadline = None
 
     def wait(self):
@@ -134,7 +168,7 @@ class ReconnectingCapture:
     IDLE_SLICE = 0.25   # Longest single sleep inside read()
     REOPEN_AFTER = 5    # Consecutive failures between reopen attempts
 
-    def __init__(self, cap, reopen, timeout, clock=time.monotonic, sleep=time.sleep):
+    def __init__(self, cap, reopen, timeout, clock=time.monotonic, sleep=time.sleep, on_state=None):
         """
         Args:
             cap: The opened capture
@@ -143,7 +177,13 @@ class ReconnectingCapture:
             timeout: Seconds a failure streak may last before giving up
                 (0 or less = retry forever)
             clock, sleep: Injectable for tests
+            on_state: Optional callable(state, reason) told when the capture
+                changes state: 'reconnecting' (first failed read of a streak),
+                'recovered' (frames are back) and 'gave_up' (lost for good).
+                Errors it raises are swallowed. The status channel's
+                reconnecting / no_camera phases hang off this (#65).
         """
+        self._on_state = on_state
         self.cap = cap
         self._reopen = reopen
         self.timeout = timeout
@@ -191,6 +231,7 @@ class ReconnectingCapture:
         if ret:
             if self.failures:
                 print(f"✅ Capture recovered after {self.failures} failed read(s)")
+                self._notify('recovered', "")
             self.failures = 0
             self._streak_started = None
             self._backoff = self.MIN_BACKOFF
@@ -203,17 +244,27 @@ class ReconnectingCapture:
     # Failure handling
     # ------------------------------------------------------------------------
 
+    def _notify(self, state, reason):
+        if self._on_state is None:
+            return
+        try:
+            self._on_state(state, reason)
+        except Exception as e:
+            print(f"⚠️  Capture state handler failed: {e}")
+
     def _on_failure(self):
         now = self._clock()
         self.failures += 1
         if self._streak_started is None:
             self._streak_started = now
             print("⚠️  Capture stopped delivering frames - retrying")
+            self._notify('reconnecting', "Capture stopped delivering frames")
 
         if self.timeout > 0 and now - self._streak_started >= self.timeout:
             print(f"❌ Capture lost for {now - self._streak_started:.0f}s "
                   f"({self.failures} failed reads) - giving up")
             self.gave_up = True
+            self._notify('gave_up', f"Capture lost for {now - self._streak_started:.0f}s")
             return
 
         if self.failures % self.REOPEN_AFTER == 0:

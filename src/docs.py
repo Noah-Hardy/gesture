@@ -3,8 +3,8 @@
 Documentation Model, Parser and Renderers
 
 Parses a small, total Markdown subset into a plain data model, then renders
-that model two ways: tk.Text insert instructions for the in-app Help window,
-and a self-contained HTML page for "Open Full Documentation in Browser".
+that model two ways: a QTextDocument for the Qt Help pane and a
+self-contained HTML page for "Open Full Documentation in Browser".
 
 Deliberately stdlib-only and free of any `src.*` import. src/__init__.py
 eagerly imports mediapipe, cv2 and NDIlib, so importing this module must not
@@ -72,7 +72,7 @@ def docs_dir() -> str:
     frozen (PyInstaller cross-links this to Contents/Resources/docs), or the
     repo's docs/ directory from source. Never resolved relative to cwd - the
     engine subprocess deliberately runs with cwd unset when frozen
-    (see src/gui.py _build_command).
+    (see src/ui/engine.py).
     """
     if getattr(sys, 'frozen', False):
         return os.path.join(sys._MEIPASS, 'docs')
@@ -276,117 +276,45 @@ def load_topic(slug: str) -> Tuple[Block, ...]:
 
 
 # ============================================================================
-# TK RENDERER
+# HEADING ANCHORS
 # ============================================================================
-TK_TAGS: Tuple[str, ...] = (
-    'body', 'h1', 'h2', 'h3', 'bullet', 'number', 'code_block',
-    'code_inline', 'bold', 'link', 'rule', 'table',
-)
+def heading_slug(text: str) -> str:
+    """Anchor slug for a heading's plain text
 
-
-@dataclass(frozen=True)
-class TkPlan:
-    """Render output for the tk.Text viewer: insert chunks plus link targets"""
-    chunks: Tuple[Tuple[str, Tuple[str, ...]], ...]
-    links: Dict[str, str] = field(default_factory=dict)
-
-
-def _flatten_plain(spans: Tuple[Span, ...]) -> str:
-    """Strip inline styling markers, keeping only the literal text (for tables)"""
-    return ''.join(s.text for s in spans)
-
-
-def _table_col_widths(rows, max_width: int = 46) -> Tuple[int, ...]:
-    ncols = len(rows[0]) if rows else 0
-    widths = [0] * ncols
-    for row in rows:
-        for idx, cell in enumerate(row):
-            if idx >= ncols:
-                continue
-            text = _flatten_plain(cell)
-            if len(text) > max_width:
-                text = text[: max_width - 1] + '…'
-            widths[idx] = max(widths[idx], len(text))
-    return tuple(widths)
-
-
-def _table_cell_text(cell: Tuple[Span, ...], width: int, max_width: int = 46) -> str:
-    text = _flatten_plain(cell)
-    if len(text) > max_width:
-        text = text[: max_width - 1] + '…'
-    return text.ljust(width)
-
-
-def render_tk(blocks: Tuple[Block, ...], width_chars: int = 80) -> TkPlan:
-    """Render parsed blocks into tk.Text insert instructions
-
-    Returns chunks of (text, tag_names) ready for repeated text.insert('end',
-    chunk, tags) calls, plus a link-tag -> href map (hrefs can't ride on a
-    shared tk tag, so each link gets its own numbered tag alongside 'link').
+    The one slug rule shared by render_html() and render_qt(), so a
+    `help://<topic>#<anchor>` link and the standalone page agree. Lowercase,
+    every run of non-alphanumeric characters becomes a single '-', leading and
+    trailing '-' are stripped, and an empty result falls back to 'section'.
+    Example: 'Show preview window' -> 'show-preview-window'.
     """
-    chunks = []
-    links: Dict[str, str] = {}
-    link_counter = 0
+    slug = re.sub(r'[^a-z0-9]+', '-', text.lower()).strip('-')
+    return slug or 'section'
 
-    def emit_spans(spans, base_tags):
-        nonlocal link_counter
-        for span in spans:
-            if span.style == 'code':
-                chunks.append((span.text, base_tags + ('code_inline',)))
-            elif span.style == 'bold':
-                chunks.append((span.text, base_tags + ('bold',)))
-            elif span.style == 'link':
-                tag = f'link-{link_counter}'
-                link_counter += 1
-                links[tag] = span.href
-                chunks.append((span.text, base_tags + ('link', tag)))
-            else:
-                chunks.append((span.text, base_tags))
 
-    for block in blocks:
-        if block.kind in ('h1', 'h2', 'h3'):
-            emit_spans(block.spans, (block.kind,))
-            chunks.append(('\n', (block.kind,)))
-        elif block.kind == 'p':
-            emit_spans(block.spans, ('body',))
-            chunks.append(('\n\n', ('body',)))
-        elif block.kind in ('bullet', 'number'):
-            prefix = ('    ' if block.level else '') + ('• ' if block.kind == 'bullet' else '1. ')
-            chunks.append((prefix, (block.kind,)))
-            emit_spans(block.spans, (block.kind,))
-            chunks.append(('\n', (block.kind,)))
-        elif block.kind == 'code':
-            chunks.append((block.text + '\n', ('code_block',)))
-        elif block.kind == 'rule':
-            chunks.append(('─' * min(width_chars, 60) + '\n\n', ('rule',)))
-        elif block.kind == 'table':
-            widths = _table_col_widths(block.rows)
-            total = sum(widths) + 3 * (len(widths) - 1) if widths else 0
-            if total <= width_chars:
-                header = block.rows[0]
-                line = ' │ '.join(
-                    _table_cell_text(c, w) for c, w in zip(header, widths)
-                )
-                chunks.append((line + '\n', ('table',)))
-                rule = '─┼─'.join('─' * w for w in widths)
-                chunks.append((rule + '\n', ('table',)))
-                for row in block.rows[1:]:
-                    line = ' │ '.join(
-                        _table_cell_text(c, w) for c, w in zip(row, widths)
-                    )
-                    chunks.append((line + '\n', ('table',)))
-                chunks.append(('\n', ('table',)))
-            else:
-                # Stacked fallback: one paragraph per row, "header: value" per line
-                header = [_flatten_plain(c) for c in block.rows[0]]
-                for row in block.rows[1:]:
-                    for h, cell in zip(header, row):
-                        chunks.append((f'{h}: ', ('bold',)))
-                        emit_spans(cell, ('body',))
-                        chunks.append(('\n', ('body',)))
-                    chunks.append(('\n', ('body',)))
+def heading_anchors(blocks: Tuple[Block, ...]) -> Dict[int, str]:
+    """Map block index -> anchor slug for every `##` (h2) heading in a topic
 
-    return TkPlan(chunks=tuple(chunks), links=links)
+    Duplicate slugs within one topic get '-2', '-3', ... suffixes, in document
+    order, so every anchor is unique.
+    """
+    anchors: Dict[int, str] = {}
+    seen: Dict[str, int] = {}
+    for idx, block in enumerate(blocks):
+        if block.kind != 'h2':
+            continue
+        base = heading_slug(_flatten_plain(block.spans))
+        count = seen.get(base, 0) + 1
+        seen[base] = count
+        anchors[idx] = base if count == 1 else f'{base}-{count}'
+    return anchors
+
+
+# ============================================================================
+# PLAIN TEXT HELPER
+# ============================================================================
+def _flatten_plain(spans: Tuple[Span, ...]) -> str:
+    """Strip inline styling markers, keeping only the literal text"""
+    return ''.join(s.text for s in spans)
 
 
 # ============================================================================
@@ -410,8 +338,16 @@ def _spans_to_html(spans: Tuple[Span, ...]) -> str:
     return ''.join(parts)
 
 
-def render_html(blocks: Tuple[Block, ...]) -> str:
-    """Render parsed blocks into an HTML body fragment for one topic"""
+def render_html(blocks: Tuple[Block, ...], anchor_prefix: str = '') -> str:
+    """Render parsed blocks into an HTML body fragment for one topic
+
+    Args:
+        blocks: Parsed topic.
+        anchor_prefix: Prepended to each `##` heading's id (see
+            heading_anchors); render_site passes '<slug>--' so ids stay unique
+            across the one-page site.
+    """
+    anchors = heading_anchors(blocks)
     out = []
     list_open = None  # 'ul' | 'ol' | None
 
@@ -420,11 +356,13 @@ def render_html(blocks: Tuple[Block, ...]) -> str:
             out.append(f'</{list_open}>')
         return None
 
-    for block in blocks:
+    for idx, block in enumerate(blocks):
         if block.kind not in ('bullet', 'number'):
             list_open = close_list()
 
-        if block.kind in ('h1', 'h2', 'h3'):
+        if block.kind == 'h2':
+            out.append(f'<h2 id="{_esc(anchor_prefix + anchors[idx])}">{_spans_to_html(block.spans)}</h2>')
+        elif block.kind in ('h1', 'h3'):
             out.append(f'<{block.kind}>{_spans_to_html(block.spans)}</{block.kind}>')
         elif block.kind == 'p':
             out.append(f'<p>{_spans_to_html(block.spans)}</p>')
@@ -462,6 +400,122 @@ def render_html(blocks: Tuple[Block, ...]) -> str:
 
     close_list()
     return '\n'.join(out)
+
+
+# ============================================================================
+# QT RENDERER
+# ============================================================================
+def _qt_spans(spans: Tuple[Span, ...], pal: Dict[str, str], mono: str) -> str:
+    parts = []
+    for span in spans:
+        if span.style == 'code':
+            parts.append(
+                f'<span style="font-family:\'{mono}\'; font-size:12px; '
+                f'color:{pal["text"]}; background-color:{pal["field"]};">'
+                f'&nbsp;{_esc(span.text)}&nbsp;</span>')
+        elif span.style == 'bold':
+            parts.append(f'<b style="color:{pal["text"]};">{_esc(span.text)}</b>')
+        elif span.style == 'link':
+            parts.append(f'<a href="{_esc(span.href)}">{_esc(span.text)}</a>')
+        else:
+            parts.append(_esc(span.text))
+    return ''.join(parts)
+
+
+def render_qt(blocks: Tuple[Block, ...], parent=None):
+    """Render parsed blocks into a styled QTextDocument for the Help pane
+
+    Styled from src.ui.tokens (palette, UI and mono fonts). Every `##` heading
+    carries an `<a name="...">` anchor from heading_anchors(), so
+    QTextBrowser.scrollToAnchor(anchor) lands on it. PySide6 is imported here,
+    not at module level, so src.docs stays importable without Qt.
+
+    Args:
+        blocks: Parsed topic.
+        parent: Optional QObject that owns the document.
+
+    Returns:
+        A QTextDocument (a QApplication must exist for font metrics).
+    """
+    from PySide6.QtGui import QTextDocument
+    from src.ui.tokens import PALETTE as pal, Font
+
+    ui_font = Font.ui(14)
+    mono = Font.mono(12).family()
+    anchors = heading_anchors(blocks)
+    out = []
+    list_open = None  # 'ul' | 'ol' | None
+
+    def close_list():
+        if list_open is not None:
+            out.append(f'</{list_open}>')
+        return None
+
+    for idx, block in enumerate(blocks):
+        if block.kind not in ('bullet', 'number'):
+            list_open = close_list()
+
+        if block.kind == 'h1':
+            out.append(f'<h1>{_qt_spans(block.spans, pal, mono)}</h1>')
+        elif block.kind == 'h2':
+            out.append(f'<h2><a name="{_esc(anchors[idx])}"></a>'
+                       f'{_qt_spans(block.spans, pal, mono)}</h2>')
+        elif block.kind == 'h3':
+            out.append(f'<h3>{_qt_spans(block.spans, pal, mono)}</h3>')
+        elif block.kind == 'p':
+            out.append(f'<p>{_qt_spans(block.spans, pal, mono)}</p>')
+        elif block.kind in ('bullet', 'number'):
+            tag = 'ul' if block.kind == 'bullet' else 'ol'
+            if list_open != tag:
+                list_open = close_list()
+                out.append(f'<{tag}>')
+                list_open = tag
+            out.append(f'<li>{_qt_spans(block.spans, pal, mono)}</li>')
+        elif block.kind == 'code':
+            lines = _esc(block.text).replace(' ', '&nbsp;').replace('\n', '<br>')
+            out.append(
+                f'<table width="100%" cellspacing="0" cellpadding="10" border="1" '
+                f'style="border-color:{pal["border"]}; border-style:solid; '
+                f'background-color:{pal["console"]};"><tr><td>'
+                f'<span style="font-family:\'{mono}\'; font-size:12px; '
+                f'color:{pal["text_2"]};">{lines}</span></td></tr></table><p></p>')
+        elif block.kind == 'rule':
+            out.append('<hr>')
+        elif block.kind == 'table':
+            out.append(
+                f'<table width="100%" cellspacing="0" cellpadding="7" border="1" '
+                f'style="border-color:{pal["border"]}; border-style:solid;">')
+            for r, row in enumerate(block.rows):
+                out.append('<tr>')
+                for c, cell in enumerate(row):
+                    align = block.aligns[c] if c < len(block.aligns) else 'left'
+                    if r == 0:
+                        bg, tag = pal['header'], 'th'
+                    else:
+                        bg, tag = (pal['row_alt'] if r % 2 == 0 else pal['bg_window']), 'td'
+                    out.append(
+                        f'<{tag} align="{align}" bgcolor="{bg}" valign="top">'
+                        f'{_qt_spans(cell, pal, mono)}</{tag}>')
+                out.append('</tr>')
+            out.append('</table><p></p>')
+    close_list()
+
+    sheet = f"""
+        body {{ color:{pal['text_2']}; }}
+        h1 {{ color:{pal['text']}; font-size:26px; font-weight:500; margin-top:4px; margin-bottom:14px; }}
+        h2 {{ color:{pal['text']}; font-size:18px; font-weight:500; margin-top:26px; margin-bottom:8px; }}
+        h3 {{ color:{pal['text']}; font-size:15px; font-weight:500; margin-top:18px; margin-bottom:6px; }}
+        p, li {{ line-height:150%; }}
+        th {{ color:{pal['text']}; font-weight:500; }}
+        a {{ color:{pal['accent']}; text-decoration:none; }}
+        hr {{ background-color:{pal['border']}; }}
+    """
+    doc = QTextDocument(parent)
+    doc.setDefaultFont(ui_font)
+    doc.setDocumentMargin(0)
+    doc.setDefaultStyleSheet(sheet)
+    doc.setHtml('<body>' + '\n'.join(out) + '</body>')
+    return doc
 
 
 _HTML_STYLE = """
@@ -568,7 +622,7 @@ def render_site(topics: Tuple[Topic, ...] = TOPICS) -> str:
         nav_parts.append(f'<a href="#{topic.slug}">{_esc(topic.label)}</a>')
 
         blocks = load_topic(topic.slug)
-        section_parts.append(f'<section id="{topic.slug}">{render_html(blocks)}</section>')
+        section_parts.append(f'<section id="{topic.slug}">{render_html(blocks, topic.slug + "--")}</section>')
 
     version = app_version()
     version_str = f' v{_esc(version)}' if version else ''
@@ -649,15 +703,12 @@ if __name__ == '__main__':
     t0 = time.time()
     for topic in TOPICS:
         blocks = load_topic(topic.slug)
-        plan = render_tk(blocks)
         page = render_html(blocks)
-        assert plan.chunks, f'{topic.slug}: empty tk render'
         assert page, f'{topic.slug}: empty html render'
     elapsed = time.time() - t0
 
     site = render_site()
     assert '<html' in site
 
-    print(f'OK: {len(TOPICS)} topics parsed and rendered both ways in {elapsed:.4f}s')
+    print(f'OK: {len(TOPICS)} topics parsed and rendered in {elapsed:.4f}s')
     print('mediapipe imported:', 'mediapipe' in sys.modules)
-    print('tkinter imported:', 'tkinter' in sys.modules)

@@ -1,166 +1,34 @@
 #!/usr/bin/env python3
 """
 Hand Processing Module
-Implements MediaPipe Tasks hand landmarker detection
-Supports GPU acceleration and multi-hand tracking
+MediaPipe Tasks hand landmarker with GPU acceleration and multi-hand tracking
 """
 
 # ============================================================================
 # IMPORTS
 # ============================================================================
-import os
-import time
-import platform
-import threading
 import mediapipe as mp
-from mediapipe.framework.formats import landmark_pb2
 
-from .pose_utils import LetterboxTransform
-from .frame_prep import FramePrep
+from .landmarker_processor import LandmarkerProcessor, HAND_CONNECTIONS
 from .model_downloader import download_hand_model
-
-# Optional psutil import for memory monitoring
-try:
-    import psutil
-except ImportError:
-    psutil = None
-
-# Platform detection for GPU compatibility
-IS_APPLE_SILICON = platform.system() == "Darwin" and platform.machine() == "arm64"
-
-
-# ============================================================================
-# HAND LANDMARK CONNECTIONS
-# ============================================================================
-# MediaPipe hand connections for drawing
-HAND_CONNECTIONS = mp.solutions.hands.HAND_CONNECTIONS
-
-
-# ============================================================================
-# HAND PROCESSOR CLASS
-# ============================================================================
-class HandProcessor:
-    """Base class for hand processing with common functionality"""
-    
-    def __init__(self, osc, show_fps=False, config=None):
-        """
-        Initialize hand processor
-        
-        Args:
-            osc: OscEmitter - every OSC message goes out through it
-            show_fps: Boolean to enable FPS display
-            config: Configuration object
-        """
-        self.osc = osc
-        self.show_fps = show_fps
-        self.config = config
-        self.fps_counter = 0
-        self.frame_counter = 0
-        self.fps_start_time = time.time() if show_fps else None
-        self.results = None
-        self.pending_frames = 0
-        # See PoseProcessor - performance.max_pending_frames, floor 1
-        self.max_pending_frames = max(1, int(config.get('performance', 'max_pending_frames', 1))) if config else 1
-        self.skipped_frames = 0
-        self._last_detection_state = False  # Track if we had detection last time
-        self._last_left_hand_state = False  # Per-hand detection state for transition-to-empty clearing
-        self._last_right_hand_state = False
-        self._has_fresh_results = False  # Track if callback delivered new results
-        self._display_results = None  # Main-thread-only copy of last taken results for stale drawing
-
-        # Lock protecting results/pending_frames shared with MediaPipe's worker thread
-        self._results_lock = threading.Lock()
-
-        # Cache per-frame config lookups (config is not mutated after construction)
-        camera_config = config.get('camera') if config else {}
-        self._proc_width = camera_config.get('processing_width', 640)
-        self._proc_height = camera_config.get('processing_height', 480)
-
-        # Letterbox + RGB conversion for the model input - replaced by the
-        # pose processor's in all mode without holistic (share_frame_prep)
-        self._frame_prep = FramePrep(self._proc_width, self._proc_height)
-
-        # Maps normalized coords from the (possibly letterboxed) processing
-        # frame back to the source frame; identity until the first resize
-        self._letterbox_transform = LetterboxTransform(
-            1.0, 0, 0, self._proc_width, self._proc_height, self._proc_width, self._proc_height
-        )
-
-        # Pre-build DrawingSpec objects for left/right hand rendering
-        display_config = config.get('display') if config else {}
-        hand_config = config.get('hand') if config else {}
-        landmark_thickness = display_config.get('landmark_thickness', 1)
-        landmark_radius = display_config.get('landmark_radius', 2)
-        connection_thickness = display_config.get('connection_thickness', 1)
-        connection_radius = display_config.get('connection_radius', 1)
-
-        self._left_landmark_spec = mp.solutions.drawing_utils.DrawingSpec(
-            color=tuple(hand_config.get('left_landmark_color', [0, 255, 0])),  # Green
-            thickness=landmark_thickness,
-            circle_radius=landmark_radius
-        )
-        self._left_connection_spec = mp.solutions.drawing_utils.DrawingSpec(
-            color=tuple(hand_config.get('left_connection_color', [0, 200, 0])),
-            thickness=connection_thickness,
-            circle_radius=connection_radius
-        )
-        self._right_landmark_spec = mp.solutions.drawing_utils.DrawingSpec(
-            color=tuple(hand_config.get('right_landmark_color', [255, 0, 0])),  # Red/Blue
-            thickness=landmark_thickness,
-            circle_radius=landmark_radius
-        )
-        self._right_connection_spec = mp.solutions.drawing_utils.DrawingSpec(
-            color=tuple(hand_config.get('right_connection_color', [200, 0, 0])),
-            thickness=connection_thickness,
-            circle_radius=connection_radius
-        )
-    
-    # ------------------------------------------------------------------------
-    # Performance monitoring
-    # ------------------------------------------------------------------------
-    
-    def update_fps(self, backend_name):
-        """Update and display FPS if enabled (every 30 frames)"""
-        self.frame_counter += 1
-        
-        if self.show_fps:
-            self.fps_counter += 1
-            if self.fps_counter % 30 == 0:
-                fps_end_time = time.time()
-                actual_fps = 30 / (fps_end_time - self.fps_start_time)
-                if psutil is not None:
-                    process = psutil.Process()
-                    mem_mb = process.memory_info().rss / 1024 / 1024
-                    osc_stats = self.osc.get_stats()
-                    print(f"{backend_name} FPS: {actual_fps:.2f} | Memory: {mem_mb:.1f}MB | "
-                          f"OSC Sent: {osc_stats['sent']} Dropped: {osc_stats['dropped']} Queued: {osc_stats['queued']} | "
-                          f"Pending: {self.pending_frames} Skipped: {self.skipped_frames}")
-                else:
-                    print(f"{backend_name} FPS: {actual_fps:.2f} | Skipped: {self.skipped_frames}")
-                self.fps_start_time = fps_end_time
-
-    def share_frame_prep(self, pose_processor):
-        """
-        Adopt the pose processor's FramePrep so each frame is letterboxed
-        and colour-converted once, not once per processor (#36)
-        """
-        pose_processor._frame_prep.shared = True
-        self._frame_prep = pose_processor._frame_prep
 
 
 # ============================================================================
 # MEDIAPIPE TASKS HAND PROCESSOR
 # ============================================================================
-class TasksHandProcessor(HandProcessor):
+class TasksHandProcessor(LandmarkerProcessor):
     """
     MediaPipe Tasks hand processor
     Supports GPU acceleration and multi-hand detection
     """
-    
+
+    label = "Hand"
+    backend_suffix = " - Hand"
+
     def __init__(self, osc, show_fps=False, config=None, force_cpu=False, force_gpu=False, is_apple_silicon=None):
         """
         Initialize Tasks hand processor
-        
+
         Args:
             osc: OscEmitter instance
             show_fps: Boolean to enable FPS display
@@ -169,283 +37,105 @@ class TasksHandProcessor(HandProcessor):
             force_gpu: Force GPU delegate (WARNING: memory leak on Apple Silicon)
             is_apple_silicon: Override Apple Silicon detection
         """
-        super().__init__(osc, show_fps, config)
-        self.force_cpu = force_cpu
-        self.force_gpu = force_gpu
-        self.is_apple_silicon = is_apple_silicon if is_apple_silicon is not None else IS_APPLE_SILICON
-        self.use_gpu = False
-    
-    def setup_processor(self):
-        """Setup MediaPipe Tasks hand processor with GPU/CPU fallback"""
-        try:
-            # Import MediaPipe Tasks API
-            BaseOptions = mp.tasks.BaseOptions
-            HandLandmarker = mp.tasks.vision.HandLandmarker
-            HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
-            VisionRunningMode = mp.tasks.vision.RunningMode
-            
-            # Download model if needed
-            model_path = download_hand_model()
-            
-            if not model_path or not os.path.exists(model_path):
-                print("❌ Hand model file not available")
-                return None, None, None, False
-            
-            # Get hand configuration
-            hand_config = self.config.get('hand') if self.config else {}
-            
-            # Determine GPU/CPU delegate strategy
-            if self.force_cpu:
-                print("🔧 Forced CPU delegate via command line")
-                use_gpu_delegate = False
-            elif self.force_gpu:
-                print("⚠️  Forced GPU delegate via command line (WARNING: known memory leak on Apple Silicon)")
-                use_gpu_delegate = True
-            elif self.is_apple_silicon:
-                print("🍎 Apple Silicon detected: Using CPU delegate (GPU has known memory leak)")
-                use_gpu_delegate = False
-            else:
-                use_gpu_delegate = True
-            
-            landmarker = None
-            backend_name = None
-            
-            # Try GPU delegate first (unless forced to CPU or on Apple Silicon)
-            if use_gpu_delegate:
-                print("🎯 Attempting GPU delegate for hand tracking...")
-                try:
-                    delegate = BaseOptions.Delegate.GPU
-                    
-                    options = HandLandmarkerOptions(
-                        base_options=BaseOptions(
-                            model_asset_path=model_path,
-                            delegate=delegate
-                        ),
-                        running_mode=VisionRunningMode.LIVE_STREAM,
-                        num_hands=hand_config.get('num_hands', 2),
-                        min_hand_detection_confidence=hand_config.get('min_detection_confidence', 0.5),
-                        min_hand_presence_confidence=hand_config.get('min_presence_confidence', 0.5),
-                        min_tracking_confidence=hand_config.get('min_tracking_confidence', 0.5),
-                        result_callback=self._result_callback
-                    )
-                    
-                    landmarker = HandLandmarker.create_from_options(options)
-                    backend_name = "GPU (MediaPipe Tasks - Hand)"
-                    self.use_gpu = True
-                    print("✅ GPU delegate initialized successfully for hand tracking")
-                    if self.is_apple_silicon:
-                        print("   Using SRGBA image format for Apple Silicon Metal compatibility")
-                        
-                except Exception as gpu_error:
-                    print(f"⚠️  GPU delegate failed during initialization: {gpu_error}")
-                    landmarker = None
-            
-            # Fallback to CPU delegate if GPU failed or was not attempted
-            if landmarker is None:
-                print("🔄 Using CPU delegate for hand tracking...")
-                try:
-                    delegate = BaseOptions.Delegate.CPU
-                    
-                    options = HandLandmarkerOptions(
-                        base_options=BaseOptions(
-                            model_asset_path=model_path,
-                            delegate=delegate
-                        ),
-                        running_mode=VisionRunningMode.LIVE_STREAM,
-                        num_hands=hand_config.get('num_hands', 2),
-                        min_hand_detection_confidence=hand_config.get('min_detection_confidence', 0.5),
-                        min_hand_presence_confidence=hand_config.get('min_presence_confidence', 0.5),
-                        min_tracking_confidence=hand_config.get('min_tracking_confidence', 0.5),
-                        result_callback=self._result_callback
-                    )
-                    
-                    landmarker = HandLandmarker.create_from_options(options)
-                    backend_name = "CPU (MediaPipe Tasks - Hand)"
-                    self.use_gpu = False
-                    print("✅ CPU delegate initialized successfully for hand tracking")
-                except Exception as cpu_error:
-                    print(f"❌ CPU delegate also failed: {cpu_error}")
-                    return None, None, None, False
-            
-            window_title = "MediaPipe Tasks Hand Detection"
-            print(f"✅ Successfully initialized {backend_name}")
-            return landmarker, backend_name, window_title, True
-            
-        except ImportError as e:
-            print(f"⚠️  MediaPipe Tasks not available: {e}")
-            return None, None, None, False
-        except Exception as e:
-            print(f"❌ Failed to initialize MediaPipe Tasks for hand: {e}")
-            return None, None, None, False
-    
-    def _result_callback(self, result, output_image, timestamp_ms):
-        """
-        Callback for async hand detection results from MediaPipe Tasks
-        Runs on MediaPipe's worker thread - state updates guarded by lock
-        """
-        with self._results_lock:
-            self.results = result
-            self._has_fresh_results = True  # Mark that we have new results to process
-            self.pending_frames = max(0, self.pending_frames - 1)
-    
-    def process_frame(self, frame, landmarker, backend_name, timestamp_counter, draw_target=None):
-        """
-        Process a single frame with MediaPipe Tasks hand landmarker
+        super().__init__(osc, show_fps, config, force_cpu, force_gpu, is_apple_silicon)
+        # Per-hand detection state for transition-to-empty clearing
+        self._last_left_hand_state = False
+        self._last_right_hand_state = False
+        self._build_hand_specs()
 
-        Args:
-            frame: Input frame from camera/NDI
-            landmarker: MediaPipe HandLandmarker instance
-            backend_name: Backend name for FPS display
-            timestamp_counter: Frame counter for async processing
-            draw_target: Optional shared display array to draw landmarks into
-                instead of the inference frame. Lets a caller composite this
-                processor's overlays onto another processor's output (e.g.
-                pose + hand in one preview) without feeding annotated pixels
-                back into either model. Model input is always the clean
-                letterboxed frame, never draw_target. Defaults to None,
-                which falls back to today's single-processor behavior:
-                draw into (a copy of, if shared) the letterboxed frame.
+    def refresh_display_specs(self):
+        """Rebuild the hand drawing specs from the config (live-apply path)"""
+        self._build_hand_specs()
 
-        Returns:
-            Annotated frame with landmarks drawn (draw_target, if provided)
-        """
-        try:
-            if frame is None or frame.size == 0:
-                return frame
+    # ------------------------------------------------------------------------
+    # Landmarker hooks
+    # ------------------------------------------------------------------------
 
-            # Letterbox to the processing size (aspect-preserving, so OSC
-            # coordinates stay correct relative to the source frame) - shared
-            # with the other processor reading this frame, see FramePrep
-            image, self._letterbox_transform = self._frame_prep.letterbox(frame)
+    def _download_model(self):
+        return download_hand_model()
 
-            # `image` is the inference input ONLY - always the clean,
-            # letterboxed frame, never annotated. `target` is what gets
-            # drawn into and returned; a caller-supplied draw_target lets
-            # multiple processors composite their overlays onto one shared
-            # array in a single loop iteration without leaking one
-            # processor's drawings into another's model input.
-            target = draw_target if draw_target is not None else self._frame_prep.drawable(image)
+    def _landmarker_types(self):
+        return mp.tasks.vision.HandLandmarker, mp.tasks.vision.HandLandmarkerOptions
 
-            # Check if MediaPipe's async queue is backing up
-            if self.pending_frames >= self.max_pending_frames:
-                # Skip MediaPipe processing, but keep the preview skeleton
-                # alive by redrawing the last known results - otherwise it
-                # blinks on/off every time the model is the bottleneck
-                self.skipped_frames += 1
-                self.update_fps(backend_name)
-                if self._display_results is not None and self._display_results.hand_landmarks:
-                    for i, hand_landmark in enumerate(self._display_results.hand_landmarks):
-                        handedness = "Unknown"
-                        if self._display_results.handedness and i < len(self._display_results.handedness):
-                            handedness = self._display_results.handedness[i][0].category_name
-                        self._draw_landmarks(target, hand_landmark, handedness)
-                # No OSC here - a skipped frame means "no new information",
-                # not "nothing detected"; sending status would misrepresent one or the other
-                return target
+    def build_options(self, delegate):
+        """Build HandLandmarkerOptions for the given delegate"""
+        hand_config = self.config.get('hand') if self.config else {}
+        return mp.tasks.vision.HandLandmarkerOptions(
+            base_options=mp.tasks.BaseOptions(
+                model_asset_path=self._model_path,
+                delegate=delegate
+            ),
+            running_mode=mp.tasks.vision.RunningMode.LIVE_STREAM,
+            num_hands=hand_config.get('num_hands', 2),
+            min_hand_detection_confidence=hand_config.get('min_detection_confidence', 0.5),
+            min_hand_presence_confidence=hand_config.get('min_presence_confidence', 0.5),
+            min_tracking_confidence=hand_config.get('min_tracking_confidence', 0.5),
+            result_callback=self._result_callback
+        )
 
-            # On Apple Silicon with GPU, use SRGBA format for Metal compatibility
-            if self.is_apple_silicon and self.use_gpu:
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGBA, data=self._frame_prep.rgba())
-            else:
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=self._frame_prep.rgb())
+    @staticmethod
+    def _handedness_label(results, index):
+        """Handedness category for hand `index`, or "Unknown" when the model gave none"""
+        if results.handedness and index < len(results.handedness):
+            return results.handedness[index][0].category_name
+        return "Unknown"
 
-            # Process with MediaPipe Tasks (async)
-            landmarker.detect_async(mp_image, timestamp_counter)
-            with self._results_lock:
-                self.pending_frames += 1
+    def _publish(self, results, target, timestamp):
+        """Send one set of messages per detected hand, clear hands that vanished, and draw"""
+        # Track which hand prefixes (left_hand/right_hand) are actually sent this
+        # frame, resolved via the same rule osc_protocol.hand_prefix uses, so an "Unknown"
+        # handedness label can't desync the flags from what was actually sent.
+        seen_prefixes = set()
+        hand_count = 0
 
-            timestamp = time.time()
+        if results.hand_landmarks:
+            # Snapshot for this call - stable for the duration of process_frame
+            transform = self._letterbox_transform
+            # World landmarks are already real-world metres - the
+            # emitter never applies the letterbox transform to them
+            all_world = getattr(results, 'hand_world_landmarks', None) or []
+            all_handedness = []
 
-            # Atomically check-and-take fresh results from the callback thread
-            # (hold the lock only for the swap - never during serialization/sends/drawing)
-            fresh_results = None
-            with self._results_lock:
-                if self._has_fresh_results and self.results is not None:
-                    fresh_results = self.results
-                    self.results = None
-                    self._has_fresh_results = False  # Reset flag
+            # One set of messages per detected hand, on /left_hand/* or /right_hand/*
+            for i, hand_landmark in enumerate(results.hand_landmarks):
+                handedness = self._handedness_label(results, i)
+                all_handedness.append(handedness)
 
-            # Only process and send OSC when we have fresh results from the callback
-            # This ensures OSC messages are synchronized with actual detection rate
-            if fresh_results is not None:
-                # Keep for stale drawing on frames before the next callback lands (main thread only)
-                self._display_results = fresh_results
-                hands_detected = bool(fresh_results.hand_landmarks)
+                world = all_world[i] if i < len(all_world) else None
+                seen_prefixes.add("left_hand" if handedness.lower() == "left" else "right_hand")
+                hand_count += 1
+                self.osc.hand(handedness, hand_landmark, world, transform, f"hand_{i}", ts=timestamp)
 
-                # Track which hand prefixes (left_hand/right_hand) are actually sent this
-                # frame, resolved via the same rule osc_protocol.hand_prefix uses, so an "Unknown"
-                # handedness label can't desync the flags from what was actually sent.
-                seen_prefixes = set()
-                hand_count = 0
+            for hand_landmark, handedness in zip(results.hand_landmarks, all_handedness):
+                self._draw_landmarks(target, hand_landmark, handedness)
 
-                if hands_detected and len(fresh_results.hand_landmarks) > 0:
-                    # Snapshot for this call - stable for the duration of process_frame
-                    transform = self._letterbox_transform
-                    # World landmarks are already real-world metres - the
-                    # emitter never applies the letterbox transform to them
-                    all_world = getattr(fresh_results, 'hand_world_landmarks', None) or []
-                    all_handedness = []
+        # Always send status message so receivers know program is running
+        self.osc.hand_status(hand_count)
 
-                    # One set of messages per detected hand, on /left_hand/* or /right_hand/*
-                    for i, hand_landmark in enumerate(fresh_results.hand_landmarks):
-                        # Get handedness (left/right)
-                        if fresh_results.handedness and i < len(fresh_results.handedness):
-                            handedness = fresh_results.handedness[i][0].category_name
-                        else:
-                            handedness = "Unknown"
-                        all_handedness.append(handedness)
+        # Per-hand transition-to-empty clearing: any hand not seen this frame
+        # that was tracked last frame gets cleared exactly once. Running this
+        # against an empty seen_prefixes set in the no-hands case subsumes the
+        # old all-hands-at-once clear, so the two paths can't double-send.
+        for hand_prefix, handedness_label, last_state_attr in (
+            ("left_hand", "Left", '_last_left_hand_state'),
+            ("right_hand", "Right", '_last_right_hand_state'),
+        ):
+            if hand_prefix in seen_prefixes:
+                setattr(self, last_state_attr, True)
+            elif getattr(self, last_state_attr):
+                self.osc.hand_cleared(handedness_label, ts=timestamp)
+                setattr(self, last_state_attr, False)
 
-                        world = all_world[i] if i < len(all_world) else None
-                        seen_prefixes.add("left_hand" if handedness.lower() == "left" else "right_hand")
-                        hand_count += 1
-                        self.osc.hand(handedness, hand_landmark, world, transform, f"hand_{i}", ts=timestamp)
+    def _draw_results(self, results, target):
+        for i, hand_landmark in enumerate(results.hand_landmarks or ()):
+            self._draw_landmarks(target, hand_landmark, self._handedness_label(results, i))
 
-                    # Draw all hand landmarks
-                    for i, hand_landmark in enumerate(fresh_results.hand_landmarks):
-                        handedness = all_handedness[i] if i < len(all_handedness) else "Unknown"
-                        self._draw_landmarks(target, hand_landmark, handedness)
+    def _report_idle(self):
+        self.osc.hand_status(0)
 
-                # Always send status message so receivers know program is running
-                self.osc.hand_status(hand_count)
-
-                # Per-hand transition-to-empty clearing: any hand not seen this frame
-                # that was tracked last frame gets cleared exactly once. Running this
-                # against an empty seen_prefixes set in the no-hands case subsumes the
-                # old all-hands-at-once clear, so the two paths can't double-send.
-                for hand_prefix, handedness_label, last_state_attr in (
-                    ("left_hand", "Left", '_last_left_hand_state'),
-                    ("right_hand", "Right", '_last_right_hand_state'),
-                ):
-                    if hand_prefix in seen_prefixes:
-                        setattr(self, last_state_attr, True)
-                    elif getattr(self, last_state_attr):
-                        self.osc.hand_cleared(handedness_label, ts=timestamp)
-                        setattr(self, last_state_attr, False)
-            elif self._display_results is not None:
-                # We have results but they're stale, just draw landmarks
-                if self._display_results.hand_landmarks:
-                    for i, hand_landmark in enumerate(self._display_results.hand_landmarks):
-                        handedness = "Unknown"
-                        if self._display_results.handedness and i < len(self._display_results.handedness):
-                            handedness = self._display_results.handedness[i][0].category_name
-                        self._draw_landmarks(target, hand_landmark, handedness)
-                # No fresh detection this frame - status 0 signals no actively tracked hand
-                self.osc.hand_status(0)
-            else:
-                # No results yet - still send status so receivers know program is running
-                self.osc.hand_status(0)
-
-            self.update_fps(backend_name)
-            return target
-
-        except Exception as e:
-            print(f"⚠️  Hand frame processing error: {e}")
-            # Clear results on error to prevent memory leak (under lock - shared with callback thread)
-            with self._results_lock:
-                self.results = None
-                self._has_fresh_results = False
-            self._display_results = None
-            return draw_target if draw_target is not None else frame
+    # ------------------------------------------------------------------------
+    # Drawing
+    # ------------------------------------------------------------------------
 
     def _draw_landmarks(self, image, landmarks, handedness="Unknown"):
         """
@@ -458,161 +148,8 @@ class TasksHandProcessor(HandProcessor):
             landmarks: Landmark list to draw
             handedness: "Left" or "Right" hand indicator
         """
-        # Use different colors for left and right hands
         if handedness == "Left":
-            landmark_spec = self._left_landmark_spec
-            connection_spec = self._left_connection_spec
+            landmark_spec, connection_spec = self._left_landmark_spec, self._left_connection_spec
         else:
-            landmark_spec = self._right_landmark_spec
-            connection_spec = self._right_connection_spec
-
-        # Convert landmarks for drawing
-        hand_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
-        hand_landmarks_proto.landmark.extend([
-            landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z)
-            for landmark in landmarks
-        ])
-
-        mp.solutions.drawing_utils.draw_landmarks(
-            image,
-            hand_landmarks_proto,
-            HAND_CONNECTIONS,
-            landmark_spec,
-            connection_spec
-        )
-
-
-# ============================================================================
-# LEGACY HAND PROCESSOR (Using older solutions API)
-# ============================================================================
-class LegacyHandProcessor(HandProcessor):
-    """
-    Legacy MediaPipe hand processor
-    Uses older API, CPU only
-    Fallback when Tasks API is not available
-    """
-    
-    def setup_processor(self):
-        """
-        Setup Legacy MediaPipe hand processor
-        
-        Returns:
-            Tuple of (hand_context, backend_name, window_title)
-        """
-        hand_config = self.config.get('hand') if self.config else {}
-        
-        backend_name = "Legacy MediaPipe Hand"
-        window_title = "Legacy Hand Detection"
-        print("✅ Using Legacy MediaPipe Hand")
-        
-        hand_context = mp.solutions.hands.Hands(
-            static_image_mode=False,
-            max_num_hands=hand_config.get('num_hands', 2),
-            model_complexity=hand_config.get('model_complexity', 1),
-            min_detection_confidence=hand_config.get('min_detection_confidence', 0.5),
-            min_tracking_confidence=hand_config.get('min_tracking_confidence', 0.5)
-        )
-        
-        return hand_context, backend_name, window_title
-    
-    def process_frame(self, frame, hand_context, backend_name, draw_target=None):
-        """
-        Process a single frame with Legacy MediaPipe hands
-
-        Args:
-            frame: Input frame from camera/NDI
-            hand_context: MediaPipe Hands context manager
-            backend_name: Backend name for FPS display
-            draw_target: Optional shared display array to draw landmarks
-                into instead of the inference frame - see
-                TasksHandProcessor.process_frame for the full rationale.
-                Defaults to None, which falls back to today's
-                single-processor behavior.
-
-        Returns:
-            Annotated frame with landmarks drawn (draw_target, if provided)
-        """
-        try:
-            # Letterbox to the processing size (aspect-preserving, so OSC
-            # coordinates stay correct relative to the source frame) - shared
-            # with the other processor reading this frame, see FramePrep
-            image, self._letterbox_transform = self._frame_prep.letterbox(frame)
-
-            # `image` is the inference input ONLY - always the clean,
-            # letterboxed frame, never annotated. `target` is what gets
-            # drawn into and returned - see TasksHandProcessor.process_frame
-            # for the full rationale.
-            target = draw_target if draw_target is not None else self._frame_prep.drawable(image)
-
-            # Process with MediaPipe Hands
-            results = hand_context.process(self._frame_prep.rgb())
-
-            timestamp = time.time()
-            
-            hands_detected = bool(results.multi_hand_landmarks)
-            
-            if hands_detected:
-                self._last_detection_state = True
-                # World landmarks are already real-world metres - the emitter
-                # never applies the letterbox transform to them (and legacy
-                # may not provide them at all)
-                all_world = getattr(results, 'multi_hand_world_landmarks', None) or []
-                all_handedness = []
-
-                for i, hand_landmark in enumerate(results.multi_hand_landmarks):
-                    # Get handedness
-                    if results.multi_handedness and i < len(results.multi_handedness):
-                        handedness = results.multi_handedness[i].classification[0].label
-                    else:
-                        handedness = "Unknown"
-                    all_handedness.append(handedness)
-
-                    world = all_world[i].landmark if i < len(all_world) else None
-                    self.osc.hand(handedness, hand_landmark.landmark, world,
-                                  self._letterbox_transform, f"hand_{i}", ts=timestamp)
-                
-                self.osc.hand_status(len(results.multi_hand_landmarks))
-                
-                # Draw hand landmarks
-                for i, hand_landmark in enumerate(results.multi_hand_landmarks):
-                    handedness = all_handedness[i] if i < len(all_handedness) else "Unknown"
-                    self._draw_landmarks_legacy(target, hand_landmark, handedness)
-            else:
-                # Always send status message so receivers know program is running
-                self.osc.hand_status(0)
-                # Only send empty data once when transitioning from detected to not detected
-                if self._last_detection_state:
-                    self.osc.hand_cleared(None, ts=timestamp)
-                    self._last_detection_state = False
-
-            self.update_fps(backend_name)
-            return target
-
-        except Exception as e:
-            print(f"⚠️  Legacy hand frame processing error: {e}")
-            return draw_target if draw_target is not None else frame
-    
-    def _draw_landmarks_legacy(self, image, hand_landmarks, handedness="Unknown"):
-        """
-        Draw hand landmarks on image (legacy format)
-        Uses pre-built DrawingSpec objects cached in __init__
-
-        Args:
-            image: Image to draw on
-            hand_landmarks: MediaPipe hand landmarks object
-            handedness: "Left" or "Right" hand indicator
-        """
-        if handedness == "Left":
-            landmark_spec = self._left_landmark_spec
-            connection_spec = self._left_connection_spec
-        else:
-            landmark_spec = self._right_landmark_spec
-            connection_spec = self._right_connection_spec
-
-        mp.solutions.drawing_utils.draw_landmarks(
-            image,
-            hand_landmarks,
-            HAND_CONNECTIONS,
-            landmark_spec,
-            connection_spec
-        )
+            landmark_spec, connection_spec = self._right_landmark_spec, self._right_connection_spec
+        self._draw_connected(image, landmarks, HAND_CONNECTIONS, landmark_spec, connection_spec)

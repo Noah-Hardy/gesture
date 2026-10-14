@@ -6,11 +6,10 @@ Checks GitHub Releases for a newer Gesture build, and - if the user chooses to
 install it - downloads, verifies and swaps the running .app bundle for the
 new one before relaunching.
 
-This module imports no tkinter. src.update_dialog owns the window; this
-module owns the network, filesystem and subprocess work, run on a worker
-thread and reported back to the GUI through the same queue.Queue -> 100ms
-tk after() poll pattern src.gui already uses for the engine log and NDI
-discovery (see UpdateController at the bottom).
+This module imports no GUI toolkit. src/ui/overlays/update.py owns the window;
+this module owns the network, filesystem and subprocess work, run on a worker
+thread and reported back to the GUI through a queue.Queue that the UI drains
+(see UpdateController at the bottom).
 
 A process cannot delete the .app bundle it is running out of and survive, so
 the actual swap is done by a small detached shell script that waits for this
@@ -259,13 +258,29 @@ def install_location_warning() -> Optional[str]:
     return _BAD_INSTALL_LOCATIONS.get(pf.code)
 
 
+# Folders macOS gates behind a "would like to access files in..." prompt.
+# Listing one blocks the calling thread until the user answers.
+_TCC_FOLDERS = ('Desktop', 'Documents', 'Downloads')
+
+
+def _is_tcc_protected(path: str) -> bool:
+    """True if `path` is inside ~/Desktop, ~/Documents or ~/Downloads (listing it prompts)."""
+    real = os.path.realpath(path)
+    home = os.path.realpath(os.path.expanduser('~'))
+    return any(real == os.path.join(home, f) or real.startswith(os.path.join(home, f) + os.sep)
+               for f in _TCC_FOLDERS)
+
+
 def cleanup_stale() -> None:
     """
     Sweep leftovers from interrupted or crashed installs. Safe to call on
     every launch - only touches files this module itself would have created.
     """
     app = bundle_path()
-    if app:
+    # Skipped when the app sits in Desktop/Documents/Downloads: listing those
+    # raises a macOS permission prompt on every launch for a sweep that only
+    # matters after an update (which runs from the folder it was approved for)
+    if app and not _is_tcc_protected(os.path.dirname(app)):
         parent = os.path.dirname(app)
         for prefix in ('.MP-OSC-update-*', '.Gesture-update-*'):
             _sweep_glob(os.path.join(parent, prefix), max_age_seconds=86400, is_dir=True)
@@ -782,9 +797,8 @@ def spawn_installer(staged: StagedUpdate) -> None:
 class UpdateController:
     """
     Owns the worker thread(s) for checks and installs. Talks to the GUI only
-    by putting (tag, payload) tuples on the same queue.Queue the rest of
-    src.gui already drains from its 100ms after() poll - this class must
-    never touch a tk widget.
+    by putting (tag, payload) tuples on a queue.Queue the UI drains on the
+    main thread - this class must never touch a widget.
 
     payload['kind'] is one of:
       'none' | 'available' | 'error'                  (from a check)
