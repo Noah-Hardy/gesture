@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 Engine Runtime Helpers
-Process-lifetime and capture-loop plumbing shared by main.py's two
-processing loops: parent-liveness watch, SIGTERM handling, capture
-reconnect with backoff, and deadline-based frame pacing
+Process-lifetime and capture-loop plumbing shared by main.py's processing
+loop: parent-liveness watch, SIGTERM handling, capture reconnect with
+backoff, deadline-based frame pacing, and startup phase reporting
 """
 
 # ============================================================================
@@ -12,6 +12,58 @@ reconnect with backoff, and deadline-based frame pacing
 import os
 import signal
 import time
+
+
+# ============================================================================
+# STARTUP PHASES
+# ============================================================================
+# The engine's progress between Start and the first processed frame, in order.
+# These ids are the status-channel values (#65); the text is the log line.
+PHASES = ('opening_camera', 'loading_model', 'warming_up', 'ready')
+_PHASE_TEXT = {
+    'opening_camera': "Opening camera…",
+    'loading_model': "Loading model…",
+    'warming_up': "Warming up…",
+    'ready': "Ready",
+}
+
+_phase_handler = None
+
+
+def set_phase_handler(handler):
+    """
+    Route phase changes somewhere besides the log (the status channel, #65)
+
+    Args:
+        handler: callable(phase, reason) invoked from report_phase, or None
+            to remove it. Errors it raises are swallowed - reporting must
+            never stop the engine from starting.
+    """
+    global _phase_handler
+    _phase_handler = handler
+
+
+def report_phase(phase, reason="", message=None):
+    """
+    The single seam for startup progress: log the phase and notify the handler
+
+    Args:
+        phase: One of PHASES
+        reason: Optional detail for the handler (unused by the log line)
+        message: Log line override, e.g. "Connecting to NDI source…" or
+            "Loading pose model (lite)…"; defaults to the phase's text
+
+    Raises:
+        ValueError: phase is not one of PHASES
+    """
+    if phase not in _PHASE_TEXT:
+        raise ValueError(f"unknown startup phase {phase!r}")
+    print(message or _PHASE_TEXT[phase], flush=True)
+    if _phase_handler is not None:
+        try:
+            _phase_handler(phase, reason)
+        except Exception as e:
+            print(f"⚠️  Phase handler failed: {e}")
 
 
 # ============================================================================

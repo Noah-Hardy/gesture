@@ -15,6 +15,7 @@ import os
 import time
 import platform
 import threading
+import numpy as np
 import mediapipe as mp
 from mediapipe.framework.formats import landmark_pb2
 # Only the drawing helpers and connection tables come from here - inference
@@ -26,6 +27,7 @@ from mediapipe.python.solutions import pose as _pose_solution
 
 from .pose_utils import LetterboxTransform
 from .frame_prep import FramePrep
+from .runtime import report_phase
 
 # Optional psutil import for memory monitoring
 try:
@@ -100,6 +102,7 @@ class LandmarkerProcessor:
         self._has_fresh_results = False  # Callback delivered new results
         self._display_results = None  # Main-thread-only copy of last taken results for stale drawing
         self._model_path = None
+        self._warmup_pending = 0  # Warm-up results still to come (swallowed by the callback)
 
         # Lock protecting results/pending_frames shared with MediaPipe's worker thread
         self._results_lock = threading.Lock()
@@ -123,6 +126,11 @@ class LandmarkerProcessor:
     # ------------------------------------------------------------------------
     # Subclass hooks
     # ------------------------------------------------------------------------
+
+    @property
+    def model_name(self):
+        """What the "Loading <model>…" log line calls this processor's model"""
+        return f"{self.label.lower()} model"
 
     def _download_model(self):
         """Return the path of this processor's model file (downloading it if needed)"""
@@ -204,6 +212,7 @@ class LandmarkerProcessor:
             Landmarker, _ = self._landmarker_types()
             BaseOptions = mp.tasks.BaseOptions
 
+            report_phase('loading_model', message=f"Loading {self.model_name}…")
             model_path = self._download_model()
             if not model_path or not os.path.exists(model_path):
                 print(f"❌ {self.label} model file not available")
@@ -272,9 +281,13 @@ class LandmarkerProcessor:
         Note: We only store the result, not the output_image to avoid memory leaks
         """
         with self._results_lock:
+            self.pending_frames = max(0, self.pending_frames - 1)
+            if self._warmup_pending:
+                # The blank warm-up frame's result - not a detection
+                self._warmup_pending -= 1
+                return
             self.results = result
             self._has_fresh_results = True  # Mark that we have new results to process
-            self.pending_frames = max(0, self.pending_frames - 1)
         # output_image is deliberately not stored - only the result is needed
 
     # ------------------------------------------------------------------------
@@ -306,12 +319,56 @@ class LandmarkerProcessor:
     # Frame processing
     # ------------------------------------------------------------------------
 
-    def _make_mp_image(self):
-        """Wrap the prepared frame for the model (SRGBA for Metal on Apple Silicon GPU)"""
+    def _make_mp_image(self, frame_prep=None):
+        """
+        Wrap the prepared frame for the model (SRGBA for Metal on Apple Silicon GPU)
+
+        Args:
+            frame_prep: FramePrep holding the letterboxed frame (default: this processor's)
+        """
+        prep = frame_prep or self._frame_prep
         # The Metal GPU buffer doesn't support SRGB (3 channels), only SRGBA
         if self.is_apple_silicon and self.use_gpu:
-            return mp.Image(image_format=mp.ImageFormat.SRGBA, data=self._frame_prep.rgba())
-        return mp.Image(image_format=mp.ImageFormat.SRGB, data=self._frame_prep.rgb())
+            return mp.Image(image_format=mp.ImageFormat.SRGBA, data=prep.rgba())
+        return mp.Image(image_format=mp.ImageFormat.SRGB, data=prep.rgb())
+
+    def warm_up(self, landmarker, timeout=5.0):
+        """
+        Run one detect_async on a blank frame so the first real frame is not
+        the one that pays for the graph's lazy initialization
+
+        Goes through the same image format path as real frames, with its own
+        FramePrep so a shared one is left untouched. Uses timestamp 0, below
+        the first real frame's (the loop counts from 1). The blank frame's
+        result is swallowed by the callback, never published.
+
+        Args:
+            landmarker: The landmarker setup_processor() returned
+            timeout: Seconds to wait for the result before moving on
+
+        Returns:
+            True if the result arrived within the timeout
+        """
+        prep = FramePrep(self._proc_width, self._proc_height)
+        prep.letterbox(np.zeros((self._proc_height, self._proc_width, 3), np.uint8))
+        mp_image = self._make_mp_image(prep)
+        with self._results_lock:
+            self._warmup_pending += 1
+            self.pending_frames += 1
+        try:
+            landmarker.detect_async(mp_image, 0)
+        except Exception:
+            with self._results_lock:
+                self._warmup_pending -= 1
+                self.pending_frames = max(0, self.pending_frames - 1)
+            raise
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._results_lock:
+                if not self._warmup_pending:
+                    return True
+            time.sleep(0.005)
+        return False
 
     def process_frame(self, frame, landmarker, backend_name, timestamp_counter, draw_target=None):
         """
