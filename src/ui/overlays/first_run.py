@@ -20,7 +20,9 @@ from __future__ import annotations
 import subprocess
 import sys
 
-from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt, QUrl, Signal
+from PySide6.QtCore import (
+    QCoreApplication, QEasingCurve, QEvent, QObject, QRectF, Qt, QUrl, QVariantAnimation, Signal,
+)
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame, QGridLayout, QHBoxLayout, QLabel, QVBoxLayout, QWidget,
@@ -233,10 +235,30 @@ class _ReceiverCard(_Clickable):
 class _Dots(QWidget):
     """Step indicator: the current step is a long dot, finished ones are dim accent."""
 
-    def __init__(self, count: int, current: int, parent=None):
+    def __init__(self, count: int, current: int, previous: int | None = None, parent=None):
+        """
+        Args:
+            count: Number of steps.
+            current: Active step.
+            previous: Step being left; its long dot shrinks while the new one grows
+                (the design's `transition: width .3s ease`).
+        """
         super().__init__(parent)
-        self._count, self._current = count, current
+        self._count, self._current, self._previous = count, current, previous
+        self._t = 0.0 if previous is not None and previous != current else 1.0
         self.setFixedSize(count * 11 + 12, 6)
+        if self._t < 1.0:
+            self._anim = QVariantAnimation(self)
+            self._anim.setStartValue(0.0)
+            self._anim.setEndValue(1.0)
+            self._anim.setDuration(300)
+            self._anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+            self._anim.valueChanged.connect(self._on_anim)
+            self._anim.start()
+
+    def _on_anim(self, v) -> None:
+        self._t = float(v)
+        self.update()
 
     def paintEvent(self, _e) -> None:
         p = QPainter(self)
@@ -244,9 +266,9 @@ class _Dots(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         x = 0
         for n in range(self._count):
-            w = 18 if n == self._current else 6
+            w = 6 + 12 * (self._t if n == self._current else (1 - self._t) if n == self._previous else 0)
             p.setBrush(color('accent' if n == self._current else ('accent_2' if n < self._current else 'border_2')))
-            p.drawRoundedRect(x, 0, w, 6, 3, 3)
+            p.drawRoundedRect(QRectF(x, 0, w, 6), 3, 3)
             x += w + 5
 
 
@@ -380,6 +402,7 @@ class FirstRun(QObject):
             self._adhoc = is_adhoc_signed()
         self._steps = ['welcome'] + (['quarantine'] if self._adhoc else []) + ['camera', 'receiver', 'ready']
         self._step = 0
+        self._prev_step = None
         self._preset = self._current_preset()
         self._camera = camera_status()
         self.notice.hide()
@@ -402,6 +425,7 @@ class FirstRun(QObject):
 
     # ------------------------------------------------------------------ wizard
     def _go(self, step: int) -> None:
+        self._prev_step = self._step
         self._step = step
         self._render()
         self.wizard.place()
@@ -494,7 +518,7 @@ class FirstRun(QObject):
             s.clicked.connect(lambda: on_secondary())
             row.addWidget(s)
         row.addStretch(1)
-        row.addWidget(_Dots(len(self._steps), self._step))
+        row.addWidget(_Dots(len(self._steps), self._step, getattr(self, '_prev_step', None)))
         return row
 
     def _pick(self, name: str) -> None:

@@ -23,7 +23,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
-from PySide6.QtCore import QRectF, QSize, Qt, QUrl
+from PySide6.QtCore import (
+    QEasingCurve, QElapsedTimer, QPointF, QRectF, QSize, Qt, QTimer, QUrl, QVariantAnimation,
+)
 from PySide6.QtGui import QColor, QDesktopServices, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractButton, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget,
@@ -270,13 +272,49 @@ class _Link(QAbstractButton):
         p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text())
 
 
+#: Design motion: the progress bar's `transition: width .4s cubic-bezier(.4,0,.2,1)`,
+#: the scan sweep's `mp-sweep 4.5s linear infinite` (120px band) and the card fade
+BAR_MS = 400
+SWEEP_PERIOD_S = 4.5
+SWEEP_BAND = 120
+SWEEP_FRAME_MS = 33
+FADE_IN_MS = 220
+FADE_OUT_MS = 320
+
+
+def _bezier_curve() -> QEasingCurve:
+    """cubic-bezier(.4, 0, .2, 1), the design's standard easing."""
+    c = QEasingCurve(QEasingCurve.Type.BezierSpline)
+    c.addCubicBezierSegment(QPointF(0.4, 0.0), QPointF(0.2, 1.0), QPointF(1.0, 1.0))
+    return c
+
+
 class _Bar(QWidget):
-    """3px progress bar."""
+    """3px progress bar whose fill glides to a new fraction."""
 
     def __init__(self, fraction: float, parent: QWidget | None = None):
         super().__init__(parent)
         self._f = max(0.0, min(1.0, fraction))
         self.setFixedHeight(3)
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(BAR_MS)
+        self._anim.setEasingCurve(_bezier_curve())
+        self._anim.valueChanged.connect(self._on_anim)
+
+    def fraction(self) -> float:
+        """The fraction currently drawn."""
+        return self._f
+
+    def set_fraction(self, fraction: float) -> None:
+        """Glide the fill to `fraction` (0..1)."""
+        self._anim.stop()
+        self._anim.setStartValue(self._f)
+        self._anim.setEndValue(max(0.0, min(1.0, fraction)))
+        self._anim.start()
+
+    def _on_anim(self, v) -> None:
+        self._f = float(v)
+        self.update()
 
     def paintEvent(self, _e) -> None:
         p = QPainter(self)
@@ -327,7 +365,35 @@ class FaultOverlay(QWidget):
         self._lay = QVBoxLayout(self)
         self._lay.setContentsMargins(0, 0, 0, 0)
         self._lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._step_label: Optional[QLabel] = None
+        self._count_label: Optional[QLabel] = None
+        self._body_label: Optional[QLabel] = None
+        self._bar: Optional[_Bar] = None
+        self._fade: Optional[QVariantAnimation] = None
+        self._sweep_clock = QElapsedTimer()
+        self._sweep_timer = QTimer(self)
+        self._sweep_timer.setInterval(SWEEP_FRAME_MS)
+        self._sweep_timer.timeout.connect(self.update)
         self.hide()
+
+    def showEvent(self, e) -> None:
+        super().showEvent(e)
+        if self.card is not None and self.card.key == 'loading' and not self._sweep_timer.isActive():
+            self._sweep_clock.start()
+            self._sweep_timer.start()
+
+    def hideEvent(self, e) -> None:
+        super().hideEvent(e)
+        self._sweep_timer.stop()  # nothing to animate off screen
+
+    def sweeping(self) -> bool:
+        """True while the scan sweep animates (the Starting card is up)."""
+        return self._sweep_timer.isActive()
+
+    def sweep_y(self) -> float:
+        """Top of the sweep band right now (linear, wraps every 4.5 s)."""
+        u = (self._sweep_clock.elapsed() / 1000.0 % SWEEP_PERIOD_S) / SWEEP_PERIOD_S
+        return -SWEEP_BAND + u * (self.height() + SWEEP_BAND)
 
     def paintEvent(self, _e) -> None:
         p = QPainter(self)
@@ -335,12 +401,79 @@ class FaultOverlay(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(11, 13, 17, 153))
         p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 10, 10)
+        if self._sweep_timer.isActive():
+            # mp-sweep: a soft accent band scanning down the stage while it starts
+            y = self.sweep_y()
+            g = QLinearGradient(0, y, 0, y + SWEEP_BAND)
+            g.setColorAt(0, color('accent', 0.0))
+            g.setColorAt(0.5, color('accent', 0.07))
+            g.setColorAt(1, color('accent', 0.0))
+            p.save()
+            p.setClipRect(self.rect())
+            p.fillRect(QRectF(0, y, self.width(), SWEEP_BAND), g)
+            p.restore()
+
+    def _fade_in(self) -> None:
+        """Fade the overlay in (card appearing from nothing)."""
+        from PySide6.QtWidgets import QGraphicsOpacityEffect
+        if self._fade is not None:
+            self._fade.stop()
+        fx = QGraphicsOpacityEffect(self)
+        fx.setOpacity(0.0)
+        self.setGraphicsEffect(fx)
+        anim = QVariantAnimation(self)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setDuration(FADE_IN_MS)
+        anim.valueChanged.connect(lambda v: fx.setOpacity(float(v)))
+        anim.finished.connect(lambda: self.setGraphicsEffect(None))
+        self._fade = anim
+        anim.start()
+
+    def _fade_out_ghost(self) -> None:
+        """Dissolve a still of the overlay over the stage as it hides (card dismissed)."""
+        parent = self.parentWidget()
+        if parent is None or not self.isVisible() or self.width() <= 0:
+            return
+        from PySide6.QtWidgets import QGraphicsOpacityEffect
+        ghost = QLabel(parent)
+        ghost.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        ghost.setPixmap(self.grab())
+        ghost.setGeometry(self.geometry())
+        fx = QGraphicsOpacityEffect(ghost)
+        ghost.setGraphicsEffect(fx)
+        chip = getattr(parent, 'source_chip', None)
+        if chip is not None:
+            ghost.stackUnder(chip)
+        ghost.show()
+        anim = QVariantAnimation(ghost)
+        anim.setStartValue(1.0)
+        anim.setEndValue(0.0)
+        anim.setDuration(FADE_OUT_MS)
+        anim.valueChanged.connect(lambda v: fx.setOpacity(float(v)))
+        anim.finished.connect(ghost.deleteLater)
+        anim.start()
 
     def mousePressEvent(self, e) -> None:
         e.accept()
 
     def set_card(self, card: Optional[Card]) -> None:
         """Show `card`, or hide the overlay for None."""
+        if (card is not None and card.key == 'loading' and self.card is not None
+                and self.card.key == 'loading' and self._bar is not None and card.step is not None):
+            # Next start-up step: the bar glides and the labels change in place
+            label, fraction, count = card.step
+            self._step_label.setText(label)
+            self._count_label.setText(count)
+            self._body_label.setText(card.body)
+            self._bar.set_fraction(fraction)
+            self.card = card
+            return
+        if card is None and self._frame is not None:
+            self._fade_out_ghost()
+        appearing = card is not None and not self.isVisible()
+        self._sweep_timer.stop()
+        self._bar = self._step_label = self._count_label = self._body_label = None
         if self._frame is not None:
             self._lay.removeWidget(self._frame)
             self._frame.setParent(None)
@@ -379,6 +512,7 @@ class FaultOverlay(QWidget):
         body.setFont(Font.ui(12.5))
         body.setStyleSheet(f"color: {color('text_2').name()}; background: transparent;")
         lay.addWidget(body)
+        self._body_label = body
 
         if card.step is not None:
             label, fraction, count = card.step
@@ -393,7 +527,9 @@ class FaultOverlay(QWidget):
             row.addWidget(step, 1)
             row.addWidget(n)
             lay.addLayout(row)
-            lay.addWidget(_Bar(fraction))
+            self._step_label, self._count_label = step, n
+            self._bar = _Bar(fraction)
+            lay.addWidget(self._bar)
 
         foot = QHBoxLayout()
         foot.setSpacing(8)
@@ -412,6 +548,11 @@ class FaultOverlay(QWidget):
         self._lay.addWidget(frame, 0, Qt.AlignmentFlag.AlignCenter)
         self.show()
         self.raise_()
+        if card.key == 'loading':
+            self._sweep_clock.start()
+            self._sweep_timer.start()
+        if appearing:
+            self._fade_in()
 
 
 # ============================================================================

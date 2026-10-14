@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections import deque
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEasingCurve, QPointF, QRectF, QSize, Qt, QTimer, QVariantAnimation, Signal
 from PySide6.QtGui import QFontMetrics, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget,
@@ -18,6 +18,15 @@ from PySide6.QtWidgets import (
 
 from ..tokens import Font, Radius, Spacing, color, panel_gradient
 from .controls import Button
+
+# Design: the meter bar's `transition: width .4s cubic-bezier(.4,0,.2,1)`
+METER_BAR_MS = 400
+
+
+def _bezier() -> QEasingCurve:
+    c = QEasingCurve(QEasingCurve.Type.BezierSpline)
+    c.addCubicBezierSegment(QPointF(0.4, 0.0), QPointF(0.2, 1.0), QPointF(1.0, 1.0))
+    return c
 
 
 def _aa(p: QPainter) -> None:
@@ -47,6 +56,11 @@ class Meter(QWidget):
         super().__init__(parent)
         self._label, self._value, self._unit, self._frac = label, value, unit, fraction
         self._value_px = value_px
+        self._shown = max(0.0, min(1.0, fraction))  # bar fill on screen; glides to _frac
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(METER_BAR_MS)
+        self._anim.setEasingCurve(_bezier())
+        self._anim.valueChanged.connect(self._on_glide)
         self.setFixedHeight(self.HEIGHT)
         self.setMinimumWidth(130)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -58,9 +72,23 @@ class Meter(QWidget):
         """Update the readout (and optionally bar fraction and unit)."""
         self._value = value
         if fraction is not None:
-            self._frac = max(0.0, min(1.0, fraction))
+            frac = max(0.0, min(1.0, fraction))
+            if frac != self._frac:
+                self._frac = frac
+                # transition: width .4s cubic-bezier(.4,0,.2,1); only while on screen
+                if self.isVisible():
+                    self._anim.stop()
+                    self._anim.setStartValue(self._shown)
+                    self._anim.setEndValue(frac)
+                    self._anim.start()
+                else:
+                    self._shown = frac
         if unit is not None:
             self._unit = unit
+        self.update()
+
+    def _on_glide(self, v) -> None:
+        self._shown = float(v)
         self.update()
 
     def paintEvent(self, _e) -> None:
@@ -92,7 +120,7 @@ class Meter(QWidget):
         p.setBrush(color('border'))
         p.drawRoundedRect(bar, 2, 2)
         p.setBrush(color('accent'))
-        p.drawRoundedRect(QRectF(bar.left(), bar.top(), bar.width() * self._frac, 4), 2, 2)
+        p.drawRoundedRect(QRectF(bar.left(), bar.top(), bar.width() * self._shown, 4), 2, 2)
 
 
 # ============================================================================
