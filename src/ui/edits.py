@@ -24,7 +24,7 @@ from typing import Any, Callable, Optional
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from ..config import Config
-from ..live_keys import is_live
+from ..live_keys import is_app_only, is_live
 
 # ============================================================================
 # VALIDATION
@@ -193,8 +193,9 @@ class EditModel(QObject):
             label: Row label.
             path: Config path `section.key`.
             kind: num, text, choice, toggle, range or color.
-            restart: Restart-class field. Any key the engine cannot apply live
-            (not in live_keys.LIVE_KEYS) is restart-class regardless.
+            restart: Restart-class field. Any key the engine reads but cannot
+            apply live (not in live_keys.LIVE_KEYS) is restart-class
+            regardless; app-only keys (updates.*) never are.
             limits: (low, high[, message]) for num fields.
             decode, encode: Config <-> edit-form conversions (default: str for
                 num, identity otherwise).
@@ -205,7 +206,7 @@ class EditModel(QObject):
             The field id `<pane>.<path>`.
         """
         section, key = path.split('.', 1)
-        restart = bool(restart) or not is_live(path)
+        restart = bool(restart) or not (is_live(path) or is_app_only(path))
         if decode is None:
             decode = (lambda v: str(v)) if kind in ('num', 'decimal') else _identity
         if encode is None:
@@ -344,6 +345,8 @@ class EditModel(QObject):
             else:
                 for d in dirty:
                     f = self._fields[d['fid']]
+                    if is_app_only(f.config_key):
+                        continue
                     self.engine.set_live(f.config_key, self.config.get(f.section, f.key))
         self.applied.emit([d['fid'] for d in dirty])
         return restarted

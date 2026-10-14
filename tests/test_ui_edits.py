@@ -124,6 +124,20 @@ def test_restart_class_follows_live_keys(window):
     assert e.field('input.camera.width').restart
 
 
+def test_app_only_keys_never_restart_or_reach_the_engine(window, monkeypatch):
+    # Only the app reads updates.*; toggling one must not restart a running engine
+    calls = []
+    monkeypatch.setattr(window.engine, 'is_running', lambda: True)
+    monkeypatch.setattr(window.engine, 'restart', lambda: calls.append('restart'))
+    monkeypatch.setattr(window.engine, 'set_live', lambda k, v: calls.append((k, v)) or False)
+    e = window.edits
+    assert not e.field('advanced.updates.check_on_launch').restart
+    e.edit('advanced.updates.check_on_launch', not e.value('advanced.updates.check_on_launch'))
+    assert e.apply() is False
+    assert calls == []
+    monkeypatch.undo()
+
+
 def test_external_config_changes_reach_the_model(window):
     e = window.edits
     fid = e.register('preview', 'Preview', 'Mirror', 'display.mirror_preview', kind='toggle')

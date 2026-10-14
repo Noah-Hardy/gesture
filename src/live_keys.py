@@ -143,6 +143,16 @@ def is_live(key):
     return key in LIVE_KEYS
 
 
+#: Sections only the app reads (the engine never sees them), so changing one
+#: never needs an engine restart
+APP_ONLY_SECTIONS = ('updates',)
+
+
+def is_app_only(key):
+    """True if only the app reads this "section.key" - no restart, nothing to send"""
+    return key.split('.', 1)[0] in APP_ONLY_SECTIONS
+
+
 def coerce_live_value(key, value):
     """
     Validate and normalize a value for a live key

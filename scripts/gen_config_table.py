@@ -22,7 +22,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from src.config import Config
-from src.live_keys import is_live
+from src.live_keys import is_app_only, is_live
 from src.ui.panes.spec import PANES
 
 APPENDIX = os.path.join(ROOT, 'docs', 'appendix-advanced.md')
@@ -82,7 +82,7 @@ def render() -> str:
             lines.append('| `{}` | {} | {} | {} | {} | {} |'.format(
                 row.key, pane.title, _TYPES.get(row.kind, row.kind), _range(row),
                 _default(row),
-                'app' if row.key.startswith('updates.') else 'restart' if restart else 'live'))
+                'app' if is_app_only(row.key) else 'restart' if restart else 'live'))
     lines += ['', END]
     return '\n'.join(lines)
 
