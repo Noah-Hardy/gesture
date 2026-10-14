@@ -211,6 +211,8 @@ def test_pending_bar_slot(window):
 def test_overlay_host_dims_only_while_a_card_is_shown(app, window):
     from PySide6.QtWidgets import QLabel
     host = window.overlay_host()
+    window.first_run.wizard.hide()  # a fresh config opens the first-run wizard (#69)
+    app.processEvents()
     assert host.isHidden()
     card = QLabel('card', host)
     card.show()
