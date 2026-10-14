@@ -76,6 +76,31 @@ def validate_number(text: Any, limits: Optional[tuple] = None) -> Optional[str]:
     return None
 
 
+def validate_decimal(text: Any, limits: Optional[tuple] = None) -> Optional[str]:
+    """
+    Validate a decimal-number field (e.g. seconds).
+
+    Args:
+        text: Value as typed.
+        limits: (low, high) inclusive.
+
+    Returns:
+        An error message, or None.
+    """
+    s = str(text).strip()
+    if not s:
+        return 'Cannot be empty'
+    try:
+        v = float(s)
+    except ValueError:
+        return 'Numbers only'
+    if v != v or v in (float('inf'), float('-inf')):
+        return 'Numbers only'
+    if limits and (v < limits[0] or v > limits[1]):
+        return 'Must be between {} and {}'.format(limits[0], limits[1])
+    return None
+
+
 # ============================================================================
 # FIELD
 # ============================================================================
@@ -98,7 +123,7 @@ class Field:
         pane_title: Pane title for the bar's `Pane · Label` names.
         label: Row label.
         section, key: Config path.
-        kind: num, text, choice, toggle, range or color (UI hint only).
+        kind: num, decimal, text, choice, select, toggle, range or color.
         restart: True if the engine only reads it at startup.
         limits: (low, high[, message]) for num fields.
         decode: config value -> edit-form value.
@@ -182,9 +207,10 @@ class EditModel(QObject):
         section, key = path.split('.', 1)
         restart = bool(restart) or not is_live(path)
         if decode is None:
-            decode = (lambda v: str(v)) if kind == 'num' else _identity
+            decode = (lambda v: str(v)) if kind in ('num', 'decimal') else _identity
         if encode is None:
-            encode = (lambda v: int(str(v).strip())) if kind == 'num' else _identity
+            encode = {'num': lambda v: int(str(v).strip()),
+                      'decimal': lambda v: float(str(v).strip())}.get(kind, _identity)
         fid = '{}.{}'.format(pane, path)
         self._fields[fid] = Field(fid, pane, pane_title, label, section, key, kind, restart,
                                   limits, decode, encode, validator, extra)
@@ -251,6 +277,8 @@ class EditModel(QObject):
         v = self.value(fid)
         if f.kind == 'num':
             msg = validate_number(v, f.limits)
+        elif f.kind == 'decimal':
+            msg = validate_decimal(v, f.limits)
         elif f.kind == 'text':
             msg = validate_host(v) if f.extra.get('host') else (None if str(v).strip() else 'Cannot be empty')
         else:

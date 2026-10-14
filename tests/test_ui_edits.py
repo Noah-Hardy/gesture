@@ -23,10 +23,10 @@ def window(tmp_path):
     tokens.apply(app)
     w = MainWindow(Config(str(tmp_path / 'config.json')))
     e = w.edits
-    e.register('osc', 'OSC Output', 'Host', 'osc.host', kind='text', host=True)
-    e.register('osc', 'OSC Output', 'Port', 'osc.port', kind='num', limits=(1, 65535, 'Ports run 1–65535; anything under 1024 needs root'))
-    e.register('input', 'Input', 'Capture width', 'camera.width', kind='num', restart=True, limits=(160, 3840))
-    e.register('advanced', 'Advanced', 'Target FPS', 'performance.target_fps', kind='num', limits=(0, 240))
+    e.register('t_osc', 'OSC Output', 'Host', 'osc.host', kind='text', host=True)
+    e.register('t_osc', 'OSC Output', 'Port', 'osc.port', kind='num', limits=(1, 65535, 'Ports run 1–65535; anything under 1024 needs root'))
+    e.register('t_input', 'Input', 'Capture width', 'camera.width', kind='num', restart=True, limits=(160, 3840))
+    e.register('t_adv', 'Advanced', 'Target FPS', 'performance.target_fps', kind='num', limits=(0, 240))
     w._save_timer.stop()
     yield w
     w.engine.stop_and_wait()
@@ -49,17 +49,17 @@ def test_validators():
 def test_bar_counts_and_names(window):
     e = window.edits
     assert not e.is_dirty()
-    e.edit('osc.osc.port', '9000')
-    e.edit('osc.osc.host', '10.0.0.5')
-    e.edit('input.camera.width', '1280')
-    e.edit('advanced.performance.target_fps', '30')
+    e.edit('t_osc.osc.port', '9000')
+    e.edit('t_osc.osc.host', '10.0.0.5')
+    e.edit('t_input.camera.width', '1280')
+    e.edit('t_adv.performance.target_fps', '30')
     bar = window.pending_bar
     assert bar.summary.text() == '4 changes pending · 1 needs a restart'
     assert bar.detail.text() == ('OSC Output · Host   OSC Output · Port   Input · Capture width   +1 more')
     assert bar.bg_name() == BG_RESTART
     assert not bar.isHidden() or window._pending_slot.isVisibleTo(window)
     assert window.toolbar.chip.isVisibleTo(window.toolbar)
-    e.edit('input.camera.width', '640')       # back to saved: clean
+    e.edit('t_input.camera.width', '640')       # back to saved: clean
     assert bar.summary.text() == '3 changes pending · applies live'
     assert bar.bg_name() == BG_LIVE
     assert not window.toolbar.chip.isVisibleTo(window.toolbar)
@@ -67,23 +67,23 @@ def test_bar_counts_and_names(window):
 
 def test_invalid_disables_apply(window):
     e = window.edits
-    e.edit('osc.osc.port', '99999')
+    e.edit('t_osc.osc.port', '99999')
     bar = window.pending_bar
     assert not bar.apply_button.isEnabled()
     assert bar.bg_name() == BG_INVALID
     assert e.apply() is None
     assert window.config.get('osc', 'port') == 1234
-    e.edit('osc.osc.port', '1235')
+    e.edit('t_osc.osc.port', '1235')
     assert bar.apply_button.isEnabled()
 
 
 def test_revert_restores(window):
     e = window.edits
-    e.edit('osc.osc.port', '9000')
+    e.edit('t_osc.osc.port', '9000')
     got = []
     e.reverted.connect(lambda: got.append(1))
     e.revert()
-    assert got and e.value('osc.osc.port') == '1234' and not e.is_dirty()
+    assert got and e.value('t_osc.osc.port') == '1234' and not e.is_dirty()
     assert window._pending_slot.isHidden()
 
 
@@ -92,8 +92,8 @@ def test_apply_writes_once(window, monkeypatch):
     real = Config.save
     monkeypatch.setattr(Config, 'save', lambda self: (saves.append(1), real(self)))
     e = window.edits
-    e.edit('osc.osc.port', '9000')
-    e.edit('input.camera.width', '1280')
+    e.edit('t_osc.osc.port', '9000')
+    e.edit('t_input.camera.width', '1280')
     window.actions['apply'].trigger()
     assert len(saves) == 1
     data = json.load(open(window.config.config_file))
@@ -107,10 +107,10 @@ def test_restart_class_restarts_running_engine(window, monkeypatch):
     monkeypatch.setattr(window.engine, 'restart', lambda: calls.append('restart'))
     monkeypatch.setattr(window.engine, 'set_live', lambda k, v: calls.append((k, v)) or False)
     e = window.edits
-    e.edit('osc.osc.port', '9000')
+    e.edit('t_osc.osc.port', '9000')
     assert e.apply() is False
     assert calls == [('osc.port', 9000)]
-    e.edit('input.camera.width', '1280')
+    e.edit('t_input.camera.width', '1280')
     assert e.apply() is True
     assert calls[-1] == 'restart'
     monkeypatch.undo()
