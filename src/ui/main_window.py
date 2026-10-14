@@ -896,6 +896,10 @@ class MainWindow(QMainWindow):
         self._save_timer.setInterval(SAVE_DEBOUNCE_MS)
         self._save_timer.timeout.connect(self._save_config)
 
+        # Status item (#71): when set, closing the window hides it and the engine keeps running
+        self.keep_running_when_closed = False
+        self._quitting = False
+
         self._build_ui()
         self._build_actions()
         self._wire_engine()
@@ -999,7 +1003,7 @@ class MainWindow(QMainWindow):
         act('check_updates', 'Check for Updates...')
         act('about', 'About Gesture')
         act('setup', 'Set Up...')
-        act('quit', 'Quit Gesture', 'Ctrl+Q', self.close)
+        act('quit', 'Quit Gesture', 'Ctrl+Q', self.quit_app)
         self.actions['restart'].setEnabled(False)
 
     def _wire_engine(self) -> None:
@@ -1114,6 +1118,7 @@ class MainWindow(QMainWindow):
             self._pending_lay.addWidget(widget)
         self._pending_slot.setVisible(widget is not None)
         self._stage.relayout()
+        menus.apply_focus_order(self)
 
     def set_update_available(self, release) -> None:
         """
@@ -1267,17 +1272,37 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------------
     # Shutdown
     # ------------------------------------------------------------------------
+    def quit_app(self) -> None:
+        """Stop the engine cleanly, save the config and exit (Cmd+Q, menu, status item)."""
+        self._quitting = True
+        self.close()
+
+    def _stop_engine_for_quit(self) -> None:
+        """Wait for the engine to send its OSC clear messages and exit, with feedback."""
+        if not self.engine.is_running():
+            return
+        if self.isVisible():
+            self.toast('Stopping engine...', 12000)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        QApplication.processEvents()
+        try:
+            self.engine.stop_and_wait()
+        finally:
+            QApplication.restoreOverrideCursor()
+
     def closeEvent(self, e) -> None:
-        # Until the status item (#71) exists, quitting stops the engine cleanly
         self._save_timer.stop()
-        self.engine.stop_and_wait()
+        keep_alive = self.keep_running_when_closed and not self._quitting
+        if not keep_alive:
+            self._stop_engine_for_quit()
         self.config.set('ui', 'console_open', self._console_open)
         self.config.set('ui', 'console_height', self._console_height)
         self.config.save()
         e.accept()
-        app = QApplication.instance()
-        if app is not None:
-            app.quit()
+        if not keep_alive:
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
 
     def sizeHint(self) -> QSize:
         return QSize(*DEFAULT_SIZE)
