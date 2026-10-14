@@ -56,7 +56,15 @@ def selftest_imports():
     failures = []
     names = ['PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets', 'cv2', 'mediapipe',
              'NDIlib', 'matplotlib.pyplot', 'pythonosc', 'main']
-    names += [m.name for m in pkgutil.walk_packages(src.__path__, 'src.')]
+    # Frozen: the list written at build time by gesture.spec, so a module the
+    # bundle lost is still on the list and fails here. (Walking the bundle would
+    # only ever list what is already in it.) From source: walk the package.
+    manifest = os.path.join(getattr(sys, '_MEIPASS', ''), 'src_modules.txt')
+    if getattr(sys, 'frozen', False) and os.path.exists(manifest):
+        with open(manifest) as handle:
+            names += [line.strip() for line in handle if line.strip()]
+    else:
+        names += [m.name for m in pkgutil.walk_packages(src.__path__, 'src.')]
     for name in names:
         try:
             importlib.import_module(name)

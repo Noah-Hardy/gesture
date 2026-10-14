@@ -14,7 +14,7 @@ src/tasks/ before they get bundled.
 
 import os
 
-from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
 
 def _project_version():
@@ -136,7 +136,33 @@ _HIDDEN_IMPORTS += [
 # Safety net on top of the explicit list above (which test_imports.py checks
 # against src._EXPORTS): bundle every module under src/ so a lazily imported
 # one can never be missing from the frozen app (#86). Only ever adds modules.
-_HIDDEN_IMPORTS += collect_submodules('src')
+def _source_modules(package='src'):
+    """Dotted names of every module and package under src/, found on disk
+
+    Walked from the source tree rather than with PyInstaller's
+    collect_submodules, which found nothing here (src is not importable from
+    its isolated subprocess).
+    """
+    names = []
+    for root, dirs, files in os.walk(package):
+        dirs[:] = [d for d in dirs if d != '__pycache__']
+        base = root.replace(os.sep, '.')
+        if '__init__.py' in files:
+            names.append(base)
+        names += [f'{base}.{f[:-3]}' for f in files if f.endswith('.py') and f != '__init__.py']
+    return sorted(names)
+
+
+_SRC_MODULES = _source_modules()
+_HIDDEN_IMPORTS += _SRC_MODULES
+
+# The same list, shipped as a data file for `gesture --selftest-imports`, which
+# imports each name inside the frozen app and so notices a module the bundle
+# lost (walking the bundle could only ever list what is present).
+os.makedirs('build', exist_ok=True)
+with open('build/src_modules.txt', 'w') as _handle:
+    _handle.write('\n'.join(sorted(_SRC_MODULES)) + '\n')
+datas.append(('build/src_modules.txt', '.'))
 
 # Qt modules the app never touches. PySide6's hook only bundles what the import
 # graph reaches, but its binary-dependency scan can still drag these in, and
