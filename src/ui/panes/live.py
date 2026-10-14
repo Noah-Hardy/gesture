@@ -79,6 +79,8 @@ class Chip(QAbstractButton):
         else:
             self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setFont(Font.ui(11))
+        self._cache: QPixmap | None = None
+        self._cache_key = None
 
     def set_tone(self, tone: str) -> None:
         """Change the text colour (palette key)."""
@@ -90,10 +92,24 @@ class Chip(QAbstractButton):
         return QSize(w + 18, 24)
 
     def paintEvent(self, _e) -> None:
-        p = QPainter(self)
+        # Chips sit over the 30 fps preview, so they are repainted every frame:
+        # draw from a cached pixmap instead of re-rasterising the pill and text
+        on = self._toggle and self.isChecked()
+        dpr = self.devicePixelRatioF()
+        key = (self.size().toTuple(), dpr, self.text(), on, self.hasFocus(), self._tone, self.font().key())
+        if key != self._cache_key or self._cache is None:
+            pm = QPixmap(round(self.width() * dpr), round(self.height() * dpr))
+            pm.setDevicePixelRatio(dpr)
+            pm.fill(Qt.GlobalColor.transparent)
+            q = QPainter(pm)
+            self._draw(q, on)
+            q.end()
+            self._cache, self._cache_key = pm, key
+        QPainter(self).drawPixmap(0, 0, self._cache)
+
+    def _draw(self, p: QPainter, on: bool) -> None:
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect()).adjusted(.5, .5, -.5, -.5)
-        on = self._toggle and self.isChecked()
         p.setBrush(QColor(13, 15, 19, 153))
         border = 'accent_2' if on or self.hasFocus() else 'border'
         p.setPen(QPen(color(border), 1))
@@ -101,6 +117,43 @@ class Chip(QAbstractButton):
         p.setFont(self.font())
         p.setPen(color('accent' if on else self._tone))
         p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text())
+
+
+class _Note(QWidget):
+    """The 'preview only' caption: 11px faint text, painted from a cached pixmap (it sits over the stage)."""
+
+    def __init__(self, text: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._text = text
+        self.setFont(Font.ui(11))
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._cache: QPixmap | None = None
+        self._cache_key = None
+
+    def text(self) -> str:
+        """The caption."""
+        return self._text
+
+    def sizeHint(self) -> QSize:
+        return QSize(self.fontMetrics().horizontalAdvance(self._text) + 2, self.fontMetrics().height() + 2)
+
+    def adjustSize(self) -> None:
+        self.resize(self.sizeHint())
+
+    def paintEvent(self, _e) -> None:
+        dpr = self.devicePixelRatioF()
+        key = (self.size().toTuple(), dpr, self._text)
+        if key != self._cache_key or self._cache is None:
+            pm = QPixmap(round(self.width() * dpr), round(self.height() * dpr))
+            pm.setDevicePixelRatio(dpr)
+            pm.fill(Qt.GlobalColor.transparent)
+            q = QPainter(pm)
+            q.setFont(self.font())
+            q.setPen(color('faint'))
+            q.drawText(QRectF(self.rect()), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self._text)
+            q.end()
+            self._cache, self._cache_key = pm, key
+        QPainter(self).drawPixmap(0, 0, self._cache)
 
 
 # ============================================================================
@@ -128,9 +181,7 @@ class Stage(QWidget):
         self.holistic_chip = Chip('holistic', 'accent', parent=self)
         self.mirror_chip = Chip('Mirror', 'dim', toggle=True, parent=self)
         self.world_chip = Chip('World coords', 'dim', toggle=True, parent=self)
-        self.note = QLabel('preview only — not what is sent', self)
-        self.note.setFont(Font.ui(11))
-        self.note.setStyleSheet(f"color: {color('faint').name()}; background: transparent;")
+        self.note = _Note('preview only — not what is sent', self)
         self.note.adjustSize()
 
     # -- content -------------------------------------------------------------
@@ -279,9 +330,8 @@ class ActivityRow(QWidget):
         lay.setSpacing(6)
         top = QHBoxLayout()
         top.setSpacing(8)
-        self._dot = QWidget(self)
-        self._dot.setFixedSize(5, 5)
-        self._dot.paintEvent = self._paint_dot  # type: ignore[method-assign]
+        self._dot = QWidget(self)   # layout slot only: the row paints the dot itself, so a
+        self._dot.setFixedSize(5, 5)  # pulse repaints 25 px, not the whole row and its parent
         self.address = QLabel(family)
         self.address.setFont(Font.mono(11))
         self.address.setStyleSheet(f"color: {color('text').name()}; background: transparent;")
@@ -314,23 +364,22 @@ class ActivityRow(QWidget):
 
     def pulse(self, phase: float) -> None:
         """Advance the dot: dim when silent, pulsing when messages flow."""
-        self._opacity = 0.18 if self._rate < 0.5 else 0.45 + 0.55 * abs(math.sin(phase))
-        self._dot.update()
-
-    def _paint_dot(self, _e) -> None:
-        p = QPainter(self._dot)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(color('accent', self._opacity))
-        p.drawEllipse(QRectF(0, 0, 5, 5))
+        level = 0.18 if self._rate < 0.5 else 0.45 + 0.55 * abs(math.sin(phase))
+        level = round(level * 12) / 12   # 12 steps: no repaint for changes nobody can see
+        if level != self._opacity:
+            self._opacity = level
+            self.update(self._dot.geometry().adjusted(-1, -1, 1, 1))
 
     def paintEvent(self, _e) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
         if self._zebra:
-            p = QPainter(self)
-            p.setRenderHint(QPainter.RenderHint.Antialiasing)
-            p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(color('row_alt'))
             p.drawRoundedRect(QRectF(self.rect()), 8, 8)
+        d = self._dot.geometry()
+        p.setBrush(color('accent', self._opacity))
+        p.drawEllipse(QRectF(d))
 
 
 class OscStrip(QWidget):

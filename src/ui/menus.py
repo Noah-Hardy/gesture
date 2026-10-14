@@ -182,13 +182,8 @@ class StatusItem:
 
     def _on_app_state(self, state) -> None:
         # A Dock click re-activates a running app whose window is hidden
-        if state != Qt.ApplicationState.ApplicationActive or self.window.isVisible():
-            return
-        # Launch activation is not a Dock click: the splash hands the window over itself
-        splash = getattr(self.window, '_launch_animation', None)
-        if splash is not None and splash.is_playing:
-            return
-        self.open_window()
+        if state == Qt.ApplicationState.ApplicationActive and not self.window.isVisible():
+            self.open_window()
 
 
 # ============================================================================

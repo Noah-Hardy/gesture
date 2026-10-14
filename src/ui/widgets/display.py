@@ -70,6 +70,9 @@ class Meter(QWidget):
 
     def set_value(self, value: str, fraction: float | None = None, unit: str | None = None) -> None:
         """Update the readout (and optionally bar fraction and unit)."""
+        if value == self._value and unit in (None, self._unit) and (
+                fraction is None or max(0.0, min(1.0, fraction)) == self._frac):
+            return   # nothing changed: no repaint (status arrives 10x/s)
         self._value = value
         if fraction is not None:
             frac = max(0.0, min(1.0, fraction))

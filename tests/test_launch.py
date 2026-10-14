@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 from src import osc_protocol
 from src.ui import launch
-from src.ui.launch import CUES, EASING, JOINTS, POSE_ICON, TOTAL, LaunchAnimation
+from src.ui.launch import CUES, EASING, JOINTS, POSE_ICON, TOTAL, LaunchOverlay
 
 
 @pytest.fixture(scope='module')
@@ -102,39 +102,70 @@ def test_stream_uses_real_addresses():
 
 def test_should_play_rules(monkeypatch):
     monkeypatch.setattr(launch, 'reduce_motion_enabled', lambda: False)
-    assert LaunchAnimation.should_play(_Config(True), 2000)
-    assert not LaunchAnimation.should_play(_Config(False), 2000)
+    assert LaunchOverlay.should_play(_Config(True), 2000)
+    assert not LaunchOverlay.should_play(_Config(False), 2000)
     # Plays on every launch, however fast the window was ready (#74)
-    assert LaunchAnimation.should_play(_Config(True), 800)
-    assert LaunchAnimation.should_play(_Config(True), 120)
-    assert LaunchAnimation.should_play(_Config(True))
+    assert LaunchOverlay.should_play(_Config(True), 800)
+    assert LaunchOverlay.should_play(_Config(True), 120)
+    assert LaunchOverlay.should_play(_Config(True))
     monkeypatch.setattr(launch, 'reduce_motion_enabled', lambda: True)
-    assert not LaunchAnimation.should_play(_Config(True), 5000)
+    assert not LaunchOverlay.should_play(_Config(True), 5000)
 
 
 def test_reduce_motion_never_raises():
     assert isinstance(launch.reduce_motion_enabled(), bool)
 
 
-def test_skip_finishes_immediately(app):
-    anim = LaunchAnimation()
-    calls = []
-    anim.play(lambda: calls.append(1))
-    assert anim.is_playing
-    anim.skip()
-    anim.skip()
-    assert calls == [1] and not anim.is_playing and not anim.isVisible()
+def _host(app, w=1200, h=760):
+    host = QWidget()
+    host.resize(w, h)
+    host.show()
+    return host
 
 
-def test_click_skips(app):
-    anim = LaunchAnimation()
-    calls = []
-    anim.play(lambda: calls.append(1))
+def test_overlay_is_a_child_of_the_window_and_covers_it(app):
+    host = _host(app)
+    anim = LaunchOverlay(host)
+    assert anim.parent() is host and anim.geometry() == host.rect()
+    host.resize(900, 600)
+    app.processEvents()
+    assert anim.geometry() == host.rect()  # follows resizes
+    host.close()
+
+
+def test_skip_removes_the_overlay_immediately(app):
+    host = _host(app)
+    anim = LaunchOverlay(host)
+    done = []
+    anim.finished.connect(lambda: done.append(1))
+    anim.play()
+    assert anim.is_playing and anim.isVisible()
+    anim.skip()
+    anim.skip()
+    assert done == [1] and not anim.is_playing and not anim.isVisible()
+    host.close()
+
+
+def test_click_skips_after_the_grace_period(app):
+    host = _host(app)
+    anim = LaunchOverlay(host)
+    anim.play()
     QTest.mouseClick(anim, Qt.MouseButton.LeftButton, pos=QPoint(5, 5))
-    assert calls == []  # a stray click right at launch is ignored
+    assert anim.is_playing  # a stray click right at launch is ignored
     QTest.qWait(launch.SKIP_GRACE_MS + 50)
     QTest.mouseClick(anim, Qt.MouseButton.LeftButton, pos=QPoint(5, 5))
-    assert calls == [1]
+    assert not anim.is_playing
+    host.close()
+
+
+def test_it_runs_out_at_the_end(app, monkeypatch):
+    host = _host(app)
+    anim = LaunchOverlay(host)
+    anim.play()
+    monkeypatch.setattr(launch, 'TOTAL', 0.0)
+    anim._tick()
+    assert not anim.is_playing and not anim.isVisible()
+    host.close()
 
 
 def test_maybe_play_shows_window_when_skipped(app, monkeypatch):
@@ -145,11 +176,12 @@ def test_maybe_play_shows_window_when_skipped(app, monkeypatch):
     win.close()
 
 
-def test_maybe_play_plays_then_shows_window(app, monkeypatch):
+def test_maybe_play_shows_the_window_at_once_with_the_overlay_on_top(app, monkeypatch):
     monkeypatch.setattr(launch, 'reduce_motion_enabled', lambda: False)
     win = QWidget()
     anim = launch.maybe_play(win, _Config(True), 5000)
-    assert anim is not None and anim.is_playing and not win.isVisible()
+    assert anim is not None and anim.is_playing and win.isVisible()  # one window, shown now
+    assert anim.parent() is win
     anim.skip()
     assert win.isVisible()
     win.close()
@@ -160,30 +192,34 @@ def test_frame_renders(app):
     assert (img.width(), img.height()) == (480, 270)
 
 
-def test_splash_matches_a_positioned_window(app):
-    win = QWidget()
-    win.resize(1200, 700)
-    win.move(100, 80)
-    anim = LaunchAnimation(win)
-    avail = QApplication.primaryScreen().availableGeometry()
-    scale = min(1200 / launch.WIN_W, 700 / launch.WIN_H, avail.width() / launch.CANVAS_W,
-                avail.height() / launch.CANVAS_H)
-    assert anim.width() == pytest.approx(launch.CANVAS_W * scale, abs=2)
-    assert anim.height() == pytest.approx(launch.CANVAS_H * scale, abs=2)
-    if scale == 1200 / launch.WIN_W:  # not capped by a small screen: it sits over the window
-        assert anim.geometry().center().x() == pytest.approx(100 + 600, abs=2)
-        assert anim.geometry().center().y() == pytest.approx(80 + 350, abs=2)
+def _window(tmp_path):
+    from src.config import Config
+    from src.ui.main_window import MainWindow
+    cfg = Config(str(tmp_path / 'config.json'))
+    cfg.set('ui', 'first_run_complete', True)
+    return MainWindow(cfg)
 
 
-def test_unplaced_window_opens_centred_on_the_splash(app, monkeypatch):
+def test_reveal_uncovers_the_real_panes_in_order(app, tmp_path, monkeypatch):
     monkeypatch.setattr(launch, 'reduce_motion_enabled', lambda: False)
-    win = QWidget()
-    win.setFixedSize(900, 560)
-    anim = launch.maybe_play(win, _Config(True), 5000)
-    center = anim.geometry().center()
+    win = _window(tmp_path)
+    anim = launch.maybe_play(win, _Config(True))
+    regions = {k for k, _ in anim.regions()}
+    assert {'rail', 'stage', 'meters', 'osc', 'cons'} <= regions
+    r = CUES['Reveal']
+    ws = [launch.window_state(r + d) for d in (0.2, 0.5, 0.8, 1.1)]
+    for earlier, later in (('rail', 'cons'), ('stage', 'cons')):
+        assert ws[0][earlier] >= ws[0][later]
+    assert ws[0]['shell'] < ws[-1]['shell'] and ws[-1]['cons'] == 1
+    anim._t = r + 0.9  # mid-reveal: paints over the live interface without error
+    assert not anim.grab().isNull()
+    # the real rail mark waits (invisible) until the icon lands, then returns
+    assert win.rail.mark.graphicsEffect() is not None
     anim.skip()
-    assert win.geometry().center().x() == pytest.approx(center.x(), abs=2)
-    assert win.geometry().center().y() == pytest.approx(center.y(), abs=2)
+    assert win.rail.mark.graphicsEffect() is None
+    assert win.overlay_host().graphicsEffect() is None
+    win._save_timer.stop()
+    win.engine.stop_and_wait()
     win.close()
 
 
@@ -234,21 +270,3 @@ def test_tcc_protected_folders_are_not_swept(monkeypatch):
     assert updater._is_tcc_protected(os.path.join(home, 'Documents', 'x'))
     assert updater._is_tcc_protected(os.path.join(home, 'Desktop'))
     assert not updater._is_tcc_protected('/Applications')
-
-
-def test_reveal_lands_on_the_real_window(app, monkeypatch):
-    """The splash paints the real window's capture where the window will open."""
-    from src.config import Config
-    from src.ui.main_window import MainWindow
-    win = MainWindow(Config(os.path.join(os.environ.get('TMPDIR', '/tmp'), 'launch_reveal_cfg.json')))
-    anim = LaunchAnimation(win)
-    plan = anim._build_plan()
-    assert plan is not None and plan.pixmap.width() > 0
-    assert any(k == 'stage' for k, _ in plan.pieces)
-    img = launch.render_frame(CUES['Reveal'] + 1.2, 480, 270)
-    assert img.width() == 480
-    anim._plan = plan
-    anim._t = TOTAL
-    assert not anim.grab().isNull()
-    anim.close()
-    win.close()

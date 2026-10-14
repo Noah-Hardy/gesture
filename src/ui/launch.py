@@ -2,10 +2,10 @@
 """
 Launch Animation
 
-A skippable ~7.5 second splash that plays between "the engine process is up"
-and "the main window is ready": a camera senses a body, landmarks lock on
-joint by joint, the figure dances, lands in the icon pose, and the splash
-expands into the main window while the icon flies into the rail.
+A skippable ~7.5 second animation played as an overlay on the main window:
+a camera senses a body, landmarks lock on joint by joint, the figure dances,
+lands in the icon pose, and the overlay uncovers the real interface pane by
+pane while the icon flies into the rail.
 
 Ported from the Claude Design handoff (mp-osc-launch.jsx on animations-v3):
 every keyframe, easing and timing below is the design's own value. The
@@ -29,12 +29,12 @@ import sys
 import time
 from typing import Callable
 
-from PySide6.QtCore import QElapsedTimer, QPoint, QPointF, QRectF, Qt, QTimer
+from PySide6.QtCore import QElapsedTimer, QEvent, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
-    QPixmap, QColor, QFont, QFontMetricsF, QImage, QLinearGradient, QPainter, QPainterPath,
+    QColor, QFont, QFontMetricsF, QImage, QLinearGradient, QPainter, QPainterPath,
     QPen, QRadialGradient, QBrush, QTransform,
 )
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QGraphicsOpacityEffect, QWidget
 
 from .tokens import PALETTE, Font, color
 
@@ -53,11 +53,8 @@ SCENES = (
 )
 
 # Input in the first moments is ignored: a launch from Finder/Dock can deliver
-# a stray click or key to the freshly shown splash and would skip it at once
+# a stray click or key to the freshly shown overlay and would skip it at once
 SKIP_GRACE_MS = 700
-
-# Cross-fade from the splash to the (identical) real window at the end
-HANDOVER_MS = 140
 
 # The squircle's authored size on the canvas, and the rail mark's real size in px
 ICON_SIZE = 340
@@ -749,68 +746,26 @@ def _paint_app_window(p: QPainter, t: float, version: str, log_lines: tuple) -> 
     p.restore()
 
 
-class RevealPlan:
+def paint_background(p: QPainter, rect: QRectF) -> None:
     """
-    The real main window, captured for the Reveal cue.
+    The splash backdrop: radial-gradient(1400px 900px at 50% 34%, #1E2129 0%, #0E1014 68%).
 
-    Everything is in canvas units, so the splash can paint the window exactly
-    where (and at the size) the real one will appear.
-
-    Attributes:
-        pixmap: The window's rendered contents (device-pixel-ratio aware).
-        rect: The window's content rect on the canvas.
-        pieces: [(stage key, rect)] panes that fade in on their own cue; the
-            rest of the window belongs to the shell layer.
-        fly_to: (x, y, scale) where the icon lands: the rail's mark slot.
+    Args:
+        p: Painter in canvas coordinates.
+        rect: Area to fill (the gradient pads outside the canvas, so any rect works).
     """
-
-    def __init__(self, pixmap: QPixmap, rect: QRectF, pieces: list, fly_to: tuple[float, float, float]):
-        self.pixmap = pixmap
-        self.rect = rect
-        self.pieces = pieces
-        self.fly_to = fly_to
-
-
-def _paint_real_window(p: QPainter, t: float, plan: RevealPlan) -> None:
-    """The real window, expanding pane by pane (same cues as the mock)."""
-    w = window_state(t)
-    if w['shell'] <= 0.001:
-        return
-    R = plan.rect
+    local = QTransform()
+    local.translate(960, CANVAS_H * 0.34)
+    local.scale(1, 900 / 1400)
+    area = local.inverted()[0].mapRect(rect)
     p.save()
-    p.translate(R.x() + R.width() * 0.5, R.y() + R.height() * 0.42)
-    p.scale(w['shell_s'], w['shell_s'])
-    p.translate(-R.width() * 0.5 - R.x(), -R.height() * 0.42 - R.y())
-    p.setOpacity(w['shell'])
-    p.setPen(Qt.PenStyle.NoPen)
-    for k in range(5):
-        grow = 10 + k * 20
-        p.setBrush(QColor(0, 0, 0, 32))
-        p.drawRoundedRect(R.adjusted(-grow, 60 - grow, grow, 60 + grow), 20 + grow, 20 + grow)
-    # Shell layer: the window minus the panes that arrive later
-    base = QPainterPath()
-    base.addRect(R)
-    for _key, r in plan.pieces:
-        cut = QPainterPath()
-        cut.addRect(r)
-        base = base.subtracted(cut)
-    p.save()
-    p.setClipPath(base)
-    p.fillRect(R, QColor(PALETTE['bg_window']))
-    p.drawPixmap(R, plan.pixmap, QRectF(plan.pixmap.rect()))
-    p.restore()
-    for key, r in plan.pieces:
-        a = w[key]
-        if a <= 0.001:
-            continue
-        p.save()
-        p.setOpacity(w['shell'] * a)
-        p.setClipRect(r)
-        if key not in ('rail',):
-            p.translate(0, (1 - a) * 16)
-        p.fillRect(R, QColor(PALETTE['bg_window']))
-        p.drawPixmap(R, plan.pixmap, QRectF(plan.pixmap.rect()))
-        p.restore()
+    p.translate(960, CANVAS_H * 0.34)
+    p.scale(1, 900 / 1400)
+    bg = QRadialGradient(QPointF(0, 0), 1400)
+    bg.setColorAt(0, QColor('#1E2129'))
+    bg.setColorAt(0.68, QColor('#0E1014'))
+    bg.setColorAt(1, QColor('#0E1014'))
+    p.fillRect(area, bg)
     p.restore()
 
 
@@ -819,7 +774,7 @@ def _node_circle(p: QPainter, c: QPointF, r: float) -> None:
 
 
 def paint_frame(p: QPainter, t: float, version: str = '', log_lines: tuple | None = None,
-                reveal: RevealPlan | None = None) -> None:
+                fly_to: tuple[float, float, float] | None = None, overlay: bool = False) -> None:
     """
     Paint the whole composition at authored time `t` on the 1920x1080 canvas.
 
@@ -831,27 +786,16 @@ def paint_frame(p: QPainter, t: float, version: str = '', log_lines: tuple | Non
         t: Authored seconds, 0..TOTAL.
         version: Version string for the mock rail.
         log_lines: Console lines for the mock window (defaults to the engine's).
-        reveal: The real window to expand into; None paints the mock window.
+        fly_to: (x, y, scale) the icon lands at, in canvas units (the real rail mark).
+        overlay: True over the real window: no background and no mock window, the
+            caller covers the real UI itself.
     """
     W, H = CANVAS_W, CANVAS_H
     accent = _qc('accent')
     p.setPen(Qt.PenStyle.NoPen)
 
-    # background: radial-gradient(1400px 900px at 50% 34%, #1E2129 0%, #0E1014 68%)
-    p.fillRect(QRectF(0, 0, W, H), QColor('#0E1014'))
-    p.save()
-    p.translate(960, H * 0.34)
-    p.scale(1, 900 / 1400)
-    bg = QRadialGradient(QPointF(0, 0), 1400)
-    bg.setColorAt(0, QColor('#1E2129'))
-    bg.setColorAt(0.68, QColor('#0E1014'))
-    bg.setColorAt(1, QColor('#0E1014'))
-    p.fillRect(QRectF(-960, -H * 0.34 * 1400 / 900, W, H * 1400 / 900), bg)
-    p.restore()
-
-    if reveal is not None:
-        _paint_real_window(p, t, reveal)
-    else:
+    if not overlay:
+        paint_background(p, QRectF(0, 0, W, H))
         _paint_app_window(p, t, version, log_lines if log_lines is not None else _console_lines())
 
     ch = chrome_state(t)
@@ -927,7 +871,7 @@ def paint_frame(p: QPainter, t: float, version: str = '', log_lines: tuple | Non
             p.drawRoundedRect(QRectF(1500, 378 + i * 46, 6 + pulse * 34, 4), 2, 2)
         p.restore()
 
-    _paint_icon_and_figure(p, t, reveal.fly_to if reveal is not None else None)
+    _paint_icon_and_figure(p, t, fly_to)
     _paint_wordmark(p, t)
 
 
@@ -1047,30 +991,36 @@ def render_frame(t: float, width: int = CANVAS_W, height: int = CANVAS_H) -> QIm
 
 
 # ============================================================================
-# THE SPLASH WIDGET
+# THE LAUNCH OVERLAY
 # ============================================================================
-class LaunchAnimation(QWidget):
+class LaunchOverlay(QWidget):
     """
-    Frameless splash that plays the launch animation, then hands over.
+    The launch animation, played as a child of the main window.
 
-    The animation is keyed to wall-clock time (a dropped frame skips ahead, it
-    never slows the piece). Any click or key skips straight to the end.
+    There is one window. The overlay covers the window's client area, paints
+    Sensing -> Collapse opaque on the 1920x1080 canvas (fitted and centred),
+    then during Reveal uncovers the *real* interface pane by pane underneath
+    (shell, rail, stage, meters, OSC column, console) while the icon flies to
+    the real rail mark. Timing is wall-clock: a dropped frame skips ahead.
+    Any click or key (after a short grace) removes it at once.
+
+    Signals:
+        finished: Emitted once when the overlay has been removed (ran out or skipped).
     """
 
+    finished = Signal()
     FRAME_MS = 16
 
-    def __init__(self, window: QWidget | None = None):
+    def __init__(self, window: QWidget):
         """
         Args:
-            window: The main window that will appear when the splash ends.
-                The splash is sized and positioned so the mock window lines up
-                with it. None: a 1280x720 splash centred on the screen.
+            window: The MainWindow (or any widget); the overlay is parented to its
+                central widget when it has one, so it covers exactly the client area.
         """
-        super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        host = window.centralWidget() if hasattr(window, 'centralWidget') else None
+        self._host = host or window
+        super().__init__(self._host)
         self._window = window
-        self._plan: RevealPlan | None = None
-        self._fade = None
-        self._on_finished: Callable[[], None] | None = None
         self._playing = False
         self._done = False
         self._t = 0.0
@@ -1081,113 +1031,12 @@ class LaunchAnimation(QWidget):
         self._timer.timeout.connect(self._tick)
         self._version = _app_version_cached()
         self._log = _console_lines()
+        self._mark_fx = None
+        self._host_fx = None
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
         self.setCursor(Qt.CursorShape.ArrowCursor)
-        self._place_window()
-        self._place()
-
-    # ---- geometry
-    def _place_window(self) -> None:
-        """Give the (still hidden) window its final position, so the Reveal can land on it exactly."""
-        win = self._window
-        if win is None or win.testAttribute(Qt.WidgetAttribute.WA_Moved):
-            return
-        screen = win.screen() or QApplication.primaryScreen()
-        if screen is None:
-            return
-        size = win.size()
-        if not win.testAttribute(Qt.WidgetAttribute.WA_Resized):
-            hint = win.sizeHint()
-            if hint.isValid():
-                size = hint
-        c = screen.availableGeometry().center()
-        win.move(c.x() - size.width() // 2, c.y() - size.height() // 2)
-
-    def _canvas_xform(self) -> tuple[float, float, float]:
-        """(scale, offset x, offset y) of the paint transform: canvas units -> splash pixels."""
-        s = min(self.width() / CANVAS_W, self.height() / CANVAS_H)
-        return s, (self.width() - CANVAS_W * s) / 2, (self.height() - CANVAS_H * s) / 2
-
-    def _build_plan(self) -> RevealPlan | None:
-        """Render the real window and map its panes onto the canvas (None: no real window)."""
-        win = self._window
-        if win is None or not hasattr(win, 'toolbar') or not hasattr(win, 'rail'):
-            return None
-        try:
-            s, ox, oy = self._canvas_xform()
-            win.ensurePolished()
-            mark = getattr(win.rail, 'mark', None)
-            if mark is not None:  # the icon flies into this slot, so the capture leaves it empty
-                from PySide6.QtWidgets import QGraphicsOpacityEffect
-                fx = QGraphicsOpacityEffect(mark)
-                fx.setOpacity(0.0)
-                mark.setGraphicsEffect(fx)
-            host = win.overlay_host() if hasattr(win, 'overlay_host') else None
-            host_was_hidden = host.isHidden() if host is not None else True
-            if host is not None:  # first-run/notice cards appear after the hand-over, not inside the capture
-                host.hide()
-            try:
-                pix = win.grab()
-            finally:
-                if mark is not None:
-                    mark.setGraphicsEffect(None)
-                if host is not None and not host_was_hidden:
-                    host.show()
-            origin = win.mapToGlobal(QPoint(0, 0)) if win.isVisible() else win.pos()
-
-            def canvas(widget) -> QRectF:
-                tl = widget.mapTo(win, QPoint(0, 0))
-                return QRectF((origin.x() - self.x() - ox) / s + tl.x() / s,
-                              (origin.y() - self.y() - oy) / s + tl.y() / s,
-                              widget.width() / s, widget.height() / s)
-
-            rect = QRectF((origin.x() - self.x() - ox) / s, (origin.y() - self.y() - oy) / s,
-                          win.width() / s, win.height() / s)
-            live = win.pane('live') if hasattr(win, 'pane') else None
-            pieces = [('rail', canvas(win.toolbar)), ('rail', canvas(win.rail))]
-            for key, widget in (('stage', getattr(live, 'stage', None)),
-                                ('meters', getattr(live, '_meter_row', None)),
-                                ('osc', getattr(live, 'column', None)),
-                                ('cons', getattr(win, 'console', None))):
-                if widget is not None and not widget.isHidden() and widget.width() > 0:
-                    pieces.append((key, canvas(widget)))
-            fly_to = (960.0, 452.0, 0.105)
-            if mark is not None:
-                r = canvas(mark)
-                fly_to = (r.center().x(), r.center().y(), r.width() / ICON_SIZE)
-            return RevealPlan(pix, rect, pieces, fly_to)
-        except Exception:
-            return None
-
-    def _place(self) -> None:
-        """Size the splash so the mock window matches the real one, centred where it will appear."""
-        win = self._window
-        screen = (win.screen() if win is not None else None) or QApplication.primaryScreen()
-        avail = screen.availableGeometry() if screen else None
-        center = None
-        if win is not None:
-            size = win.size()
-            if not win.testAttribute(Qt.WidgetAttribute.WA_Resized):
-                hint = win.sizeHint()  # not sized yet: what show() will use
-                if hint.isValid():
-                    size = hint
-            scale = min(size.width() / WIN_W, size.height() / WIN_H)
-            if win.testAttribute(Qt.WidgetAttribute.WA_Moved):
-                center = QPoint(win.x() + size.width() // 2, win.y() + size.height() // 2)
-        else:
-            scale = 1280 / CANVAS_W
-        if avail is not None:
-            scale = min(scale, avail.width() / CANVAS_W, avail.height() / CANVAS_H)
-            if center is None:
-                center = avail.center()
-        w, h = round(CANVAS_W * scale), round(CANVAS_H * scale)
-        center = center or QPoint(w // 2, h // 2)
-        x, y = center.x() - w // 2, center.y() - h // 2
-        if avail is not None:
-            x = int(clamp(x, avail.left(), avail.right() - w + 1))
-            y = int(clamp(y, avail.top(), avail.bottom() - h + 1))
-        self.setGeometry(x, y, w, h)
+        self._host.installEventFilter(self)
+        self.setGeometry(self._host.rect())
 
     # ---- rules
     @staticmethod
@@ -1197,7 +1046,7 @@ class LaunchAnimation(QWidget):
 
         Args:
             config: Config (or anything with `.get(section, key, default)`).
-            ready_ms: Unused; kept for callers (the launch time no longer gates it).
+            ready_ms: Unused; the launch time no longer gates the animation.
 
         Returns:
             False when `ui.launch_animation` is false or macOS Reduce Motion
@@ -1216,39 +1065,31 @@ class LaunchAnimation(QWidget):
         """True between play() and the end/skip."""
         return self._playing
 
-    def play(self, on_finished: Callable[[], None] | None = None) -> None:
-        """
-        Show the splash and start the 60fps clock.
-
-        Args:
-            on_finished: Called once, after the splash has closed, whether the
-                animation ran out or was skipped.
-        """
-        self._on_finished = on_finished
+    def play(self) -> None:
+        """Cover the window, hold back its pop-ups, and start the 60fps clock."""
         self._done = False
         self._playing = True
         self._t = 0.0
-        self._plan = self._build_plan()
-        app = QApplication.instance()
-        if app is not None:
-            # A Finder/Dock launch activates the app late; keep the splash in front when it does
-            app.applicationStateChanged.connect(self._on_app_state)
+        win = self._window
+        mark = getattr(getattr(win, 'rail', None), 'mark', None)
+        if mark is not None:  # the icon flies into this slot; the real one stays hidden until it lands
+            self._mark_fx = QGraphicsOpacityEffect(mark)
+            self._mark_fx.setOpacity(0.0)
+            mark.setGraphicsEffect(self._mark_fx)
+        host = win.overlay_host() if hasattr(win, 'overlay_host') else None
+        if host is not None:  # first-run / notice cards wait until the animation is done
+            self._host_fx = QGraphicsOpacityEffect(host)
+            self._host_fx.setOpacity(0.0)
+            host.setGraphicsEffect(self._host_fx)
+        self.setGeometry(self._host.rect())
         self.show()
-        self._front()
+        self.raise_()
+        self.setFocus()
         self._clock.start()
         self._timer.start()
 
-    def _front(self) -> None:
-        self.raise_()
-        self.activateWindow()
-        self.setFocus()
-
-    def _on_app_state(self, state) -> None:
-        if self._playing and state == Qt.ApplicationState.ApplicationActive:
-            self._front()
-
     def skip(self) -> None:
-        """End immediately and hand over to the window."""
+        """Remove the overlay immediately."""
         self._finish()
 
     def _tick(self) -> None:
@@ -1256,6 +1097,7 @@ class LaunchAnimation(QWidget):
         if self._t >= TOTAL:
             self._finish()
             return
+        self.raise_()
         self.update()
 
     def _finish(self) -> None:
@@ -1264,34 +1106,32 @@ class LaunchAnimation(QWidget):
         self._done = True
         self._playing = False
         self._timer.stop()
-        app = QApplication.instance()
-        if app is not None:
-            try:
-                app.applicationStateChanged.disconnect(self._on_app_state)
-            except (RuntimeError, TypeError):
-                pass
-        completed = self._t >= TOTAL and self._plan is not None
-        cb, self._on_finished = self._on_finished, None
-        if cb is not None:
-            cb()
-        if completed:
-            self._fade_out()
-        else:
-            self.close()
+        self._host.removeEventFilter(self)
+        mark = getattr(getattr(self._window, 'rail', None), 'mark', None)
+        if mark is not None and self._mark_fx is not None:
+            mark.setGraphicsEffect(None)
+        host = self._window.overlay_host() if hasattr(self._window, 'overlay_host') else None
+        if host is not None and self._host_fx is not None:
+            host.setGraphicsEffect(None)
+        self._mark_fx = self._host_fx = None
+        self.hide()
+        self.finished.emit()
+        QTimer.singleShot(0, self._dispose)
 
-    def _fade_out(self) -> None:
-        """The real window is up behind the identical last frame: dissolve the splash."""
-        from PySide6.QtCore import QVariantAnimation
-        anim = QVariantAnimation(self)
-        anim.setStartValue(1.0)
-        anim.setEndValue(0.0)
-        anim.setDuration(HANDOVER_MS)
-        anim.valueChanged.connect(lambda v: self.setWindowOpacity(float(v)))
-        anim.finished.connect(self.close)
-        self._fade = anim
-        anim.start()
+    def _dispose(self) -> None:
+        """Detach and delete, outside the event that ended the animation."""
+        try:
+            self.setParent(None)
+            self.deleteLater()
+        except RuntimeError:
+            pass  # the window went first
 
     # ---- events
+    def eventFilter(self, obj, event) -> bool:
+        if obj is self._host and event.type() == QEvent.Type.Resize:
+            self.setGeometry(self._host.rect())
+        return False
+
     def _can_skip(self) -> bool:
         return self._clock.isValid() and self._clock.elapsed() >= SKIP_GRACE_MS
 
@@ -1303,45 +1143,106 @@ class LaunchAnimation(QWidget):
         if self._can_skip():
             self.skip()
 
+    # ---- geometry of the real interface, in overlay pixels
+    def _rect_of(self, widget) -> QRectF | None:
+        if widget is None or widget.isHidden() or widget.width() <= 0:
+            return None
+        tl = widget.mapTo(self._host, QPoint(0, 0))
+        return QRectF(tl.x(), tl.y(), widget.width(), widget.height())
+
+    def regions(self) -> list[tuple[str, QRectF]]:
+        """(reveal stage, rect) of the real panes, in overlay pixels, in reveal order."""
+        win = self._window
+        live = win.pane('live') if hasattr(win, 'pane') else None
+        out = []
+        for key, widget in (('rail', getattr(win, 'toolbar', None)),
+                            ('rail', getattr(win, 'rail', None)),
+                            ('stage', getattr(live, 'stage', None)),
+                            ('meters', getattr(live, '_meter_row', None)),
+                            ('osc', getattr(live, 'column', None)),
+                            ('cons', getattr(win, 'console', None))):
+            r = self._rect_of(widget)
+            if r is not None:
+                out.append((key, r))
+        return out
+
+    def _fly_to(self, s: float, ox: float, oy: float) -> tuple[float, float, float] | None:
+        mark = getattr(getattr(self._window, 'rail', None), 'mark', None)
+        r = self._rect_of(mark)
+        if r is None:
+            return None
+        return ((r.center().x() - ox) / s, (r.center().y() - oy) / s, r.width() / s / ICON_SIZE)
+
+    # ---- painting
     def paintEvent(self, event) -> None:
         p = QPainter(self)
         p.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.TextAntialiasing
                          | QPainter.RenderHint.SmoothPixmapTransform)
+        t = min(self._t, TOTAL)
         s = min(self.width() / CANVAS_W, self.height() / CANVAS_H)
-        p.translate((self.width() - CANVAS_W * s) / 2, (self.height() - CANVAS_H * s) / 2)
+        ox, oy = (self.width() - CANVAS_W * s) / 2, (self.height() - CANVAS_H * s) / 2
+        full = QRectF(self.rect())
+        w = window_state(t)
+        if w['shell'] <= 0.001:
+            covers = [(full, 1.0)]
+        else:
+            pieces = self.regions()
+            base = QPainterPath()
+            base.addRect(full)
+            covers = []
+            for key, r in pieces:
+                cut = QPainterPath()
+                cut.addRect(r)
+                base = base.subtracted(cut)
+                covers.append((r, 1 - w['shell'] * w[key]))
+            covers.append((base, 1 - w['shell']))
+        p.save()
+        p.translate(ox, oy)
         p.scale(s, s)
-        paint_frame(p, min(self._t, TOTAL), self._version, self._log, self._plan)
+        view = QRectF(-ox / s, -oy / s, self.width() / s, self.height() / s)
+        for shape, opacity in covers:
+            if opacity <= 0.002:
+                continue
+            p.save()
+            # clip shapes are in overlay pixels; undo the canvas transform for them
+            p.resetTransform()
+            if isinstance(shape, QPainterPath):
+                p.setClipPath(shape)
+            else:
+                p.setClipRect(shape)
+            p.translate(ox, oy)
+            p.scale(s, s)
+            p.setOpacity(opacity)
+            paint_background(p, view)
+            p.restore()
+        paint_frame(p, t, self._version, self._log, self._fly_to(s, ox, oy), overlay=True)
+        p.restore()
         p.end()
 
 
-def maybe_play(window: QWidget, config, ready_ms: float | None = None) -> LaunchAnimation | None:
+def maybe_play(window: QWidget, config, ready_ms: float | None = None) -> LaunchOverlay | None:
     """
-    Show `window`, preceded by the launch animation when it should play.
+    Show `window`, with the launch animation playing over it when it should.
 
     Args:
-        window: The main window; shown when the animation ends or is skipped.
+        window: The main window; shown immediately at its normal place.
         config: Config for the `ui.launch_animation` switch.
         ready_ms: Unused (the animation no longer depends on launch time).
 
     Returns:
-        The running animation (kept alive on the window), or None when the
+        The running overlay (kept alive on the window), or None when the
         window was simply shown.
     """
-    if not LaunchAnimation.should_play(config, ready_ms):
+    if not LaunchOverlay.should_play(config, ready_ms):
         window.show()
         return None
-    anim = LaunchAnimation(window)
-
-    def reveal():
-        # The window was positioned before the splash was sized, so it opens
-        # exactly where the Reveal drew it (behind the splash, which then fades)
-        window.show()
-        window.raise_()
-        window.activateWindow()
-
-    window._launch_animation = anim
-    anim.play(reveal)
-    return anim
+    if hasattr(window, 'show_pane'):
+        window.show_pane('live')  # the reveal uncovers the Live pane
+    window.show()
+    overlay = LaunchOverlay(window)
+    window._launch_animation = overlay
+    overlay.play()
+    return overlay
 
 
 # ============================================================================
@@ -1385,8 +1286,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.frames or args.bench:
         return 0
 
-    anim = LaunchAnimation()
-    anim.play(app.quit)
+    host = QWidget()
+    host.resize(1280, 720)
+    host.show()
+    anim = LaunchOverlay(host)
+    anim.finished.connect(app.quit)
+    anim.play()
     return app.exec()
 
 
