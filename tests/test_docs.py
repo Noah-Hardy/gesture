@@ -1,17 +1,15 @@
 """
 docs.py parser/renderer: reuses the same golden checks as the module's own
-`python -m src.docs` self-check (every topic parses and renders non-empty
-both ways), turning that manual check into something CI enforces.
+`python -m src.docs` self-check (every topic parses and renders non-empty), turning that manual check into
+something CI enforces.
 """
-from src.docs import TOPICS, load_topic, render_html, render_site, render_tk
+from src.docs import TOPICS, load_topic, render_html, render_site
 
 
-def test_every_topic_parses_and_renders_both_ways():
+def test_every_topic_parses_and_renders_html():
     for topic in TOPICS:
         blocks = load_topic(topic.slug)
-        plan = render_tk(blocks)
         page = render_html(blocks)
-        assert plan.chunks, f'{topic.slug}: empty tk render'
         assert page, f'{topic.slug}: empty html render'
 
 

@@ -3,9 +3,8 @@
 Documentation Model, Parser and Renderers
 
 Parses a small, total Markdown subset into a plain data model, then renders
-that model three ways: tk.Text insert instructions for the legacy Tk Help
-window, a QTextDocument for the Qt Help pane, and a self-contained HTML page
-for "Open Full Documentation in Browser".
+that model two ways: a QTextDocument for the Qt Help pane and a
+self-contained HTML page for "Open Full Documentation in Browser".
 
 Deliberately stdlib-only and free of any `src.*` import. src/__init__.py
 eagerly imports mediapipe, cv2 and NDIlib, so importing this module must not
@@ -73,7 +72,7 @@ def docs_dir() -> str:
     frozen (PyInstaller cross-links this to Contents/Resources/docs), or the
     repo's docs/ directory from source. Never resolved relative to cwd - the
     engine subprocess deliberately runs with cwd unset when frozen
-    (see src/gui.py _build_command).
+    (see src/ui/engine.py).
     """
     if getattr(sys, 'frozen', False):
         return os.path.join(sys._MEIPASS, 'docs')
@@ -311,117 +310,11 @@ def heading_anchors(blocks: Tuple[Block, ...]) -> Dict[int, str]:
 
 
 # ============================================================================
-# TK RENDERER
+# PLAIN TEXT HELPER
 # ============================================================================
-TK_TAGS: Tuple[str, ...] = (
-    'body', 'h1', 'h2', 'h3', 'bullet', 'number', 'code_block',
-    'code_inline', 'bold', 'link', 'rule', 'table',
-)
-
-
-@dataclass(frozen=True)
-class TkPlan:
-    """Render output for the tk.Text viewer: insert chunks plus link targets"""
-    chunks: Tuple[Tuple[str, Tuple[str, ...]], ...]
-    links: Dict[str, str] = field(default_factory=dict)
-
-
 def _flatten_plain(spans: Tuple[Span, ...]) -> str:
-    """Strip inline styling markers, keeping only the literal text (for tables)"""
+    """Strip inline styling markers, keeping only the literal text"""
     return ''.join(s.text for s in spans)
-
-
-def _table_col_widths(rows, max_width: int = 46) -> Tuple[int, ...]:
-    ncols = len(rows[0]) if rows else 0
-    widths = [0] * ncols
-    for row in rows:
-        for idx, cell in enumerate(row):
-            if idx >= ncols:
-                continue
-            text = _flatten_plain(cell)
-            if len(text) > max_width:
-                text = text[: max_width - 1] + '…'
-            widths[idx] = max(widths[idx], len(text))
-    return tuple(widths)
-
-
-def _table_cell_text(cell: Tuple[Span, ...], width: int, max_width: int = 46) -> str:
-    text = _flatten_plain(cell)
-    if len(text) > max_width:
-        text = text[: max_width - 1] + '…'
-    return text.ljust(width)
-
-
-def render_tk(blocks: Tuple[Block, ...], width_chars: int = 80) -> TkPlan:
-    """Render parsed blocks into tk.Text insert instructions
-
-    Returns chunks of (text, tag_names) ready for repeated text.insert('end',
-    chunk, tags) calls, plus a link-tag -> href map (hrefs can't ride on a
-    shared tk tag, so each link gets its own numbered tag alongside 'link').
-    """
-    chunks = []
-    links: Dict[str, str] = {}
-    link_counter = 0
-
-    def emit_spans(spans, base_tags):
-        nonlocal link_counter
-        for span in spans:
-            if span.style == 'code':
-                chunks.append((span.text, base_tags + ('code_inline',)))
-            elif span.style == 'bold':
-                chunks.append((span.text, base_tags + ('bold',)))
-            elif span.style == 'link':
-                tag = f'link-{link_counter}'
-                link_counter += 1
-                links[tag] = span.href
-                chunks.append((span.text, base_tags + ('link', tag)))
-            else:
-                chunks.append((span.text, base_tags))
-
-    for block in blocks:
-        if block.kind in ('h1', 'h2', 'h3'):
-            emit_spans(block.spans, (block.kind,))
-            chunks.append(('\n', (block.kind,)))
-        elif block.kind == 'p':
-            emit_spans(block.spans, ('body',))
-            chunks.append(('\n\n', ('body',)))
-        elif block.kind in ('bullet', 'number'):
-            prefix = ('    ' if block.level else '') + ('• ' if block.kind == 'bullet' else '1. ')
-            chunks.append((prefix, (block.kind,)))
-            emit_spans(block.spans, (block.kind,))
-            chunks.append(('\n', (block.kind,)))
-        elif block.kind == 'code':
-            chunks.append((block.text + '\n', ('code_block',)))
-        elif block.kind == 'rule':
-            chunks.append(('─' * min(width_chars, 60) + '\n\n', ('rule',)))
-        elif block.kind == 'table':
-            widths = _table_col_widths(block.rows)
-            total = sum(widths) + 3 * (len(widths) - 1) if widths else 0
-            if total <= width_chars:
-                header = block.rows[0]
-                line = ' │ '.join(
-                    _table_cell_text(c, w) for c, w in zip(header, widths)
-                )
-                chunks.append((line + '\n', ('table',)))
-                rule = '─┼─'.join('─' * w for w in widths)
-                chunks.append((rule + '\n', ('table',)))
-                for row in block.rows[1:]:
-                    line = ' │ '.join(
-                        _table_cell_text(c, w) for c, w in zip(row, widths)
-                    )
-                    chunks.append((line + '\n', ('table',)))
-                chunks.append(('\n', ('table',)))
-            else:
-                # Stacked fallback: one paragraph per row, "header: value" per line
-                header = [_flatten_plain(c) for c in block.rows[0]]
-                for row in block.rows[1:]:
-                    for h, cell in zip(header, row):
-                        chunks.append((f'{h}: ', ('bold',)))
-                        emit_spans(cell, ('body',))
-                        chunks.append(('\n', ('body',)))
-                    chunks.append(('\n', ('body',)))
-
-    return TkPlan(chunks=tuple(chunks), links=links)
 
 
 # ============================================================================
@@ -810,15 +703,12 @@ if __name__ == '__main__':
     t0 = time.time()
     for topic in TOPICS:
         blocks = load_topic(topic.slug)
-        plan = render_tk(blocks)
         page = render_html(blocks)
-        assert plan.chunks, f'{topic.slug}: empty tk render'
         assert page, f'{topic.slug}: empty html render'
     elapsed = time.time() - t0
 
     site = render_site()
     assert '<html' in site
 
-    print(f'OK: {len(TOPICS)} topics parsed and rendered both ways in {elapsed:.4f}s')
+    print(f'OK: {len(TOPICS)} topics parsed and rendered in {elapsed:.4f}s')
     print('mediapipe imported:', 'mediapipe' in sys.modules)
-    print('tkinter imported:', 'tkinter' in sys.modules)
