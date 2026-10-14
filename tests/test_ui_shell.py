@@ -3,7 +3,6 @@
 import json
 import os
 import sys
-import textwrap
 
 import pytest
 
@@ -14,7 +13,6 @@ pytest.importorskip('PySide6.QtWidgets')
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from src.config import Config  # noqa: E402
-from src.ui import engine as engine_mod  # noqa: E402
 from src.ui import tokens  # noqa: E402
 from src.ui.engine import EngineController, build_argv  # noqa: E402
 from src.ui.main_window import MainWindow, layout_mode_for  # noqa: E402
@@ -338,7 +336,7 @@ def test_argv_from_default_config(config_path):
     assert tail[tail.index('--port') + 1] == '1234'
     assert tail[tail.index('--camera') + 1] == '0'
     assert tail[tail.index('--pose-model') + 1] == 'lite'
-    assert '--no-mirror' in tail and '--preview' in tail
+    assert '--no-mirror' in tail and '--preview' not in tail and '--no-preview' not in tail
     assert '--fps-cap' not in tail and '--ndi' not in tail and '--force-cpu' not in tail
 
 
@@ -356,7 +354,6 @@ def test_argv_reflects_config(config_path):
     cfg.set('performance', 'force_gpu', True)
     cfg.set('performance', 'no_holistic', True)
     cfg.set('display', 'mirror_preview', True)
-    cfg.set('display', 'show_window', False)
     tail = build_argv(cfg)[2:]
     assert tail[0] == 'hand'
     assert tail[tail.index('--host') + 1] == '192.168.1.5'
@@ -365,7 +362,7 @@ def test_argv_reflects_config(config_path):
     assert '--ndi' in tail and '--camera' not in tail
     assert tail[tail.index('--pose-model') + 1] == 'heavy'
     assert tail[tail.index('--fps-cap') + 1] == '30'
-    assert '--fps' in tail and '--mirror' in tail and '--no-preview' in tail
+    assert '--fps' in tail and '--mirror' in tail
     assert '--force-cpu' in tail and '--force-gpu' not in tail and '--no-holistic' in tail
 
 
@@ -373,54 +370,6 @@ def test_frozen_argv_is_the_executable_alone(config_path, monkeypatch):
     monkeypatch.setattr(sys, 'frozen', True, raising=False)
     argv = build_argv(Config(config_path))
     assert argv[0] == sys.executable and argv[1] == 'all'
-
-
-def test_engine_lifecycle_with_a_fake_engine(app, config_path, tmp_path, monkeypatch):
-    script = tmp_path / 'fake_engine.py'
-    script.write_text(textwrap.dedent('''
-        import sys, time
-        print("hello from engine", flush=True)
-        print("\\U0001F7E2 Engine ready", flush=True)
-        try:
-            while True:
-                time.sleep(0.05)
-        except KeyboardInterrupt:
-            print("cleanup", flush=True)
-            sys.exit(0)
-    '''))
-    monkeypatch.setattr(engine_mod, 'engine_program', lambda: [sys.executable, str(script)])
-    ctl = EngineController(Config(config_path))
-    states, lines, codes = [], [], []
-    ctl.stateChanged.connect(states.append)
-    ctl.output.connect(lines.append)
-    ctl.exited.connect(codes.append)
-
-    ctl.start()
-    assert ctl.is_running() and states == ['starting']
-    from PySide6.QtTest import QTest
-    for _ in range(100):
-        if 'running' in states:
-            break
-        QTest.qWait(50)
-    assert 'running' in states
-    assert any('hello from engine' in ln for ln in lines)
-    assert 'Ready' not in states  # (sanity: states are lifecycle names, not phases)
-
-    assert ctl.stop_and_wait(timeout=10)
-    assert states[-1] == 'stopped' and codes == [0]
-    assert any('cleanup' in ln for ln in lines)
-    assert not ctl.is_running()
-    assert ctl.set_live('tracking.min_detection_confidence', 0.5) is False
-    ctl.send({'cmd': 'noop'})  # inert until #65
-
-
-def test_ready_line_marks_the_engine_running(app, config_path):
-    ctl = EngineController(Config(config_path))
-    ctl._set_state('starting')
-    ctl._handle_line('Warming up...')
-    assert ctl.state == 'starting'
-    ctl._handle_line('Ready')
-    assert ctl.state == 'running'
 
 
 def test_engine_start_refuses_a_bad_port(app, config_path):

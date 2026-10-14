@@ -623,11 +623,8 @@ def run(args, config, channel=None):
     if not performance_config.get('gc_enabled', True):
         gc.disable()
 
+    # The launcher's ready signal is this phase on the status channel
     report_phase('ready')
-    # The launcher's ready signal is the status channel's 'ready' phase; this
-    # line is kept only because the Tk launcher (src/gui.py, going away) still
-    # scrapes stdout for it
-    print("🟢 Engine ready")
 
     # ========================================================================
     # MAIN PROCESSING LOOP

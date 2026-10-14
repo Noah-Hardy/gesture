@@ -1171,6 +1171,21 @@ class MainWindow(QMainWindow):
     def showEvent(self, e) -> None:
         super().showEvent(e)
         self._fit_console()
+        self._sync_engine_visibility()
+
+    # Engine preview visibility (#65): the engine skips drawing and frames
+    # while the window is hidden or minimized
+    def hideEvent(self, e) -> None:
+        super().hideEvent(e)
+        self._sync_engine_visibility()
+
+    def changeEvent(self, e) -> None:
+        super().changeEvent(e)
+        if e.type() == QEvent.Type.WindowStateChange:
+            self._sync_engine_visibility()
+
+    def _sync_engine_visibility(self) -> None:
+        self.engine.set_preview_visible(self.isVisible() and not self.isMinimized())
 
     def eventFilter(self, obj, e) -> bool:
         if obj is self.centralWidget() and e.type() == QEvent.Type.Resize:
