@@ -119,6 +119,14 @@ a = Analysis(
         'src.holistic_processor',
         'src.config',
         'src.ndi_capture',
+        # Engine <-> launcher IPC (#65): main.py imports most of these
+        # statically, but the launcher side is only loaded by the UI
+        'src.ipc_protocol',
+        'src.engine_channel',
+        'src.engine_link',
+        'src.live_keys',
+        'src.live_settings',
+        'src.camera_permission',
     ],
     hookspath=[],
     hooksconfig={},
