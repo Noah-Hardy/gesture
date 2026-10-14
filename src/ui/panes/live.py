@@ -520,6 +520,7 @@ class LivePane(QWidget):
         self._place_meters(self._mode == 'minimum')
         self._rebuild_rows()
         self.refresh()
+        self._clear_readouts()
         self._apply_open()
 
         self.stage.mirror_chip.toggled.connect(self._on_mirror)
