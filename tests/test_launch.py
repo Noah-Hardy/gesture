@@ -154,3 +154,57 @@ def test_maybe_play_plays_then_shows_window(app, monkeypatch):
 def test_frame_renders(app):
     img = launch.render_frame(CUES['Reveal'] + 1.0, 480, 270)
     assert (img.width(), img.height()) == (480, 270)
+
+
+def test_splash_matches_a_positioned_window(app):
+    win = QWidget()
+    win.resize(1200, 700)
+    win.move(100, 80)
+    anim = LaunchAnimation(win)
+    avail = QApplication.primaryScreen().availableGeometry()
+    scale = min(1200 / launch.WIN_W, 700 / launch.WIN_H, avail.width() / launch.CANVAS_W,
+                avail.height() / launch.CANVAS_H)
+    assert anim.width() == pytest.approx(launch.CANVAS_W * scale, abs=2)
+    assert anim.height() == pytest.approx(launch.CANVAS_H * scale, abs=2)
+    if scale == 1200 / launch.WIN_W:  # not capped by a small screen: it sits over the window
+        assert anim.geometry().center().x() == pytest.approx(100 + 600, abs=2)
+        assert anim.geometry().center().y() == pytest.approx(80 + 350, abs=2)
+
+
+def test_unplaced_window_opens_centred_on_the_splash(app, monkeypatch):
+    monkeypatch.setattr(launch, 'reduce_motion_enabled', lambda: False)
+    win = QWidget()
+    win.setFixedSize(900, 560)
+    anim = launch.maybe_play(win, _Config(True), 5000)
+    center = anim.geometry().center()
+    anim.skip()
+    assert win.geometry().center().x() == pytest.approx(center.x(), abs=2)
+    assert win.geometry().center().y() == pytest.approx(center.y(), abs=2)
+    win.close()
+
+
+def test_stream_addresses_are_what_float_sends_in_all_mode():
+    from types import SimpleNamespace
+
+    class Sender:
+        def __init__(self):
+            self.packets = []
+
+        def send_packet(self, packet):
+            self.packets.append(packet)
+
+    def lms(n):
+        return [SimpleNamespace(x=0.1, y=0.2, z=0.3, visibility=0.9) for _ in range(n)]
+
+    sender = Sender()
+    emitter = osc_protocol.OscEmitter(sender, 'float')
+    emitter.begin_frame()
+    emitter.pose(0, lms(33), lms(33))
+    emitter.hand('Left', lms(21), lms(21))
+    emitter.hand('Right', lms(21), lms(21))
+    emitter.pose_status(1)
+    emitter.hand_status(2)
+    emitter.end_frame()
+    wire = b''.join(p.dgram for p in sender.packets)
+    for addr in launch.ADDRS:
+        assert addr.encode() in wire, addr

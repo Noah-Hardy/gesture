@@ -452,6 +452,16 @@ def _console_lines() -> tuple[str, ...]:
         return _FALLBACK_LOG
 
 
+_version_cache: str | None = None
+
+
+def _app_version_cached() -> str:
+    global _version_cache
+    if _version_cache is None:
+        _version_cache = _app_version()
+    return _version_cache
+
+
 def _app_version() -> str:
     try:
         from .. import docs
@@ -556,9 +566,9 @@ def _paint_app_window(p: QPainter, t: float, version: str, log_lines: tuple) -> 
 
     # shadow: 0 60px 120px rgba(0,0,0,.65), approximated by stacked rects
     p.setPen(Qt.PenStyle.NoPen)
-    for k in range(8):
-        grow = 8 + k * 12
-        p.setBrush(QColor(0, 0, 0, 20))
+    for k in range(5):
+        grow = 10 + k * 20
+        p.setBrush(QColor(0, 0, 0, 32))
         p.drawRoundedRect(QRectF(-grow, 60 - grow, W + 2 * grow, H + 2 * grow), 20 + grow, 20 + grow)
 
     clip = QPainterPath()
@@ -945,7 +955,7 @@ def render_frame(t: float, width: int = CANVAS_W, height: int = CANVAS_H) -> QIm
     s = min(width / CANVAS_W, height / CANVAS_H)
     p.translate((width - CANVAS_W * s) / 2, (height - CANVAS_H * s) / 2)
     p.scale(s, s)
-    paint_frame(p, t, _app_version())
+    paint_frame(p, min(t, TOTAL), _app_version_cached())
     p.end()
     return img
 
@@ -981,7 +991,7 @@ class LaunchAnimation(QWidget):
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.setInterval(self.FRAME_MS)
         self._timer.timeout.connect(self._tick)
-        self._version = _app_version()
+        self._version = _app_version_cached()
         self._log = _console_lines()
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
@@ -990,17 +1000,22 @@ class LaunchAnimation(QWidget):
 
     # ---- geometry
     def _place(self) -> None:
-        screen = (self._window.screen() if self._window is not None else None) or QApplication.primaryScreen()
+        """Size the splash so the mock window matches the real one, centred where it will appear."""
+        win = self._window
+        screen = (win.screen() if win is not None else None) or QApplication.primaryScreen()
         avail = screen.availableGeometry() if screen else None
-        if self._window is not None:
-            size = self._window.size()
-            if size.width() < 200 or size.height() < 200:
-                size = self._window.sizeHint()
+        center = None
+        if win is not None:
+            size = win.size()
+            if not win.testAttribute(Qt.WidgetAttribute.WA_Resized):
+                hint = win.sizeHint()  # not sized yet: what show() will use
+                if hint.isValid():
+                    size = hint
             scale = min(size.width() / WIN_W, size.height() / WIN_H)
-            center = (self._window.geometry().center()
-                      if self._window.isVisible() or self._window.pos() != QPoint(0, 0) else None)
+            if win.testAttribute(Qt.WidgetAttribute.WA_Moved):
+                center = QPoint(win.x() + size.width() // 2, win.y() + size.height() // 2)
         else:
-            scale, center = 1280 / CANVAS_W, None
+            scale = 1280 / CANVAS_W
         if avail is not None:
             scale = min(scale, avail.width() / CANVAS_W, avail.height() / CANVAS_H)
             if center is None:
@@ -1120,6 +1135,10 @@ def maybe_play(window: QWidget, config, ready_ms: float | None) -> LaunchAnimati
     anim = LaunchAnimation(window)
 
     def reveal():
+        if not window.testAttribute(Qt.WidgetAttribute.WA_Moved):
+            # Never positioned: open centred on the splash, where the mock window was
+            c = anim.geometry().center()
+            window.move(c.x() - window.width() // 2, c.y() - window.height() // 2)
         window.show()
         window.raise_()
         window.activateWindow()
@@ -1164,7 +1183,7 @@ def main(argv: list[str] | None = None) -> int:
             render_frame(t).save(path)
             print(path)
     if args.bench:
-        for w, h in ((1920, 1080), (1280, 720)):
+        for w, h in ((1280, 720), (1920, 1080), (2960, 1664)):  # last: ~1480x832 logical at 2x
             mean, worst = _bench(w, h)
             print(f'{w}x{h}: mean {mean:.2f} ms, max {worst:.2f} ms')
     if args.frames or args.bench:
