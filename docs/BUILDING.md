@@ -10,22 +10,23 @@ uv sync
 uv run python main.py pose
 ```
 
-This runs the engine directly. The OSC destination comes from `config.json` (`osc.host`, `osc.port`) unless `--host` or `--port` is given. `uv run python app.py` with no arguments opens the launcher; it is also the packaged app's entry point. The complete flag and configuration reference is in `docs/appendix-advanced.md`.
+This runs the engine directly. The OSC destination comes from `config.json` (`osc.host`, `osc.port`) unless `--host` or `--port` is given. `uv run python app.py` with no arguments opens the Gesture window; it is also the packaged app's entry point. The complete flag and configuration reference is in `docs/appendix-advanced.md`.
 
 ## Building the app bundle
 
 ### Requirements
 
 - **Apple Silicon Mac, macOS 13 or later.** `ndi-python` 6.x publishes only `macosx_13_0_arm64` wheels, which sets the minimum macOS version.
-- **Homebrew Python 3.11 with Tk 8.6:**
+- **Homebrew Python 3.11:**
 
   ```sh
-  brew install python@3.11 python-tk@3.11
+  brew install python@3.11
   uv venv --clear --python /opt/homebrew/opt/python@3.11/bin/python3.11
   uv sync --group dev
   ```
 
-  The launcher requires `python-tk@3.11`. System Pythons link against the deprecated Tcl/Tk 8.5 in `/System/Library`, which PyInstaller does not bundle.
+  The window is built with PySide6 (Qt 6), which `uv sync` installs from a wheel that carries its own Qt frameworks. No Tcl/Tk or system Qt is needed. Only the Core, Gui and Widgets modules are bundled; `gesture.spec` excludes the rest of Qt (WebEngine, Quick/QML, 3D, Multimedia, Network and others) to keep the bundle within about 45 MB of the 0.3 size.
+- **Linux (CI and local tests only):** PySide6's offscreen platform needs `libegl1`, `libxkbcommon0`, `libfontconfig1` and `libdbus-1-3`, and the tests run with `QT_QPA_PLATFORM=offscreen`.
 - **Xcode Command Line Tools** (`xcode-select --install`), for `codesign`.
 - **PyInstaller**, from the `dev` dependency group.
 - **Internet access on the first build**, to download the landmarker models into `src/tasks/`.
@@ -142,10 +143,10 @@ Hardened runtime entitlements are defined in `scripts/entitlements.plist`: JIT a
 
 `release.sh` signs each binary individually, from the innermost outwards, instead of using `codesign --deep`. Apple does not support `--deep` for distribution signing: it applies top-level entitlements to nested code and skips files it does not recognize as code. The notary service requires the hardened runtime and a secure timestamp on every nested Mach-O file.
 
-The bundle contains about 176 Mach-O files, mostly extension modules and libraries from third-party wheels (the current count is maintained in the comments of `scripts/release.sh`). The script signs these first, then framework bundles, then the `.app`. Entitlements are applied only to the `.app`.
+The bundle contains about 208 Mach-O files, mostly extension modules and libraries from third-party wheels (the current count is maintained in the comments of `scripts/release.sh`). The script signs these first, then framework bundles, then the `.app`. Entitlements are applied only to the `.app`.
 
 Each signature uses `--timestamp`, which contacts Apple's timestamp service; signing requires a network connection and takes several minutes.
 
 ### Runtime requirements
 
-The bundle includes Python, MediaPipe, OpenCV, Tcl/Tk, `libndi.dylib` and the landmarker models. It requires an Apple Silicon Mac running macOS 13 or later.
+The bundle includes Python, MediaPipe, OpenCV, PySide6 (Qt Core, Gui and Widgets), `libndi.dylib` and the landmarker models. It requires an Apple Silicon Mac running macOS 13 or later.

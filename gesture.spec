@@ -95,31 +95,105 @@ if not binaries:
 # .dylib added by a future mediapipe release is collected too.
 binaries += collect_dynamic_libs('mediapipe')
 
+# src/__init__.py resolves its exports through a PEP 562 module
+# __getattr__ (importlib.import_module) instead of top-level `from
+# .x import y` statements, so PyInstaller's static import graph never
+# sees these submodules and silently leaves them out of the bundle -
+# `from src import ThreadedOSCSender` then fails at runtime with
+# ModuleNotFoundError: No module named 'src.osc_sender'. List every
+# submodule src/__init__.py's _EXPORTS map can resolve to.
+_HIDDEN_IMPORTS = [
+    'NDIlib',
+    'src.osc_sender',
+    'src.osc_protocol',
+    'src.pose_utils',
+    'src.model_downloader',
+    'src.landmarker_processor',
+    'src.pose_processor',
+    'src.hand_processor',
+    'src.holistic_processor',
+    'src.config',
+    'src.ndi_capture',
+    # Engine <-> launcher IPC (#65): main.py imports most of these
+    # statically, but the launcher side is only loaded by the UI
+    'src.ipc_protocol',
+    'src.engine_channel',
+    'src.engine_link',
+    'src.live_keys',
+    'src.live_settings',
+    'src.camera_permission',
+]
+
+# Qt (PySide6). PyInstaller's PySide6 hook collects the plugins and frameworks
+# for every Qt module it can see imported; naming the three modules the UI uses
+# here keeps that set to Core/Gui/Widgets even if an import goes indirect.
+_HIDDEN_IMPORTS += [
+    'PySide6.QtCore',
+    'PySide6.QtGui',
+    'PySide6.QtWidgets',
+]
+
+# Safety net on top of the explicit list above (which test_imports.py checks
+# against src._EXPORTS): bundle every module under src/ so a lazily imported
+# one can never be missing from the frozen app (#86). Only ever adds modules.
+def _source_modules(package='src'):
+    """Dotted names of every module and package under src/, found on disk
+
+    Walked from the source tree rather than with PyInstaller's
+    collect_submodules, which found nothing here (src is not importable from
+    its isolated subprocess).
+    """
+    names = []
+    for root, dirs, files in os.walk(package):
+        dirs[:] = [d for d in dirs if d != '__pycache__']
+        base = root.replace(os.sep, '.')
+        if '__init__.py' in files:
+            names.append(base)
+        names += [f'{base}.{f[:-3]}' for f in files if f.endswith('.py') and f != '__init__.py']
+    return sorted(names)
+
+
+_SRC_MODULES = _source_modules()
+_HIDDEN_IMPORTS += _SRC_MODULES
+
+# The same list, shipped as a data file for `gesture --selftest-imports`, which
+# imports each name inside the frozen app and so notices a module the bundle
+# lost (walking the bundle could only ever list what is present).
+os.makedirs('build', exist_ok=True)
+with open('build/src_modules.txt', 'w') as _handle:
+    _handle.write('\n'.join(sorted(_SRC_MODULES)) + '\n')
+datas.append(('build/src_modules.txt', '.'))
+
+# Qt modules the app never touches. PySide6's hook only bundles what the import
+# graph reaches, but its binary-dependency scan can still drag these in, and
+# QtWebEngine alone is ~200 MB. Budget: no more than +45 MB over the 0.3 bundle.
+_QT_EXCLUDES = [
+    'PySide6.QtWebEngineCore', 'PySide6.QtWebEngineWidgets', 'PySide6.QtWebEngineQuick',
+    'PySide6.QtWebChannel', 'PySide6.QtWebSockets', 'PySide6.QtWebView',
+    'PySide6.QtQuick', 'PySide6.QtQuickWidgets', 'PySide6.QtQuickControls2',
+    'PySide6.QtQuick3D', 'PySide6.QtQml', 'PySide6.QtQmlCore', 'PySide6.QtQmlModels',
+    'PySide6.QtQmlWorkerScript', 'PySide6.QtQuickTest', 'PySide6.QtQuickTemplates2',
+    'PySide6.Qt3DCore', 'PySide6.Qt3DRender', 'PySide6.Qt3DInput', 'PySide6.Qt3DLogic',
+    'PySide6.Qt3DAnimation', 'PySide6.Qt3DExtras',
+    'PySide6.QtCharts', 'PySide6.QtDataVisualization', 'PySide6.QtGraphs',
+    'PySide6.QtMultimedia', 'PySide6.QtMultimediaWidgets',
+    'PySide6.QtNetwork', 'PySide6.QtSql', 'PySide6.QtTest',
+    'PySide6.QtDesigner', 'PySide6.QtHelp', 'PySide6.QtPdf', 'PySide6.QtPdfWidgets',
+    'PySide6.QtOpenGL', 'PySide6.QtOpenGLWidgets', 'PySide6.QtSvg', 'PySide6.QtSvgWidgets',
+    'PySide6.QtBluetooth', 'PySide6.QtNfc', 'PySide6.QtPositioning', 'PySide6.QtLocation',
+    'PySide6.QtSensors', 'PySide6.QtSerialPort', 'PySide6.QtSerialBus', 'PySide6.QtRemoteObjects',
+    'PySide6.QtScxml', 'PySide6.QtStateMachine', 'PySide6.QtTextToSpeech',
+    'PySide6.QtSpatialAudio', 'PySide6.QtHttpServer', 'PySide6.QtConcurrent',
+    'PySide6.QtDBus', 'PySide6.QtXml', 'PySide6.QtUiTools', 'PySide6.QtPrintSupport',
+    'PySide6.QtAxContainer', 'PySide6.QtVirtualKeyboard',
+]
+
 a = Analysis(
     ['app.py'],
     pathex=[],
     binaries=binaries,
     datas=datas,
-    # src/__init__.py resolves its exports through a PEP 562 module
-    # __getattr__ (importlib.import_module) instead of top-level `from
-    # .x import y` statements, so PyInstaller's static import graph never
-    # sees these submodules and silently leaves them out of the bundle -
-    # `from src import ThreadedOSCSender` then fails at runtime with
-    # ModuleNotFoundError: No module named 'src.osc_sender'. List every
-    # submodule src/__init__.py's _EXPORTS map can resolve to.
-    hiddenimports=[
-        'NDIlib',
-        'src.osc_sender',
-        'src.osc_protocol',
-        'src.pose_utils',
-        'src.model_downloader',
-        'src.landmarker_processor',
-        'src.pose_processor',
-        'src.hand_processor',
-        'src.holistic_processor',
-        'src.config',
-        'src.ndi_capture',
-    ],
+    hiddenimports=_HIDDEN_IMPORTS,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -130,16 +204,55 @@ a = Analysis(
         'PyQt5',
         'PyQt6',
         'PySide2',
+        'tkinter',
+        '_tkinter',
         'IPython',
         'jupyter',
         'pandas',
         'setuptools',
         'tensorflow',
         'torch',
-    ],
+    ] + _QT_EXCLUDES,
     noarchive=False,
     optimize=0,
 )
+
+# PySide6's hook also copies Qt frameworks and plugins that the three modules
+# above never load (they come in as dependencies of image-format and input
+# plugins), and the Qt translations. Dropping them is what holds the bundle to
+# the +45 MB budget (QtDBus must stay: QtGui links it). Nothing dropped is
+# imported by src/ui.
+_QT_DROP_FRAMEWORKS = (
+    'QtPdf', 'QtQml', 'QtQmlMeta', 'QtQmlModels', 'QtQmlWorkerScript', 'QtQuick',
+    'QtVirtualKeyboard', 'QtVirtualKeyboardQml', 'QtNetwork', 'QtOpenGL', 'QtSvg',
+)
+_QT_DROP_PLUGINS = (
+    'libqpdf', 'libqsvg', 'libqsvgicon', 'libqtuiotouchplugin', 'libqtvirtualkeyboardplugin',
+)
+
+
+def _drop_unused_qt(toc):
+    """Filter unused Qt frameworks, plugins and translations out of a TOC list"""
+    kept = []
+    for entry in toc:
+        dest = entry[0]
+        if 'PySide6/Qt/translations' in dest:
+            continue
+        # The framework's files, and the top-level symlinks (dest 'QtQml' ->
+        # the framework binary) PyInstaller adds for each; a symlink left
+        # behind would dangle and fail `codesign --verify --strict`.
+        if any(f'PySide6/Qt/lib/{name}.framework/' in dest or dest == name
+               or f'/Qt/lib/{name}.framework/' in str(entry[1])
+               for name in _QT_DROP_FRAMEWORKS):
+            continue
+        if '/plugins/' in dest and os.path.basename(dest).split('.')[0] in _QT_DROP_PLUGINS:
+            continue
+        kept.append(entry)
+    return kept
+
+
+a.binaries = _drop_unused_qt(a.binaries)
+a.datas = _drop_unused_qt(a.datas)
 
 pyz = PYZ(a.pure)
 

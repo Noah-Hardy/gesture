@@ -6,11 +6,10 @@ Checks GitHub Releases for a newer Gesture build, and - if the user chooses to
 install it - downloads, verifies and swaps the running .app bundle for the
 new one before relaunching.
 
-This module imports no tkinter. src.update_dialog owns the window; this
-module owns the network, filesystem and subprocess work, run on a worker
-thread and reported back to the GUI through the same queue.Queue -> 100ms
-tk after() poll pattern src.gui already uses for the engine log and NDI
-discovery (see UpdateController at the bottom).
+This module imports no GUI toolkit. src/ui/overlays/update.py owns the window;
+this module owns the network, filesystem and subprocess work, run on a worker
+thread and reported back to the GUI through a queue.Queue that the UI drains
+(see UpdateController at the bottom).
 
 A process cannot delete the .app bundle it is running out of and survive, so
 the actual swap is done by a small detached shell script that waits for this
@@ -782,9 +781,8 @@ def spawn_installer(staged: StagedUpdate) -> None:
 class UpdateController:
     """
     Owns the worker thread(s) for checks and installs. Talks to the GUI only
-    by putting (tag, payload) tuples on the same queue.Queue the rest of
-    src.gui already drains from its 100ms after() poll - this class must
-    never touch a tk widget.
+    by putting (tag, payload) tuples on a queue.Queue the UI drains on the
+    main thread - this class must never touch a widget.
 
     payload['kind'] is one of:
       'none' | 'available' | 'error'                  (from a check)

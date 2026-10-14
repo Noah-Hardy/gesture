@@ -131,7 +131,11 @@ class TasksHolisticProcessor(LandmarkerProcessor):
         self._last_right_hand_state = False
 
         # Pose DrawingSpecs, then hand pairs (left = green, right = red by default)
-        display_config = config.get('display') if config else {}
+        self.refresh_display_specs()
+
+    def refresh_display_specs(self):
+        """Rebuild the pose and hand drawing specs from the config (also the live-apply path)"""
+        display_config = self.config.get('display') if self.config else {}
         self._landmark_spec = self._make_spec(
             display_config.get('landmark_color', [245, 117, 66]),
             display_config.get('landmark_thickness', 1),

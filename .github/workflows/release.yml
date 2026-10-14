@@ -56,7 +56,7 @@ jobs:
       - name: Verify the ref contains the packaging files
         run: |
           missing=()
-          for path in app.py gesture.spec scripts/build_app.sh scripts/release.sh src/gui.py \
+          for path in app.py gesture.spec scripts/build_app.sh scripts/release.sh src/ui/app.py \
                       assets/Gesture.icns docs/welcome.md; do
             [[ -e "$path" ]] || missing+=("$path")
           done
@@ -82,18 +82,18 @@ jobs:
           grep -m1 '^version' pyproject.toml
 
       # ----------------------------------------------------------------------
-      # Toolchain. Homebrew's python@3.11 plus python-tk@3.11 is required, not
-      # a convenience: macOS system Pythons link the deprecated /System Tcl/Tk
-      # 8.5, which PyInstaller will not bundle, and the launcher needs Tk.
+      # Toolchain. Homebrew's python@3.11 is used rather than the system
+      # Python. The window is PySide6, which ships its own Qt frameworks, so no
+      # Tcl/Tk or other system toolkit is needed.
       # ----------------------------------------------------------------------
-      - name: Install Python 3.11 and Tk
+      - name: Install Python 3.11
         run: |
           set -euo pipefail
           # The runner image ships with aws/tap pre-tapped; Homebrew's tap
           # trust feature warns about it on every brew call. We only install
           # from homebrew-core, so drop the tap instead of trusting it.
           brew untap aws/tap || true
-          brew install python@3.11 python-tk@3.11
+          brew install python@3.11
           /opt/homebrew/opt/python@3.11/bin/python3.11 --version
 
       - name: Install uv
@@ -106,7 +106,7 @@ jobs:
           set -euo pipefail
           uv venv --clear --python /opt/homebrew/opt/python@3.11/bin/python3.11
           uv sync --group dev
-          uv run python -c "import tkinter; print('tkinter OK, Tk', tkinter.TkVersion)"
+          uv run python -c "import PySide6; print('PySide6', PySide6.__version__)"
 
       # ----------------------------------------------------------------------
       # The .task models are gitignored downloads (~64MB). Cache them so only

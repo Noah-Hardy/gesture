@@ -43,6 +43,10 @@ class TasksHandProcessor(LandmarkerProcessor):
         self._last_right_hand_state = False
         self._build_hand_specs()
 
+    def refresh_display_specs(self):
+        """Rebuild the hand drawing specs from the config (live-apply path)"""
+        self._build_hand_specs()
+
     # ------------------------------------------------------------------------
     # Landmarker hooks
     # ------------------------------------------------------------------------

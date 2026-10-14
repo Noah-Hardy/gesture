@@ -27,7 +27,7 @@ The positional `mode` argument is required.
 | `--fps-cap N` | Frame rate cap (0 or omitted: uncapped) |
 | `--fps` | Print the FPS/stats line |
 | `--mirror` / `--no-mirror` | Mirror the preview (display only) |
-| `--preview` / `--no-preview` | Show or hide the preview window |
+| `--preview-window` | Show a local OpenCV preview window (command line only; the launcher draws its preview in-app). `--preview` is the same flag; `--no-preview` is accepted and does nothing |
 | `--no-holistic` | In `all` mode, use separate pose and hand models |
 | `--force-cpu` | Force the CPU delegate |
 | `--force-gpu` | Force the GPU delegate (leaks memory on Apple Silicon) |
@@ -48,7 +48,7 @@ Most keys are editable in the **Settings** window. OSC host and port, tracking m
 | `mediapipe` | `pose_model_type`, `num_poses` (values above 1 disable the Holistic model in `all` mode), confidence thresholds |
 | `hand` | `num_hands`, confidence thresholds, preview colours |
 | `performance` | `target_fps`, `show_fps`, `gc_enabled`, `max_pending_frames` (default and minimum 1); see **Models & Performance** |
-| `display` | `show_window`, `window_title`, `mirror_preview`, preview colours and stroke sizes |
+| `display` | `mirror_preview`, `draw_landmarks`, `render_in_background`, preview colours and stroke sizes |
 | `updates` | Update checker state; see **Updates** |
 
 `config.json` is created the first time settings are saved. The packaged app stores it at `~/Library/Application Support/Gesture/config.json`; when running from source, it is in the working directory. Missing keys use the defaults in `DEFAULT_CONFIG` in `src/config.py`.
