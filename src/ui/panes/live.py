@@ -21,7 +21,7 @@ import math
 from collections import deque
 
 from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QRadialGradient
+from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient
 from PySide6.QtWidgets import (
     QAbstractButton, QGridLayout, QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
@@ -119,6 +119,8 @@ class Stage(QWidget):
         self.setMinimumSize(240, 160)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._frame: QImage | None = None
+        self._bg: QPixmap | None = None
+        self._bg_key: tuple | None = None
         self._stats: list[str] = []
         self._overlay: QWidget | None = None
 
@@ -195,10 +197,17 @@ class Stage(QWidget):
             w.raise_()
 
     # -- painting ------------------------------------------------------------
-    def paintEvent(self, _e) -> None:
-        p = QPainter(self)
+    def _background(self) -> QPixmap:
+        """The card (gradient, border, grid), cached per size and device pixel ratio so a frame paint is two blits."""
+        dpr = self.devicePixelRatioF()
+        key = (self.width(), self.height(), dpr)
+        if self._bg is not None and self._bg_key == key:
+            return self._bg
+        pm = QPixmap(int(self.width() * dpr), int(self.height() * dpr))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         r = QRectF(self.rect()).adjusted(.5, .5, -.5, -.5)
         # Design: radial-gradient(120% 100% at 50% 0%, stage_end -> stage)
         g = QRadialGradient(r.center().x(), 0, max(r.width() * 0.6, r.height()))
@@ -209,20 +218,27 @@ class Stage(QWidget):
         p.drawRoundedRect(r, Radius.CARD, Radius.CARD)
         p.save()
         p.setClipPath(self._clip(r))
-        grid = QPen(QColor(255, 255, 255, 8), 1)
-        p.setPen(grid)
-        x = 0
-        while x < self.width():
+        p.setPen(QPen(QColor(255, 255, 255, 8), 1))
+        for x in range(0, self.width(), GRID_STEP):
             p.drawLine(x, 0, x, self.height())
-            x += GRID_STEP
-        y = 0
-        while y < self.height():
+        for y in range(0, self.height(), GRID_STEP):
             p.drawLine(0, y, self.width(), y)
-            y += GRID_STEP
-        if self._frame is not None and not self._frame.isNull():
-            p.drawImage(self.frame_rect(), self._frame)
         p.restore()
+        p.end()
+        self._bg, self._bg_key = pm, key
+        return pm
+
+    def paintEvent(self, _e) -> None:
+        p = QPainter(self)
+        p.drawPixmap(0, 0, self._background())
+        if self._frame is not None and not self._frame.isNull():
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            r = QRectF(self.rect()).adjusted(.5, .5, -.5, -.5)
+            p.setClipPath(self._clip(r))
+            p.drawImage(self.frame_rect(), self._frame)
+            p.setClipping(False)
         if self._stats:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
             self._paint_stats(p)
 
     @staticmethod
