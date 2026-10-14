@@ -4,7 +4,7 @@ Running the engine from the command line, configuration reference, and building 
 
 ## Precedence
 
-Settings resolve in this order, highest first: command-line flags, environment variables, `config.json`, built-in defaults. The launcher's **Start** button builds a command line from its fields and runs the same engine.
+Settings resolve in this order, highest first: command-line flags, environment variables, `config.json`, built-in defaults. The app's **Start** button builds a command line from the configuration and runs the same engine.
 
 ## Command-line flags
 
@@ -27,7 +27,7 @@ The positional `mode` argument is required.
 | `--fps-cap N` | Frame rate cap (0 or omitted: uncapped) |
 | `--fps` | Print the FPS/stats line |
 | `--mirror` / `--no-mirror` | Mirror the preview (display only) |
-| `--preview-window` | Show a local OpenCV preview window (command line only; the launcher draws its preview in-app). `--preview` is the same flag; `--no-preview` is accepted and does nothing |
+| `--preview-window` | Show a local OpenCV preview window (command line only; the app draws its preview in the Live pane). `--preview` is the same flag; `--no-preview` is accepted and does nothing |
 | `--no-holistic` | In `all` mode, use separate pose and hand models |
 | `--force-cpu` | Force the CPU delegate |
 | `--force-gpu` | Force the GPU delegate (leaks memory on Apple Silicon) |
@@ -39,7 +39,7 @@ Flags override `config.json`. `python main.py --help` lists the current flags.
 
 ## config.json
 
-Most keys are editable in the **Settings** window. OSC host and port, tracking mode, pose model and FPS cap are in the launcher. Some keys, such as `osc.tracking_hold`, are available only in the file.
+Most keys are editable in the settings panes (**Input**, **OSC Output**, **Tracking**, **Preview**, **Advanced**). Some keys, such as `osc.tracking_hold`, are available only in the file.
 
 | Section | Keys |
 |---|---|
@@ -52,6 +52,10 @@ Most keys are editable in the **Settings** window. OSC host and port, tracking m
 | `updates` | Update checker state; see **Updates** |
 
 `config.json` is created the first time settings are saved. The packaged app stores it at `~/Library/Application Support/Gesture/config.json`; when running from source, it is in the working directory. Missing keys use the defaults in `DEFAULT_CONFIG` in `src/config.py`.
+
+## Settings reference
+
+<!-- TODO(#75): generate this table (key, pane, type, range, restart-class) from the declarative row spec in src/ui/panes/spec.py (#68) once it merges, so it cannot drift from the panes. Until then, the section table above is the reference. -->
 
 ## Environment variables
 
@@ -69,7 +73,7 @@ The pre-rename names (the same names with an `MP_` prefix in place of `GESTURE_`
 
 ## Shutdown
 
-The engine shuts down on `q` in the preview window, Ctrl-C or `SIGTERM`. It sends the clear messages described in **OSC Output** and flushes the send queue before exiting. When started by the launcher, the engine also exits within about one second if the launcher exits or crashes.
+The engine shuts down on Ctrl-C or `SIGTERM`, and on `q` in the `--preview-window` window. It sends the clear messages described in **OSC Output** and flushes the send queue before exiting. When started by the app, the engine is connected to it by a private socket and exits within about one second if that socket closes, that is, if the app quits or crashes.
 
 ## Running from source
 
@@ -79,7 +83,7 @@ uv sync
 uv run python main.py all
 ```
 
-`uv run python app.py` with no arguments opens the launcher. This is the packaged app's entry point: it opens the launcher when run without arguments and the engine otherwise.
+`uv run python app.py` with no arguments opens the app window. This is the packaged app's entry point: it opens the window when run without arguments and the engine otherwise.
 
 ## Building the macOS app
 

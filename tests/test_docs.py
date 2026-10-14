@@ -125,3 +125,22 @@ def test_help_view_open_scrolls_to_anchor(qapp):
     assert view.current_slug == 'quick-start' and bar.value() > 0
     view.open('welcome')
     assert bar.value() == 0
+
+
+# ============================================================================
+# UI LINKS INTO THE DOCS
+# ============================================================================
+def test_every_fault_card_learn_more_anchor_exists_in_troubleshooting():
+    from src.ui.overlays.faults import HELP_SLUGS
+
+    anchors = set(heading_anchors(load_topic('troubleshooting')).values())
+    for key, slug in HELP_SLUGS.items():
+        assert slug in anchors, f'fault card {key!r} links to missing troubleshooting#{slug}'
+
+
+def test_no_stale_launcher_era_statements():
+    for topic in TOPICS:
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'docs', topic.filename)
+        text = open(path, encoding='utf-8').read().lower()
+        assert 'until 0.4.0' not in text, topic.filename
+        assert 'show preview window' not in text, topic.filename

@@ -2,7 +2,7 @@
 
 Configure the receiver to listen for OSC over UDP on the port set in Gesture's **OSC Output** section (default 1234).
 
-The approach depends on the output format (**Settings → Advanced → OSC → Output format**; see **OSC Output**):
+The approach depends on the output format (**OSC Output** pane → **Output format**; see **OSC Output**):
 
 - **`float`**: each landmark has its own address with float arguments. Suitable for receivers that bind addresses to numeric values. Recommended for Isadora and lossy networks.
 - **`legacy`** (deprecated) and **`json`**: one JSON string per channel, parsed in the receiver.
@@ -35,7 +35,7 @@ OSC packages such as extOSC provide a per-address `Bind` call that invokes a cal
 
 Isadora maps OSC addresses to numeric values and cannot parse JSON strings directly. Use `float`.
 
-1. In Gesture, set **Output format** to `float` and set **Port** to Isadora's OSC input port (default 1234). Click **Start**.
+1. In Gesture, set **Output format** to `float` and set **Port** to Isadora's OSC input port (default 1234). Apply the change and click **Start**.
 2. In Isadora, open **Communications → Stream Setup**, enable OSC on that port, and click **Auto-Detect Input**. Addresses such as `/pose/lm/0`, `/pose/lm/15` and `/gesture/pose/tracking` appear while a person is in frame. Assign channel numbers to the required addresses.
 3. Add an **OSC Listener** actor for each address, set to its assigned channel. The output carries the address's values: x, y, z and visibility for pose landmarks; x, y and z for hand landmarks. Depending on the Isadora version, multiple arguments appear either as a list or as one stream entry per argument. Use a **Limit-Scale Value** actor to map the 0–1 range to stage coordinates.
 4. Use `/gesture/pose/tracking` (greater than 0 when a person is present) to control effect visibility. Landmark values retain their last position when tracking is lost.

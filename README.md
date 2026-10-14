@@ -7,9 +7,9 @@ Gesture tracks body pose and hand landmarks from a camera or [NDI](https://ndi.v
 - Real-time pose and hand tracking with the MediaPipe Tasks API.
 - Camera or NDI input.
 - Three OSC output formats: `float` (one numeric message per landmark, for receivers such as Isadora; the default since 0.4.0), `json` (compact bundled JSON) and `legacy` (the 0.2.x JSON strings; deprecated). Bounds, status, debounced tracking and a 1 Hz heartbeat are sent in every format.
-- A preview window with landmark overlay.
-- A native macOS launcher with a Settings window and built-in updater.
-- A command-line interface that runs the same engine as the launcher.
+- One native window: a live preview with landmark overlay, meters and an OSC activity column, settings panes with Apply / Revert, a console drawer and a built-in updater.
+- A macOS menu bar, keyboard shortcuts and a status-bar item that keeps the engine running with the window closed.
+- A command-line interface that runs the same engine as the app.
 
 ## Requirements
 
@@ -22,9 +22,11 @@ Download the latest `.dmg` from the [Releases page](https://github.com/Noah-Hard
 ## Quick start
 
 1. Open Gesture.
-2. Under **OSC Output**, set **Host** (default `127.0.0.1`, for a receiver on the same Mac) and **Port** to match the receiver.
-3. Under **Input**, select **Camera** or **NDI** and a source.
-4. Click **Start**.
+2. In the **OSC Output** pane, set **Host** (default `127.0.0.1`, for a receiver on the same Mac) and **Port** to match the receiver.
+3. In the **Input** pane, select **Camera** or **NDI** and a source.
+4. Apply the changes (⌘S) and click **Start** (⌘↩). The preview appears in the **Live** pane.
+
+The first time Gesture opens, a short setup does this for you (**Help → Set Up…** reopens it).
 
 **Tracking mode** selects what is tracked:
 
@@ -36,13 +38,29 @@ Download the latest `.dmg` from the [Releases page](https://github.com/Noah-Hard
 
 The in-app **Quick Start** guide (**Help** menu) covers this in detail.
 
+## Menus and keyboard
+
+The menu bar has Gesture, File, Engine, View, Window and Help menus. The main shortcuts:
+
+| Key | Action |
+|---|---|
+| ⌘↩ | Start or stop the engine |
+| ⌘R | Restart the engine |
+| ⌘S / ⌘Z | Apply / revert pending changes |
+| ⌘, | Settings |
+| ⌘] / ⌘[ | Next / previous pane |
+| ⇧⌘C | Toggle the console |
+| ⇧⌘O | Toggle the OSC activity column |
+
+A status-bar item shows whether the engine is streaming, the destination and the frame rate. It can start and stop the engine and reopen the window. Closing the window leaves the engine running; **Quit Gesture** stops it.
+
 ## Updates
 
 Gesture checks for new releases at launch and can install them in place. See the in-app **Updates** guide.
 
 ## OSC output
 
-Pose, left-hand and right-hand landmarks are sent on separate addresses, in the format selected under **Settings → Advanced → OSC → Output format** or with `--osc-protocol`:
+Pose, left-hand and right-hand landmarks are sent on separate addresses, in the format selected in the **OSC Output** pane or with `--osc-protocol`:
 
 | Format | Pose encoding |
 |---|---|
@@ -61,18 +79,19 @@ The in-app guides **OSC Output**, **OSC Address Reference** and **TouchDesigner,
 
 ## Configuration
 
-The launcher holds OSC host and port, tracking mode, pose model and FPS cap. **Gesture → Settings…** contains the remaining options:
+Settings are in five panes, opened from the rail or with **Gesture → Settings…** (⌘,). Changes are pending until applied with **Apply** (⌘S), or discarded with **Revert** (⌘Z). Settings that can change in a running engine apply live; the rest restart it.
 
-- **General**: update checks and access to `config.json`.
-- **Tracking**: detection thresholds, smoothing, and the number of poses and hands.
-- **Preview**: preview visibility, mirroring and landmark styling.
-- **Advanced**: camera capture, performance, OSC queue size and output format, and backend options.
+- **Input**: camera or NDI source, capture and processing resolution, reconnect timeout.
+- **OSC Output**: host, port, send queue, output format and tracking mode.
+- **Tracking**: pose model, detection thresholds, and the number of poses and hands.
+- **Preview**: preview drawing, mirroring and landmark styling.
+- **Advanced**: performance, backend options, update checks and access to `config.json`.
 
 The in-app **Appendix: CLI & config.json** documents every configuration key, command-line flag and environment variable.
 
 ## Troubleshooting
 
-The in-app **Troubleshooting** guide explains the messages shown in the log pane.
+When the engine cannot start, a card over the preview says why and links to the in-app **Troubleshooting** guide, which also explains the messages shown in the console.
 
 ## License
 

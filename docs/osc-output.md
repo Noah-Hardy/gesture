@@ -2,7 +2,7 @@
 
 ## Output formats
 
-Select the format under **Settings → Advanced → OSC → Output format** (`osc.protocol`), or with `--osc-protocol legacy|json|float`. Changes apply at the next **Start**.
+Select the format in the **OSC Output** pane (**Output format**, `osc.protocol`), or with `--osc-protocol legacy|json|float`. The format is a restart setting: apply it and the engine restarts, or it takes effect at the next **Start**.
 
 | Format | Landmark encoding | Transport | Intended use |
 |---|---|---|---|
@@ -12,7 +12,7 @@ Select the format under **Settings → Advanced → OSC → Output format** (`os
 
 `float` has been the default since 0.4.0. In 0.3.x the default was `legacy`.
 
-**Upgrading from 0.3.x.** The first time 0.4.0 opens a config that has `legacy` saved, it switches it to `float` once and offers **Keep Legacy (0.2.x) format**. 0.3.x saved `legacy` into almost every config, so this cannot be told apart from a deliberate choice. Receivers built for 0.2.x must either be updated or be switched back, under **Settings → Advanced → OSC → Output format** or with `--osc-protocol legacy`. Once you have chosen `legacy` after the migration, it stays. `json` and `float` configs are not changed. `--osc-protocol` always overrides the config for that run.
+**Upgrading from 0.3.x.** The first time 0.4.0 opens a config that has `legacy` saved, it switches it to `float` once and shows a notice offering **Keep Legacy (0.2.x) format**. 0.3.x saved `legacy` into almost every config, so this cannot be told apart from a deliberate choice. Receivers built for 0.2.x must either be updated or be switched back, in the **OSC Output** pane or with `--osc-protocol legacy`. Once you have chosen `legacy` after the migration, it stays. `json` and `float` configs are not changed. `--osc-protocol` always overrides the config for that run.
 
 `legacy` remains available throughout 0.x and will be removed in 1.0. New patches should use `float` or `json`. The **OSC Address Reference** lists every address in each format.
 
@@ -32,9 +32,11 @@ In `json`, `/pose/world` (about 1.2 KB) and all hand channels fit within one bun
 
 In `float`, each landmark message is 36–56 bytes and no bundle exceeds 1400 bytes. Use `float` on lossy networks and with Isadora.
 
-## Tracking mode
+## Host, port and tracking mode
 
-**Tracking mode** determines which channels are sent:
+The **OSC Output** pane sets the destination **Host** and **Port** and the **Send queue size**; these apply live, without restarting the engine. The **Live** pane's OSC column shows what is being sent.
+
+**Tracking mode** (a restart setting) determines which channels are sent:
 
 | Mode | Channels |
 |---|---|
@@ -44,7 +46,7 @@ In `float`, each landmark message is 36–56 bytes and no bundle exceeds 1400 by
 
 The heartbeat is sent in every mode.
 
-By default, `all` uses MediaPipe's combined Holistic landmarker, which is faster but tracks one person only. In `legacy`, it also labels hands `hand_left` / `hand_right` instead of `hand_0` / `hand_1`. **No holistic** (**Settings → Advanced**) uses separate pose and hand models instead; this is required for `mediapipe.num_poses` above 1.
+By default, `all` uses MediaPipe's combined Holistic landmarker, which is faster but tracks one person only. In `legacy`, it also labels hands `hand_left` / `hand_right` instead of `hand_0` / `hand_1`. **No holistic** (**Advanced** pane) uses separate pose and hand models instead; this is required for `mediapipe.num_poses` above 1.
 
 ## Status, tracking and heartbeat
 
@@ -65,7 +67,7 @@ On **Stop** or quit, the engine sends clears for every channel used in the sessi
 
 ## Send queue
 
-Packets are queued and sent on a background thread so that network delays do not stall tracking. When the queue is full, the oldest packet is dropped. The drop count appears in the stats line when **Show FPS** is enabled, and in the heartbeat.
+Packets are queued and sent on a background thread so that network delays do not stall tracking. When the queue is full, the oldest packet is dropped. The drop count appears in the stats line when **Show FPS** (**Advanced** pane) is enabled, and in the heartbeat.
 
 OSC uses UDP, so sending to a host or port with no listener does not produce an error or increase the drop count. A rising drop count means packets are produced faster than the send thread can transmit them.
 

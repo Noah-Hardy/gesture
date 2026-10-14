@@ -17,6 +17,8 @@ Every address sent in each output format, with its payload. See **OSC Output** f
 | Heartbeat (1 Hz) | `/mp/heartbeat` `fiii` | `/gesture/heartbeat` `fiii` | As json |
 | Transport | One datagram per message | Bundles of at most 1400 bytes | Bundles of at most 1400 bytes |
 
+`float` is the default format (since 0.4.0). `legacy` is deprecated and is removed in 1.0.
+
 `f` is a 32-bit float, `i` a 32-bit integer, `<n>` the landmark index (see **Landmark indices**) and `<p>` the person index.
 
 ## Common channels
@@ -63,7 +65,7 @@ Each value is the complete landmark at that extreme, including `id` and excludin
 | `/pose/world_bounds` | Bounds object over world landmarks |
 | `/mp/status` | `{"status": <N>}` |
 
-When several poses are detected (separate pose model only), each is sent as a complete set of messages on the same addresses, distinguished by the landmark `type`: `pose_0`, `pose_1` and so on.
+When several poses are detected (separate pose model only), each is sent as a complete set of messages on the same addresses, distinguished by the landmark `type`: `pose_0`, `pose_1` and so on. (`json` uses the `person` field instead and `float` uses `/pose/<p>/lm/<n>`.)
 
 **Hand channels** (`hand` and `all` modes):
 
@@ -77,7 +79,7 @@ When several poses are detected (separate pose model only), each is sent as a co
 
 In all formats, any hand whose handedness is not `"Left"`, including `Unknown`, is sent on the right-hand channels.
 
-**`type` values** depend on the detection path:
+**`type` values.** The `type` conventions below apply only to `legacy`. `json` and `float` carry no `type` field; use the `person` index, the address, and the `handedness` field to tell people and hands apart. In `legacy`, `type` depends on the detection path:
 
 | Detection path | `type` values |
 |---|---|
