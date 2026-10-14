@@ -66,6 +66,12 @@ class EngineChannel:
         # timeout - O_NONBLOCK lives on the shared file description.)
         self._sock = sock
         self._sock.settimeout(1.0)
+        # A full per-address status line is several KB and the default
+        # AF_UNIX buffer is about 8 KB: room for a few seconds of a busy launcher
+        try:
+            self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)
+        except OSError:
+            pass
         self.frames = frame_writer
         self._on_close = on_close
         self._clock = clock
@@ -153,14 +159,14 @@ class EngineChannel:
 
         Args:
             emitter: OscEmitter - the source of fps, queue, dropped, sent,
-                per-address counts and tracking detections
+                per-address counts and detections
         """
         now = self._clock()
         if self._last_sample is not None and now - self._last_sample < self._interval:
             return
         self._last_sample = now
         stats = emitter.stats()
-        tracking = emitter.tracking_counts()
+        detected = emitter.take_detections()
 
         # fps over the last ~1 s of processed frames; the heartbeat's own 1 Hz
         # figure lags too much for a meter
@@ -179,7 +185,7 @@ class EngineChannel:
         self._snapshot = {
             'fps': fps,
             'latency_ms': self._latency_ms,
-            'detections': {'pose': int(tracking.get('pose', 0)), 'hands': int(tracking.get('hand', 0))},
+            'detections': {'pose': int(detected.get('pose', 0)), 'hands': int(detected.get('hand', 0))},
             'queue': stats['queue'],
             'dropped': stats['dropped'],
             'sent': stats['sent'],
@@ -302,9 +308,19 @@ class EngineChannel:
         return message
 
     def _send(self, message):
-        """Writer thread only. Returns False if the launcher is gone."""
+        """
+        Writer thread only
+
+        Returns:
+            False if the launcher is gone. A send that merely times out (the
+            launcher is alive but not reading for a second) drops the line and
+            carries on: a slow reader is not a closed socket, and LineReader
+            skips the partial line a timed-out send can leave behind.
+        """
         try:
             self._sock.sendall(encode_message(message))
+            return True
+        except socket.timeout:
             return True
         except (OSError, ValueError):
             self._mark_closed()
@@ -316,6 +332,9 @@ class EngineChannel:
             self._wake.wait(max(0.0, next_status - self._clock()))
             woken = self._wake.is_set()
             self._wake.clear()
+            # Read before building the status, so a close() that lands during
+            # this pass still gets one more pass carrying the final phase
+            closing = self._closing
             while True:
                 try:
                     reply = self._outbox.get_nowait()
@@ -324,11 +343,11 @@ class EngineChannel:
                 if not self._send(reply):
                     return
             now = self._clock()
-            if woken or now >= next_status or self._closing:
+            if woken or now >= next_status or closing:
                 if not self._send(self.status_message()):
                     return
                 next_status = now + self._interval
-            if self._closing:
+            if closing:
                 return
 
     def _read_loop(self):

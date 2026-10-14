@@ -63,7 +63,7 @@ class EngineLink:
 
         self._sock, self._child = socket.socketpair()
         os.set_inheritable(self._child.fileno(), True)
-        self._sock.settimeout(1.0)  # sends only; the reader polls with this timeout too
+        self._sock.settimeout(1.0)  # bounds sends; the reader polls with the same timeout
         self._send_lock = threading.Lock()
 
         self.shm_name = make_shm_name() if frames else None

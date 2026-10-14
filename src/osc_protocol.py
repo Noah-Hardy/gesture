@@ -632,6 +632,7 @@ class OscEmitter:
         # processed frames. Cumulative; a reader on another thread takes copies
         self.address_counts = {}
         self.frames_total = 0
+        self._detected = {'pose': 0, 'hand': 0}  # highest raw status count since take_detections()
 
     # ------------------------------------------------------------------------
     # Packet output
@@ -734,6 +735,7 @@ class OscEmitter:
         self._emit(self.formatter.hand_status(n))
 
     def _report_status(self, channel, n):
+        self._detected[channel] = max(self._detected[channel], n)
         self._channels_used.add(channel)
         self._status_this_frame.add(channel)
         self._trackers[channel].update(n)
@@ -800,13 +802,20 @@ class OscEmitter:
         for tracker in self._trackers.values():
             tracker.hold = hold
 
-    def tracking_counts(self):
+    def take_detections(self):
         """
-        Debounced {"pose": n, "hand": n} - the same values /…/tracking carries,
-        so the UI matches what receivers see. 0 whenever nothing has been
-        reported within the hold window; never a cached last count.
+        What the status channel reports as detections: the highest raw
+        pose/hand count reported since the last call, then reset. 0 for any
+        interval in which nothing was tracked - never a cached last count, and
+        not debounced (unlike /…/tracking, which holds for osc.tracking_hold).
+        Call from the processing thread.
+
+        Returns:
+            {"pose": n, "hand": n}
         """
-        return {channel: tracker.value for channel, tracker in self._trackers.items()}
+        taken = dict(self._detected)
+        self._detected = {'pose': 0, 'hand': 0}
+        return taken
 
     def stats(self):
         """

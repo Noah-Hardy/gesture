@@ -266,12 +266,17 @@ class FrameWriter:
             return
         shm, self._shm = self._shm, None
         self._slots = []
-        try:
-            with _untracked():
+        # Separate attempts: a close() that fails (a view still exported) must
+        # not skip the unlink - the launcher may be gone, with nobody to backstop it
+        with _untracked():
+            try:
                 shm.close()
+            except (BufferError, OSError):
+                pass
+            try:
                 shm.unlink()
-        except (BufferError, FileNotFoundError, OSError):
-            pass
+            except (FileNotFoundError, OSError):
+                pass
 
 
 class FrameReader:

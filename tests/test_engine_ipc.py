@@ -129,11 +129,18 @@ def test_stats_snapshot_is_a_copy_with_sender_counters():
     assert stats['sent'] == len(sender.dgrams) and stats['dropped'] == 0 and stats['queue'] == 0
 
 
-def test_tracking_counts_are_zero_when_nothing_was_reported():
+def test_detections_are_zero_the_moment_nothing_is_tracked():
     emitter = OscEmitter(CaptureSender(), 'float')
-    assert emitter.tracking_counts() == {'pose': 0, 'hand': 0}
+    assert emitter.take_detections() == {'pose': 0, 'hand': 0}
     emitter.pose_status(2)
-    assert emitter.tracking_counts()['pose'] == 2
+    emitter.pose_status(0)   # a later idle frame in the same window does not hide the detection
+    emitter.hand_status(1)
+    assert emitter.take_detections() == {'pose': 2, 'hand': 1}
+    # Next window: the person left. Not debounced, not cached.
+    emitter.pose_status(0)
+    emitter.hand_status(0)
+    assert emitter.take_detections() == {'pose': 0, 'hand': 0}
+    assert emitter.take_detections() == {'pose': 0, 'hand': 0}
 
 
 # ============================================================================
@@ -284,12 +291,12 @@ class FakeEmitter:
         self.frames = 0
         self.tracking = {'pose': 0, 'hand': 0}
 
+    def take_detections(self):
+        return dict(self.tracking)
+
     def stats(self):
         return {'fps': 0, 'queue': 3, 'dropped': 1, 'sent': 42, 'frames': self.frames,
                 'per_address': {'/pose/lm/0': self.frames}}
-
-    def tracking_counts(self):
-        return dict(self.tracking)
 
 
 class Launcher:
@@ -444,6 +451,27 @@ def test_socket_close_marks_closed_and_fires_handler(pair):
     assert wait_for(channel.closed.is_set)
     assert channel.should_stop
     assert channel.closed_calls == [True]
+
+
+def test_a_launcher_that_stops_reading_is_slow_not_gone():
+    engine_sock, launcher_sock = socket.socketpair()
+    closed = []
+    channel = EngineChannel(engine_sock, on_close=lambda: closed.append(1), interval=0.001)
+    try:
+        # The launcher's socket is alive but nobody reads for longer than the send timeout
+        emitter = FakeEmitter()
+        emitter.stats = lambda: {'fps': 0, 'queue': 0, 'dropped': 0, 'sent': 0, 'frames': 1,
+                                 'per_address': {f'/pose/lm/{n}': 1 for n in range(1000)}}
+        channel.tick(emitter)
+        launcher_sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        time.sleep(1.8)
+        assert not channel.closed.is_set() and closed == []
+        # ...and once it reads again, status flows
+        launcher = Launcher(launcher_sock)
+        assert wait_for(lambda: launcher.statuses())
+    finally:
+        channel.close()
+        launcher_sock.close()
 
 
 def test_own_shutdown_is_not_mistaken_for_launcher_loss():
