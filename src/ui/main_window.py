@@ -21,11 +21,12 @@ move as the window is resized.
 # ============================================================================
 from __future__ import annotations
 
+import math
 import subprocess
 import sys
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QElapsedTimer, QEvent, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QAction, QColor, QFontMetrics, QKeySequence, QLinearGradient, QPainter, QPainterPath,
     QPen, QRadialGradient,
@@ -118,6 +119,11 @@ class RunButton(QAbstractButton):
         super().__init__(parent)
         self._state = 'stopped'
         self._hover = False
+        self._pulse = 1.0
+        self._pulse_clock = QElapsedTimer()
+        self._pulse_timer = QTimer(self)   # breathes the dot while the engine starts
+        self._pulse_timer.setInterval(50)
+        self._pulse_timer.timeout.connect(self._on_pulse)
         self.setText('Start')
         m = Spacing.FOCUS_MARGIN
         self.setFixedSize(RUN_BUTTON_WIDTH + 2 * m, 30 + 2 * m)
@@ -131,7 +137,22 @@ class RunButton(QAbstractButton):
         self.setText({'stopped': 'Start', 'starting': 'Stop', 'running': 'Stop',
                       'stopping': 'Stopping'}.get(state, 'Start'))
         self.setEnabled(state != 'stopping')
+        if state == 'starting':
+            self._pulse_clock.start()
+            self._pulse_timer.start()
+        else:
+            self._pulse_timer.stop()
+            self._pulse = 1.0
         self.update()
+
+    def _on_pulse(self) -> None:
+        # 1.2 s breath between 0.35 and 1.0 of the glow
+        self._pulse = 0.675 + 0.325 * math.cos(self._pulse_clock.elapsed() / 1200.0 * 2 * math.pi)
+        self.update()
+
+    def pulsing(self) -> bool:
+        """True while the dot breathes (engine starting)."""
+        return self._pulse_timer.isActive()
 
     def state(self) -> str:
         """Engine state last shown."""
@@ -171,7 +192,7 @@ class RunButton(QAbstractButton):
         dot_x = r.left() + 17
         if live:  # glowing dot
             glow = QRadialGradient(dot_x, r.center().y(), 9)
-            glow.setColorAt(0, QColor(255, 255, 255, 150))
+            glow.setColorAt(0, QColor(255, 255, 255, int(150 * self._pulse)))
             glow.setColorAt(1, QColor(255, 255, 255, 0))
             p.setBrush(glow)
             p.drawEllipse(QRectF(dot_x - 9, r.center().y() - 9, 18, 18))

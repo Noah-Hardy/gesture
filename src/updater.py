@@ -258,13 +258,29 @@ def install_location_warning() -> Optional[str]:
     return _BAD_INSTALL_LOCATIONS.get(pf.code)
 
 
+# Folders macOS gates behind a "would like to access files in..." prompt.
+# Listing one blocks the calling thread until the user answers.
+_TCC_FOLDERS = ('Desktop', 'Documents', 'Downloads')
+
+
+def _is_tcc_protected(path: str) -> bool:
+    """True if `path` is inside ~/Desktop, ~/Documents or ~/Downloads (listing it prompts)."""
+    real = os.path.realpath(path)
+    home = os.path.realpath(os.path.expanduser('~'))
+    return any(real == os.path.join(home, f) or real.startswith(os.path.join(home, f) + os.sep)
+               for f in _TCC_FOLDERS)
+
+
 def cleanup_stale() -> None:
     """
     Sweep leftovers from interrupted or crashed installs. Safe to call on
     every launch - only touches files this module itself would have created.
     """
     app = bundle_path()
-    if app:
+    # Skipped when the app sits in Desktop/Documents/Downloads: listing those
+    # raises a macOS permission prompt on every launch for a sweep that only
+    # matters after an update (which runs from the folder it was approved for)
+    if app and not _is_tcc_protected(os.path.dirname(app)):
         parent = os.path.dirname(app)
         for prefix in ('.MP-OSC-update-*', '.Gesture-update-*'):
             _sweep_glob(os.path.join(parent, prefix), max_age_seconds=86400, is_dir=True)

@@ -13,9 +13,6 @@ arguments calls `run()`.
 from __future__ import annotations
 
 import sys
-import time
-
-import psutil
 
 from PySide6.QtWidgets import QApplication
 
@@ -55,11 +52,6 @@ def run() -> int:
     app = build_app()
     config = get_config()
     window = MainWindow(config)
-    # Ready time counts from process creation, so a slow (frozen, cold)
-    # start plays the launch animation and a warm one skips it (#74)
-    try:
-        ready_ms = (time.time() - psutil.Process().create_time()) * 1000.0
-    except Exception:
-        ready_ms = None
-    maybe_play(window, config, ready_ms)
+    # Plays on every launch unless turned off or Reduce Motion is on (#74)
+    maybe_play(window, config)
     return app.exec()

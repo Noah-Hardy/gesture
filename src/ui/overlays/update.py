@@ -19,6 +19,8 @@ worker thread.
 # ============================================================================
 from __future__ import annotations
 
+import threading
+
 import webbrowser
 
 from PySide6.QtCore import QEvent, QObject, QRectF, Qt, QTimer, Signal
@@ -384,12 +386,27 @@ class UpdateOverlay(QObject):
             self.window.toast('Checking for updates...')
         self.updater.check_async(manual=manual)
 
-    def launch_check(self) -> None:
-        """Silent check at launch; the updater itself honours check_on_launch and rate limits."""
+    @staticmethod
+    def _cleanup() -> None:
         try:
             cleanup_stale()
         except Exception:
             pass
+
+    def launch_check_when_idle(self) -> None:
+        """Run the launch check once the launch animation (if any) has handed over."""
+        splash = getattr(self.window, '_launch_animation', None)
+        if splash is not None and splash.is_playing:
+            QTimer.singleShot(500, self.launch_check_when_idle)
+            return
+        self.launch_check()
+
+    def launch_check(self) -> None:
+        """Silent check at launch; the updater itself honours check_on_launch and rate limits."""
+        # Off the Qt thread: it lists the install folder, which can block for
+        # seconds (a first access to ~/Documents prompts) and would freeze the
+        # launch animation
+        threading.Thread(target=self._cleanup, name='update-cleanup', daemon=True).start()
         if self.config.get('updates', 'check_on_launch', True):
             self.check(manual=False)
 
@@ -562,5 +579,5 @@ def install(window, controller_factory=UpdateController) -> UpdateOverlay:
     if action is not None:
         action.triggered.connect(lambda *_: overlay.check(manual=True))
     window.updateCardClicked.connect(overlay.show_dialog)
-    QTimer.singleShot(LAUNCH_CHECK_DELAY_MS, overlay.launch_check)
+    QTimer.singleShot(LAUNCH_CHECK_DELAY_MS, overlay.launch_check_when_idle)
     return overlay

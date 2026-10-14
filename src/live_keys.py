@@ -147,10 +147,13 @@ def is_live(key):
 #: never needs an engine restart
 APP_ONLY_SECTIONS = ('updates',)
 
+#: Individual app-only keys in sections the engine also reads (ui.mode is its)
+APP_ONLY_KEYS = ('ui.launch_animation',)
+
 
 def is_app_only(key):
     """True if only the app reads this "section.key" - no restart, nothing to send"""
-    return key.split('.', 1)[0] in APP_ONLY_SECTIONS
+    return key in APP_ONLY_KEYS or key.split('.', 1)[0] in APP_ONLY_SECTIONS
 
 
 def coerce_live_value(key, value):
