@@ -37,7 +37,9 @@ def build_app(argv: list[str] | None = None) -> QApplication:
     app = QApplication.instance() or QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName('Gesture')
     app.setOrganizationName('Gesture')
-    app.setWindowIcon(app_icon())
+    # On macOS the Dock shows the bundle's .icns (Big Sur grid); a runtime QIcon would replace it
+    if sys.platform != 'darwin':
+        app.setWindowIcon(app_icon())
     tokens.apply(app)
     return app
 
