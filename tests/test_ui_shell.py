@@ -225,7 +225,12 @@ def test_toast_shows_then_hides(app, window):
     window.toast('Saved', ms=30)
     assert window._toast.isVisible()
     from PySide6.QtTest import QTest
-    QTest.qWait(120)
+    # Wait for the condition, not a fixed delay: on a loaded CI runner the
+    # 30ms timer and the fade can take longer than any fixed sleep
+    for _ in range(100):
+        if window._toast.isHidden():
+            break
+        QTest.qWait(20)
     assert window._toast.isHidden()
 
 
