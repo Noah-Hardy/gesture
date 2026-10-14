@@ -2,7 +2,9 @@
 """
 Help Pane
 
-Placeholder until #72 replaces this module's `create()`.
+The in-app documentation (#72): `HelpView` from `src/ui/help_view.py`.
+`window.show_pane('help', anchor)` accepts `<slug>` or `<slug>#<anchor>`,
+the same target a `help://<slug>#<anchor>` link names.
 """
 
 # ============================================================================
@@ -12,7 +14,7 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QWidget
 
-from ._placeholder import placeholder
+from ..help_view import HelpView
 
 TITLE = 'Help'
 BLURB = 'Documentation for Gesture.'
@@ -28,4 +30,11 @@ def create(window) -> QWidget:
     Returns:
         The pane widget.
     """
-    return placeholder(TITLE, BLURB)
+    view = HelpView()
+
+    def scroll_to_anchor(target: str) -> None:
+        slug, _, anchor = target.partition('#')
+        view.open(slug, anchor or None)
+
+    view.scroll_to_anchor = scroll_to_anchor
+    return view

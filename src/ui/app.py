@@ -13,6 +13,9 @@ arguments calls `run()`.
 from __future__ import annotations
 
 import sys
+import time
+
+import psutil
 
 from PySide6.QtWidgets import QApplication
 
@@ -20,6 +23,7 @@ from src.config import get_config
 
 from . import tokens
 from .icon import app_icon
+from .launch import maybe_play
 from .main_window import MainWindow
 
 
@@ -49,6 +53,13 @@ def run() -> int:
         The process exit code.
     """
     app = build_app()
-    window = MainWindow(get_config())
-    window.show()
+    config = get_config()
+    window = MainWindow(config)
+    # Ready time counts from process creation, so a slow (frozen, cold)
+    # start plays the launch animation and a warm one skips it (#74)
+    try:
+        ready_ms = (time.time() - psutil.Process().create_time()) * 1000.0
+    except Exception:
+        ready_ms = None
+    maybe_play(window, config, ready_ms)
     return app.exec()
