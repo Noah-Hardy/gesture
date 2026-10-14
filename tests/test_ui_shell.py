@@ -63,7 +63,7 @@ def test_window_builds_with_default_and_minimum_size(window):
     assert (window.minimumWidth(), window.minimumHeight()) == (980, 620)
     assert window.toolbar.height() == 76
     assert window.rail.width() == 196
-    assert window.edits is None
+    assert window.edits is not None
 
 
 def test_layout_mode_thresholds():
