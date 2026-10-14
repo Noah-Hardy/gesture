@@ -6,27 +6,24 @@ Gesture checks GitHub Releases for new versions and can install them in place.
 
 Shortly after launch, Gesture checks for a newer release, at most once every 24 hours. It shows nothing if the installed version is current, or if GitHub cannot be reached.
 
-**Settings → General** controls this:
+**Settings → Advanced → Updates** controls this:
 
 - **Check for updates on launch**: disables the launch check. Manual checks remain available.
 - **Include pre-release builds** (off by default): treats pre-releases as available updates.
 
 ## Manual check
 
-Both of the following check immediately, regardless of the 24-hour limit:
-
-- **Help → Check for Updates…**
-- **Settings → General → Check Now**, next to the time of the last check.
+**Help → Check for Updates…** checks immediately, regardless of the 24-hour limit.
 
 A manual check reports when no update is available.
 
-## Update dialog
+## Update overlay
 
-When an update is found, a dialog shows its release notes and three options:
+When an update is found, a card appears in the rail. Opening it shows an overlay over the window with the release notes and three options:
 
-- **Install and Relaunch**: installs the update (see below).
-- **Skip This Version**: suppresses launch-check prompts for this release. A manual check still offers it.
-- **Later**: closes the dialog until the next check.
+- **Install & relaunch**: installs the update (see below).
+- **Skip this version**: suppresses launch-check prompts for this release. A manual check still offers it.
+- **Later**: closes the overlay until the next check.
 
 If the engine is running, Gesture asks to stop it before installing.
 
@@ -38,7 +35,7 @@ If the engine is running, Gesture asks to stop it before installing.
 4. **Swap**: Gesture quits. A helper script moves the current app aside as a backup, moves the new app into place, and reopens it.
 5. **Relaunch**: the new version opens. `config.json` is not modified.
 
-If any step fails, the existing version is kept or restored from the backup, and the dialog shows the failure along with a link to the release page.
+If any step fails, the existing version is kept or restored from the backup, and the overlay shows the failure along with a link to the release page.
 
 ## When self-update is unavailable
 

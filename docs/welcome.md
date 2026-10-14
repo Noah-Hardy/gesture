@@ -6,13 +6,13 @@ This guide covers the packaged app. Command-line use and building from source ar
 
 ## Contents
 
-- **Quick Start**: first launch, starting and stopping tracking, and confirming that data arrives.
-- **Settings**: the General, Tracking, Preview and Advanced tabs.
+- **Quick Start**: the window, first launch, starting and stopping tracking, and confirming that data arrives.
+- **Settings**: the Input, OSC Output, Tracking, Preview and Advanced panes, and Apply / Revert.
 - **Updates**: how the built-in updater checks for and installs new versions.
 - **Camera & NDI**: selecting an input source.
 - **OSC Output**: what Gesture sends, and the three output formats.
 - **TouchDesigner, Max, Unity, Isadora**: receiver setup.
 - **Models & Performance**: accuracy and speed trade-offs, and the FPS readout.
-- **Troubleshooting**: explanations of log messages, by message.
+- **Troubleshooting**: the fault cards shown over the preview, and explanations of log messages.
 
 The **OSC Address Reference** and **Appendix** are reference material.
