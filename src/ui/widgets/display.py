@@ -37,14 +37,16 @@ class Meter(QWidget):
         value: Display text for the value.
         unit: Unit shown beside the value.
         fraction: Bar fill 0..1.
+        value_px: Value text size; 22 by default, fixed smaller for compound readouts.
     """
 
     HEIGHT = 84
 
     def __init__(self, label: str = '', value: str = '--', unit: str = '',
-                 fraction: float = 0.0, parent: QWidget | None = None):
+                 fraction: float = 0.0, parent: QWidget | None = None, value_px: int = 22):
         super().__init__(parent)
         self._label, self._value, self._unit, self._frac = label, value, unit, fraction
+        self._value_px = value_px
         self.setFixedHeight(self.HEIGHT)
         self.setMinimumWidth(130)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -74,7 +76,7 @@ class Meter(QWidget):
         p.setFont(f)
         p.setPen(color('faint'))
         p.drawText(QRectF(x, 11, w, 14), Qt.AlignmentFlag.AlignVCenter, self._label.upper())
-        vf = Font.ui(22, 500)
+        vf = Font.ui(self._value_px, 500)
         p.setFont(vf)
         p.setPen(color('text'))
         vw = QFontMetrics(vf).horizontalAdvance(self._value)
