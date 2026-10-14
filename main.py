@@ -23,7 +23,7 @@ from src import OscEmitter
 from src.config import OSC_PROTOCOLS
 from src import NDICapture, list_ndi_sources, NDI_AVAILABLE
 from src.config import getenv
-from src.runtime import FrameClock, ParentWatch, ReconnectingCapture, install_sigterm_handler
+from src.runtime import FrameClock, ParentWatch, ReconnectingCapture, install_sigterm_handler, report_phase
 
 
 # ============================================================================
@@ -421,6 +421,9 @@ def run(args, config):
     # ------------------------------------------------------------------------
     # Setup camera or NDI capture
     # ------------------------------------------------------------------------
+    using_ndi = args.ndi or config.get('camera', 'use_ndi', False)
+    report_phase('opening_camera',
+                 message="Connecting to NDI source…" if using_ndi else "Opening camera…")
     cap = setup_camera(config, use_ndi=args.ndi, ndi_source=args.ndi_source)
     if cap is None:
         # setup_camera already printed a specific ❌ error (NDI was requested
@@ -568,6 +571,17 @@ def run(args, config):
     if pose_processor is not None and hand_processor is not None:
         hand_processor.share_frame_prep(pose_processor)
 
+    # Run each landmarker once on a blank frame so the first real frame is
+    # not delayed by lazy graph initialization. A failure here is not fatal:
+    # the first real frame just pays the cost instead.
+    report_phase('warming_up')
+    for processor, landmarker in ((pose_processor, pose_landmarker), (hand_processor, hand_landmarker)):
+        if processor is not None:
+            try:
+                processor.warm_up(landmarker)
+            except Exception as e:
+                print(f"⚠️  Warm-up failed: {e}")
+
     # Setup is done: freeze everything it allocated (models, modules,
     # config) into the permanent generation so no collection ever rescans
     # it. That keeps the collector's periodic passes cheap without the old
@@ -578,7 +592,9 @@ def run(args, config):
     if not performance_config.get('gc_enabled', True):
         gc.disable()
 
-    # Sentinel the launcher watches for to end its startup spinner
+    report_phase('ready')
+    # Sentinel the launcher watches for to end its startup spinner (the Tk
+    # launcher depends on it; the status channel replaces it in #65)
     print("🟢 Engine ready")
 
     # ========================================================================

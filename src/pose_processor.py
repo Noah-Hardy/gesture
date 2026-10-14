@@ -55,6 +55,11 @@ class TasksPoseProcessor(LandmarkerProcessor):
     # Landmarker hooks
     # ------------------------------------------------------------------------
 
+    @property
+    def model_name(self):
+        mp_config = self.config.get('mediapipe') if self.config else {}
+        return f"pose model ({mp_config.get('pose_model_type', 'lite')})"
+
     def _download_model(self):
         mp_config = self.config.get('mediapipe') if self.config else {}
         return download_pose_model(mp_config.get('pose_model_type', 'lite'))
