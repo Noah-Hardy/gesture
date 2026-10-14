@@ -15,15 +15,19 @@ MainWindow calls `install()` once at construction; the QActions it builds
 # ============================================================================
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+import time
+
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
 from PySide6.QtGui import (
-    QAction, QColor, QGuiApplication, QIcon, QPainter, QPainterPath, QPen, QPixmap,
+    QAction, QColor, QCursor, QGuiApplication, QIcon, QPainter, QPainterPath, QPen, QPixmap,
 )
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
 from src.icon_geometry import ACCENT, DIM, TIERS, scaled_point, tier_for
 
 STATUS_ICON_SIZE = 18
+# The click that dismisses the popup is also delivered to the tray; ignore it for this long
+REOPEN_GUARD_S = 0.25
 
 
 # ============================================================================
@@ -110,7 +114,11 @@ class StatusItem:
         self.menu.addSeparator()
         self.quit_action = self.menu.addAction('Quit Gesture', window.quit_app)
         self.menu.aboutToShow.connect(self.refresh)
-        self.tray.setContextMenu(self.menu)
+        self.menu.aboutToHide.connect(self._on_menu_hidden)
+        self._hidden_at = -1.0
+        # Deliberately NOT tray.setContextMenu(): on recent macOS Qt's observer for the
+        # status item's native menu calls -[NSEvent clickCount] on a non-mouse event,
+        # which asserts and aborts. We pop the menu up ourselves on `activated`.
         self.tray.activated.connect(self._on_activated)
 
         window.engine.stateChanged.connect(self._on_state)
@@ -175,9 +183,36 @@ class StatusItem:
         w.raise_()
         w.activateWindow()
 
+    def popup_position(self) -> QPoint:
+        """Where to open the menu: under the status item, else at the cursor."""
+        geo = self.tray.geometry()
+        if geo.isValid() and not geo.isEmpty():
+            return QPoint(geo.x(), geo.y() + geo.height())
+        return QCursor.pos()
+
+    def _on_menu_hidden(self) -> None:
+        self._hidden_at = time.monotonic()
+
+    def show_menu(self) -> None:
+        """Toggle the menu: open it under the status item, or close it if it is open.
+
+        A click on the icon while the menu is open dismisses the menu and is also
+        delivered here as a new activation; that one must not reopen it.
+        """
+        if self.menu.isVisible():
+            self.menu.hide()
+            return
+        if time.monotonic() - self._hidden_at < REOPEN_GUARD_S:
+            return
+        self.refresh()
+        self.menu.popup(self.popup_position())
+
     def _on_activated(self, reason) -> None:
-        # On macOS a click opens the menu; elsewhere a plain click opens the window
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+        # A click on the status item opens the menu; Open Gesture is a menu entry
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger,
+                      QSystemTrayIcon.ActivationReason.Context):
+            self.show_menu()
+        elif reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self.open_window()
 
     def _on_app_state(self, state) -> None:

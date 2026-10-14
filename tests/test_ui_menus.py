@@ -8,9 +8,9 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 pytest.importorskip('PySide6.QtWidgets')
 
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import QPoint, QRect, Qt  # noqa: E402
 from PySide6.QtGui import QAction, QKeySequence  # noqa: E402
-from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
+from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QWidget  # noqa: E402
 
 from src.config import Config  # noqa: E402
 from src.ui import menus, tokens  # noqa: E402
@@ -191,3 +191,61 @@ def test_focus_chain_order(window):
     order = [first(r) for r in (window.toolbar, window.rail, window.stack, window.console)]
     assert order == sorted(order) and len(set(order)) == 4
     assert all(isinstance(w, QWidget) and w.focusPolicy() & Qt.FocusPolicy.TabFocus for w in chain)
+
+
+def test_status_item_pops_own_menu_instead_of_native_context_menu(window, status, monkeypatch):
+    # setContextMenu() crashes on macOS (Qt calls -[NSEvent clickCount] on a non-mouse event)
+    assert status.tray.contextMenu() is None
+    popups = []
+    monkeypatch.setattr(status.menu, 'popup', lambda pos, *a: popups.append(pos))
+    reasons = QSystemTrayIcon.ActivationReason
+    status.tray.activated.emit(reasons.Trigger)
+    status.tray.activated.emit(reasons.Context)
+    assert len(popups) == 2
+    status.tray.activated.emit(reasons.MiddleClick)
+    assert len(popups) == 2
+    window.hide()
+    status.tray.activated.emit(reasons.DoubleClick)
+    assert window.isVisible()
+
+
+def test_popup_position_anchors_under_item_with_cursor_fallback(status, monkeypatch):
+    monkeypatch.setattr(status.tray, 'geometry', lambda: QRect(100, 0, 24, 24))
+    assert status.popup_position() == QPoint(100, 24)
+    monkeypatch.setattr(status.tray, 'geometry', lambda: QRect())
+    monkeypatch.setattr(menus.QCursor, 'pos', staticmethod(lambda: QPoint(7, 9)))
+    assert status.popup_position() == QPoint(7, 9)
+
+
+def test_app_window_icon_not_set_on_macos(app, monkeypatch):
+    from src.ui import app as ui_app
+    calls = []
+    monkeypatch.setattr(QApplication, 'setWindowIcon', staticmethod(lambda i: calls.append(i)))
+    monkeypatch.setattr(ui_app.sys, 'platform', 'darwin')
+    ui_app.build_app()
+    assert calls == []
+    monkeypatch.setattr(ui_app.sys, 'platform', 'linux')
+    ui_app.build_app()
+    assert len(calls) == 1
+
+
+def test_second_click_closes_menu_and_dismiss_click_does_not_reopen(status, monkeypatch):
+    popups = []
+    monkeypatch.setattr(status.menu, 'popup', lambda pos, *a: popups.append(pos))
+    visible = [False]
+    monkeypatch.setattr(status.menu, 'isVisible', lambda: visible[0])
+    hides = []
+    monkeypatch.setattr(status.menu, 'hide', lambda: hides.append(1))
+    trigger = QSystemTrayIcon.ActivationReason.Trigger
+    status.tray.activated.emit(trigger)
+    assert len(popups) == 1
+    visible[0] = True
+    status.tray.activated.emit(trigger)  # second click closes
+    assert hides == [1] and len(popups) == 1
+    visible[0] = False
+    status._on_menu_hidden()
+    status.tray.activated.emit(trigger)  # the dismissing click, delivered late
+    assert len(popups) == 1
+    monkeypatch.setattr(menus, 'REOPEN_GUARD_S', 0.0)
+    status.tray.activated.emit(trigger)
+    assert len(popups) == 2

@@ -26,7 +26,7 @@ import subprocess
 import sys
 import tempfile
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 # Geometry, tiers and colours live in src/icon_geometry.py so the runtime UI can
 # draw the same mark. Run as a script, only scripts/ is on sys.path, so add the
@@ -55,6 +55,13 @@ ICONSET_ENTRIES = (
     ('icon_512x512@2x.png', 1024),
 )
 SUPERSAMPLE = 8
+# macOS Big Sur+ icon grid: the tile is 824 of 1024 px, centred (100 px margin),
+# with a soft shadow in the margin. Unlike the in-app mark, the .icns follows it.
+GRID = 1024
+TILE = 824
+SHADOW_OFFSET = 10 / GRID   # fractions of the canvas
+SHADOW_BLUR = 14 / GRID
+SHADOW_ALPHA = 0.30
 
 
 # ============================================================================
@@ -80,19 +87,19 @@ def _gradient(px):
     return img
 
 
-def render(size, ss=SUPERSAMPLE):
-    """Render one icon size: supersample, draw flat, mask, then LANCZOS downsample
+def _draw_tile(tile, ss):
+    """Draw the rounded tile and figure at `tile * ss` px, flat then masked
 
     Args:
-        size: Output edge length in pixels; picks the detail tier.
+        tile: Tile edge length in output pixels; picks the detail tier.
         ss: Supersampling factor.
 
     Returns:
-        RGBA PIL image of size x size.
+        RGBA PIL image of (tile * ss) square.
     """
-    tier = TIERS[tier_for(size)]
+    tier = TIERS[tier_for(tile)]
     scale = tier.scale
-    px = size * ss
+    px = tile * ss
     unit = px / 100.0
     img = _gradient(px)
     draw = ImageDraw.Draw(img)
@@ -125,7 +132,35 @@ def render(size, ss=SUPERSAMPLE):
 
     img = img.convert('RGBA')
     img.putalpha(_rounded_mask(px))
-    return img.resize((size, size), Image.LANCZOS)
+    return img
+
+
+def render(size, ss=SUPERSAMPLE):
+    """Render one icon size on the macOS grid: tile centred in the canvas with a
+    drop shadow, supersampled, then LANCZOS downsampled
+
+    Args:
+        size: Output edge length in pixels. The tile is 824/1024 of it, and its
+            pixel size picks the detail tier.
+        ss: Supersampling factor.
+
+    Returns:
+        RGBA PIL image of size x size.
+    """
+    tile = max(1, round(size * TILE / GRID))
+    canvas = size * ss
+    margin = (canvas - tile * ss) // 2
+    art = _draw_tile(tile, ss)
+
+    alpha = Image.new('L', (canvas, canvas), 0)
+    alpha.paste(art.getchannel('A').point(lambda a: int(a * SHADOW_ALPHA)),
+                (margin, margin + int(SHADOW_OFFSET * canvas)))
+    shadow = Image.new('RGBA', (canvas, canvas), (0, 0, 0, 0))
+    shadow.putalpha(alpha.filter(ImageFilter.GaussianBlur(SHADOW_BLUR * canvas)))
+
+    out = shadow
+    out.alpha_composite(art, (margin, margin))
+    return out.resize((size, size), Image.LANCZOS)
 
 
 # ============================================================================
