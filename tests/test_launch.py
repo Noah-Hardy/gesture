@@ -104,9 +104,10 @@ def test_should_play_rules(monkeypatch):
     monkeypatch.setattr(launch, 'reduce_motion_enabled', lambda: False)
     assert LaunchAnimation.should_play(_Config(True), 2000)
     assert not LaunchAnimation.should_play(_Config(False), 2000)
-    assert not LaunchAnimation.should_play(_Config(True), 800)
-    assert not LaunchAnimation.should_play(_Config(True), 120)
-    assert LaunchAnimation.should_play(_Config(True), 801)
+    # Plays on every launch, however fast the window was ready (#74)
+    assert LaunchAnimation.should_play(_Config(True), 800)
+    assert LaunchAnimation.should_play(_Config(True), 120)
+    assert LaunchAnimation.should_play(_Config(True))
     monkeypatch.setattr(launch, 'reduce_motion_enabled', lambda: True)
     assert not LaunchAnimation.should_play(_Config(True), 5000)
 
@@ -129,6 +130,9 @@ def test_click_skips(app):
     anim = LaunchAnimation()
     calls = []
     anim.play(lambda: calls.append(1))
+    QTest.mouseClick(anim, Qt.MouseButton.LeftButton, pos=QPoint(5, 5))
+    assert calls == []  # a stray click right at launch is ignored
+    QTest.qWait(launch.SKIP_GRACE_MS + 50)
     QTest.mouseClick(anim, Qt.MouseButton.LeftButton, pos=QPoint(5, 5))
     assert calls == [1]
 
@@ -208,3 +212,43 @@ def test_stream_addresses_are_what_float_sends_in_all_mode():
     wire = b''.join(p.dgram for p in sender.packets)
     for addr in launch.ADDRS:
         assert addr.encode() in wire, addr
+
+
+def test_launch_animation_toggle_is_app_only():
+    from src import live_keys
+    assert live_keys.is_app_only('ui.launch_animation')
+    assert not live_keys.is_app_only('ui.mode')
+
+
+def test_app_support_dir_override(tmp_path, monkeypatch):
+    from src.config import app_support_dir
+    target = tmp_path / 'support'
+    monkeypatch.setenv('GESTURE_APP_SUPPORT_DIR', str(target))
+    assert app_support_dir() == str(target) and target.is_dir()
+
+
+def test_tcc_protected_folders_are_not_swept(monkeypatch):
+    import os
+    from src import updater
+    home = os.path.expanduser('~')
+    assert updater._is_tcc_protected(os.path.join(home, 'Documents', 'x'))
+    assert updater._is_tcc_protected(os.path.join(home, 'Desktop'))
+    assert not updater._is_tcc_protected('/Applications')
+
+
+def test_reveal_lands_on_the_real_window(app, monkeypatch):
+    """The splash paints the real window's capture where the window will open."""
+    from src.config import Config
+    from src.ui.main_window import MainWindow
+    win = MainWindow(Config(os.path.join(os.environ.get('TMPDIR', '/tmp'), 'launch_reveal_cfg.json')))
+    anim = LaunchAnimation(win)
+    plan = anim._build_plan()
+    assert plan is not None and plan.pixmap.width() > 0
+    assert any(k == 'stage' for k, _ in plan.pieces)
+    img = launch.render_frame(CUES['Reveal'] + 1.2, 480, 270)
+    assert img.width() == 480
+    anim._plan = plan
+    anim._t = TOTAL
+    assert not anim.grab().isNull()
+    anim.close()
+    win.close()

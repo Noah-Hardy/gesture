@@ -28,13 +28,20 @@ def app_support_dir() -> str:
     """
     ~/Library/Application Support/Gesture - config, models, docs, updates
 
-    The one place that names the folder. On the first launch after the
+    The one place that names the folder. `GESTURE_APP_SUPPORT_DIR` overrides
+    it (for tests and for trying a build without touching the real config). On the first launch after the
     rename it moves the pre-rename mp-osc folder into place (a single
     atomic os.rename, so config, downloaded models and install.log all
     carry over). If that fails for any reason the old folder keeps being
     used rather than starting over with an empty one. Once Gesture exists
     it wins, so a later downgrade that recreates mp-osc is never merged in.
     """
+    override = os.environ.get('GESTURE_APP_SUPPORT_DIR')
+    if override:
+        # Testing / sandboxing: use exactly this folder, no rename migration
+        path = os.path.expanduser(override)
+        os.makedirs(path, exist_ok=True)
+        return path
     base = os.path.expanduser('~/Library/Application Support')
     new = os.path.join(base, APP_SUPPORT_NAME)
     old = os.path.join(base, LEGACY_APP_SUPPORT_NAME)
@@ -201,7 +208,7 @@ class Config:
             "console_height": 160,           # Console drawer height in px, 90-360
             "first_run_complete": False,     # First-run wizard finished or skipped
             "protocol_notice_pending": False,  # A 0.3 config was moved off the Legacy (0.2.x) OSC format; the UI offers "Keep Legacy" once, then clears this
-            "launch_animation": True         # Play the launch animation (skipped anyway under Reduce Motion)
+            "launch_animation": True         # Play the launch animation (every launch; skipped under Reduce Motion)
         }
     }
     

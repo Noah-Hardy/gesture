@@ -13,7 +13,7 @@
 - **Menus and keyboard.** A native menu bar, shortcuts for the main actions (see **Quick Start**), and a status-bar item that shows whether Gesture is streaming and lets you start, stop and reopen the window. Closing the window leaves the engine running; **Quit Gesture** stops it.
 - **Console drawer.** The engine output overlays the panes (⇧⌘C) instead of squeezing them.
 - **Update overlay.** The update dialog is now an overlay in the window. **Help → Check for Updates…** is unchanged.
-- **Launch animation and new icon.** A short animation plays on a cold start, and the app has a new icon.
+- **Launch animation and new icon.** A short animation plays every time Gesture opens and expands into the window; click or press a key to skip it, or turn it off under Advanced > Interface. It is skipped when macOS Reduce Motion is on. The app also has a new icon.
 - **Preview window on the command line.** `--preview-window` opens the OpenCV preview when running the engine without the app. `--preview` is the same flag, and `--no-preview` is accepted and does nothing. The `q` key applies only to that window.
 - **Engine and app connection.** The engine reports status and preview frames over a private socket and exits within about one second if the app goes away.
 

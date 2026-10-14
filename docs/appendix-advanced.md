@@ -103,6 +103,7 @@ Every setting in the panes, with its `config.json` key (`section.key`). **Restar
 | `performance.force_cpu` | Advanced | boolean |  | `false` | restart |
 | `performance.force_gpu` | Advanced | boolean |  | `false` | restart |
 | `performance.no_holistic` | Advanced | boolean |  | `false` | restart |
+| `ui.launch_animation` | Advanced | boolean |  | `true` | app |
 | `updates.check_on_launch` | Advanced | boolean |  | `true` | app |
 | `updates.include_prereleases` | Advanced | boolean |  | `false` | app |
 
